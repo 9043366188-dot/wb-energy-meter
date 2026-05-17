@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wb-energy-meter"
+version = "0.3.0"
+description = "Сервис учёта электроэнергии для контроллеров Wiren Board"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+    { name = "wb-energy-meter contributors", email = "noreply@example.com" }
+]
+keywords = ["wirenboard", "wb-map3e", "energy", "modbus", "mqtt"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Home Automation",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "paho-mqtt>=1.6,<3",
+    "pyyaml>=5.4",
+]
+
+[project.optional-dependencies]
+dev = []  # тесты используют только stdlib + paho-mqtt + pyyaml
+
+[project.urls]
+Homepage   = "https://github.com/YOURUSER/wb-energy-meter"
+Repository = "https://github.com/YOURUSER/wb-energy-meter"
+Issues     = "https://github.com/YOURUSER/wb-energy-meter/issues"
+Changelog  = "https://github.com/YOURUSER/wb-energy-meter/blob/main/CHANGELOG.md"
+
+[project.scripts]
+wb-energy-meter     = "wb_energy_meter.main:main"
+wb-energy-meter-cli = "wb_energy_meter.cli:main"
+
+[tool.setuptools]
+packages = ["wb_energy_meter", "wb_energy_meter.migrations"]
+
+[tool.setuptools.package-data]
+"wb_energy_meter.migrations" = ["*.sql"]

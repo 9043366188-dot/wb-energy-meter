@@ -1,0 +1,28 @@
+# wb-energy-meter — пример конфига
+mqtt:
+  host: 127.0.0.1
+  port: 1883
+  keepalive: 30
+  client_id_prefix: wb-energy-meter
+
+http:
+  host: 0.0.0.0
+  port: 8080
+
+device_prefix: "wb-map3e_"
+
+status:
+  no_connection_timeout_s: 300
+  stale_warning_timeout_s: 60
+  undervoltage_v: 198.0
+  overvoltage_v: 253.0
+  phase_lost_v: 150.0
+  freq_min_hz: 49.0
+  freq_max_hz: 51.0
+
+log_file: /var/log/wb-energy-meter/wb-energy-meter.log
+
+meters:
+  - device_id: wb-map3e_16
+    display_name: "Тестовый счётчик 1"
+    group: "Тестовая зона"

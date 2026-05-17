@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Tests on Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install system dependencies (mosquitto for e2e tests)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends mosquitto mosquitto-clients
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "paho-mqtt>=1.6,<3" "pyyaml>=5.4"
+
+      - name: Syntax check (compile all .py)
+        run: |
+          python -m compileall -q wb_energy_meter
+
+      - name: Start mosquitto for e2e tests
+        run: |
+          cat > /tmp/mosquitto.conf <<EOF
+          listener 1883
+          allow_anonymous true
+          persistence false
+          log_type error
+          log_dest stderr
+          EOF
+          mosquitto -c /tmp/mosquitto.conf -d
+          sleep 1
+          # smoke check
+          mosquitto_pub -h 127.0.0.1 -t test/ci -m hello
+          mosquitto_sub -h 127.0.0.1 -t test/ci -C 1 -W 5 &
+          sleep 0.5
+
+      - name: Run unit tests (consumption / periods)
+        run: python tests/test_step3_consumption.py
+
+      - name: Run e2e tests (wb-mqtt-db RPC against fake)
+        run: python tests/test_step3_e2e.py
+
+      - name: Run full daemon e2e test
+        run: python tests/test_step3_daemon.py
+
+      - name: Stop mosquitto
+        if: always()
+        run: |
+          pkill -f "mosquitto -c /tmp/mosquitto.conf" || true
+
+  lint:
+    name: Basic checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Check pyproject.toml is valid
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --sdist --wheel --outdir /tmp/dist .
+
+      - name: Verify install.sh syntax
+        run: bash -n scripts/install.sh
+
+      - name: Verify uninstall.sh syntax
+        run: bash -n scripts/uninstall.sh

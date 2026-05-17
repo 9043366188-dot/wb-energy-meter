@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+ENV/
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project-specific
+# Локальные SQLite-базы тестового запуска
+*.db
+*.db-shm
+*.db-wal
+*.db.backup-*
+
+# Локальные конфиги (на WB они в /etc, в репо им не место)
+wb-energy-meter.conf
+/etc/
+
+# Логи
+*.log
+/var/log/
+
+# Билд .deb (Шаг 10)
+*.deb
+debian/.debhelper/
+debian/files
+debian/wb-energy-meter/
+
+# Архивы — собираются скриптом, в репо не хранятся
+wb-energy-meter*.tar.gz
+*.zip
+
+# Локальные пометки разработчика
+TODO.local
+NOTES.local
