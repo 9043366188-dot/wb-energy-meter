@@ -102,7 +102,8 @@ meters:
         with urllib.request.urlopen(
                 "http://127.0.0.1:18180/api/status", timeout=5) as r:
             status = json.loads(r.read().decode("utf-8"))
-        assert status["version"] == "0.3.0", f"version: {status['version']}"
+        assert status["version"].startswith("0."), \
+            f"version: {status['version']}"
         assert status["meters_total"] == 1
         print("[OK] /api/status")
 

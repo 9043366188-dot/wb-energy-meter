@@ -24,7 +24,8 @@ log = logging.getLogger(__name__)
 class _AppState:
     def __init__(self, registry, meters_repo, is_mqtt_connected,
                  mqtt_message_count, mqtt_error_count,
-                 wb_db_client, consumption_service, started_at):
+                 wb_db_client, consumption_service, started_at,
+                 aggregates_repo=None, aggregator=None):
         self.registry = registry
         self.meters_repo = meters_repo
         self.is_mqtt_connected = is_mqtt_connected
@@ -32,6 +33,8 @@ class _AppState:
         self.mqtt_error_count = mqtt_error_count
         self.wb_db_client = wb_db_client
         self.consumption_service = consumption_service
+        self.aggregates_repo = aggregates_repo
+        self.aggregator = aggregator
         self.started_at = started_at
 
 
@@ -55,6 +58,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json(200, self._build_meters_list()); return
             if path == "/api/summary/consumption":
                 self._handle_summary_consumption(qs); return
+            if path == "/api/aggregates/status":
+                self._handle_aggregates_status(); return
             if path.startswith("/api/meters/"):
                 tail = path[len("/api/meters/"):].strip("/")
                 if not tail:
@@ -71,6 +76,8 @@ class _Handler(BaseHTTPRequestHandler):
                     self._handle_consumption(device_id, qs); return
                 if sub == "history-info":
                     self._handle_history_info(device_id); return
+                if sub == "hourly":
+                    self._handle_hourly(device_id, qs); return
                 self._json(404, {"error": "unknown subresource", "sub": sub})
                 return
             if path == "/":
@@ -206,6 +213,49 @@ class _Handler(BaseHTTPRequestHandler):
             ],
         })
 
+    def _handle_hourly(self, device_id, qs):
+        """GET /api/meters/<id>/hourly?period=last_7d — почасовые агрегаты."""
+        if self.app_state.aggregates_repo is None:
+            self._json(503, {"error": "aggregates not available"}); return
+        meter_row = self.app_state.meters_repo.get_by_device_id(device_id)
+        if meter_row is None:
+            self._json(404, {"error": "meter not found",
+                             "device_id": device_id}); return
+        try:
+            period = build_period(**self._parse_period_from_qs(qs))
+        except ValueError as e:
+            self._json(400, {"error": "bad period", "detail": str(e)}); return
+
+        from .aggregates_repo import align_hour_down
+        ts_from = align_hour_down(period.ts_from)
+        ts_to = align_hour_down(period.ts_to) + 3600
+        rows = self.app_state.aggregates_repo.list_range(
+            meter_row.id, ts_from, ts_to,
+        )
+        self._json(200, {
+            "device_id": device_id,
+            "display_name": meter_row.display_name,
+            "period": period.to_dict(),
+            "hours_count": len(rows),
+            "items": [r.to_dict() for r in rows],
+        })
+
+    def _handle_aggregates_status(self):
+        """GET /api/aggregates/status — сводка по таблице period_aggregates."""
+        if self.app_state.aggregates_repo is None:
+            self._json(503, {"error": "aggregates not available"}); return
+        stats = self.app_state.aggregates_repo.stats()
+        worker_status = (self.app_state.aggregator.status()
+                         if self.app_state.aggregator else None)
+        self._json(200, {
+            "rows_total": stats["rows_total"],
+            "earliest_ts": stats["earliest_ts"],
+            "latest_ts": stats["latest_ts"],
+            "by_meter": stats["by_meter"],
+            "by_quality": stats["by_quality"],
+            "worker": worker_status,
+        })
+
     def _json(self, code, body):
         payload = json.dumps(body, ensure_ascii=False, default=str).encode("utf-8")
         self.send_response(code)
@@ -263,7 +313,8 @@ def _control_detail(c):
 class ApiServer:
     def __init__(self, host, port, registry, meters_repo,
                  is_mqtt_connected, mqtt_message_count, mqtt_error_count,
-                 wb_db_client=None, consumption_service=None):
+                 wb_db_client=None, consumption_service=None,
+                 aggregates_repo=None, aggregator=None):
         self._host = host; self._port = port
         self._app_state = _AppState(
             registry=registry, meters_repo=meters_repo,
@@ -272,6 +323,8 @@ class ApiServer:
             mqtt_error_count=mqtt_error_count,
             wb_db_client=wb_db_client,
             consumption_service=consumption_service,
+            aggregates_repo=aggregates_repo,
+            aggregator=aggregator,
             started_at=time.time())
         self._server = None
         self._thread = None
@@ -304,8 +357,10 @@ code{background:#f4f4f4;padding:2px 6px;border-radius:3px}</style></head>
 <li><a href="/api/meters"><code>/api/meters</code></a></li>
 <li><code>/api/meters/&lt;id&gt;</code></li>
 <li><code>/api/meters/&lt;id&gt;/consumption?period=today</code></li>
+<li><code>/api/meters/&lt;id&gt;/hourly?period=last_7d</code></li>
 <li><code>/api/meters/&lt;id&gt;/history-info</code></li>
 <li><code>/api/summary/consumption?period=this_month</code></li>
+<li><a href="/api/aggregates/status"><code>/api/aggregates/status</code></a></li>
 <li><a href="/health"><code>/health</code></a></li>
 </ul></body></html>
 """

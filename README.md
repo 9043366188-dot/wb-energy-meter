@@ -6,7 +6,7 @@ WB-MAP3E (и совместимыми). Подключается к штатны
 дополнительного железа.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.3.0-blue)
+![Version](https://img.shields.io/badge/version-0.4.0-blue)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Wiren%20Board%20%7C%20Linux-lightgrey)
 
@@ -388,8 +388,8 @@ A: На текущей стадии — никакой аутентификац�
 | 1 | 0.1.0 | MQTT, статусы, HTTP API stub, реестр в YAML | ✅ |
 | 2 | 0.2.0 | SQLite, миграции, CLI, репозитории | ✅ |
 | 3 | 0.3.0 | MQTT-RPC к wb-mqtt-db, расчёт расхода | ✅ |
-| 4 | 0.4.0 | Воркер почасовых агрегатов + докатыватель | 🚧 |
-| 5 | 0.5.0 | Переход на FastAPI | ⏳ |
+| 4 | 0.4.0 | Воркер почасовых агрегатов + докатыватель | ✅ |
+| 5 | 0.5.0 | Переход на FastAPI | 🚧 |
 | 6 | 0.6.0 | Веб-интерфейс (SPA на Alpine.js) | ⏳ |
 | 7 | 0.7.0 | Двух-тарифный учёт | ⏳ |
 | 8 | 0.8.0 | Алерты + SMTP + snooze | ⏳ |

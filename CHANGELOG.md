@@ -9,8 +9,50 @@
 
 ### Запланировано
 
-- Шаг 4: воркер почасовых агрегатов (`period_aggregates`) с догоном
-  пропущенных часов после перезагрузки.
+- Шаг 5: переход на FastAPI (рефакторинг API, без новых функций).
+
+## [0.4.0] — 2026-05-18
+
+### Добавлено
+
+- **Воркер почасовых агрегатов** (`Aggregator`):
+  - Регулярная задача: на границе каждого часа считает дельту
+    `Total AP energy` за прошедший час, кладёт в `period_aggregates`.
+  - Catch-up при старте: догоняет пропущенные часы за последние N дней
+    (по умолчанию 90) в фоновом потоке, с жёстким тайм-аутом 5 минут.
+    Batch'ит запросы к `wb-mqtt-db` по 24 часа за один RPC.
+  - Latcher: раз в 6 часов перепроверяет последние 7 суток на дыры
+    (часы с `no_data` или вообще отсутствующие) и пересчитывает.
+  - Корректное завершение при SIGTERM на любой стадии.
+- **Гибридный расчёт расхода** в `ConsumptionService`:
+  - Внутренние полные часы — сумма из `period_aggregates` (миллисекунды).
+  - «Хвосты» периода — добиваются через RPC к `wb-mqtt-db`.
+  - Fallback на полный RPC при отсутствии или неполноте агрегатов.
+- HTTP endpoint'ы:
+  - `GET /api/meters/<id>/hourly?period=...` — массив часовых дельт
+    для графиков.
+  - `GET /api/aggregates/status` — статистика и состояние воркера.
+- CLI-команды:
+  - `aggregates status` — статистика по таблице.
+  - `aggregates show <device_id> [--period ...]` — почасовые дельты.
+  - `aggregates recompute <device_id> [--from/--to]` — пересчёт диапазона.
+  - `aggregates catchup [--days N] [--max-duration N]` — ручной catch-up.
+- Миграция БД `002_aggregator_indexes`: композитный индекс
+  `(meter_id, period_type, period_start)` под выборки агрегатов.
+- Секция `aggregator:` в конфиге со всеми параметрами воркера.
+
+### Изменено
+
+- `ConsumptionService` принимает опциональные `aggregates_repo` и
+  `meters_repo`. Без них работает как раньше (только RPC), с ними —
+  гибридный путь.
+- `ApiServer` принимает опциональные `aggregates_repo` и `aggregator`
+  для новых эндпоинтов.
+
+### Производительность
+
+- Расход за месяц: ~5 мс из агрегатов вместо нескольких секунд RPC.
+- Catch-up на 48 часов с фейковыми данными: ~200 мс.
 
 ## [0.3.0] — 2026-05-04
 
@@ -96,7 +138,8 @@
   `Install-WbEnergyMeter.cmd/ps1` (Windows).
 - systemd-юнит с автозапуском и автоперезапуском.
 
-[Unreleased]: https://github.com/YOURUSER/wb-energy-meter/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/YOURUSER/wb-energy-meter/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/YOURUSER/wb-energy-meter/releases/tag/v0.4.0
 [0.3.0]: https://github.com/YOURUSER/wb-energy-meter/releases/tag/v0.3.0
 [0.2.0]: https://github.com/YOURUSER/wb-energy-meter/releases/tag/v0.2.0
 [0.1.0]: https://github.com/YOURUSER/wb-energy-meter/releases/tag/v0.1.0

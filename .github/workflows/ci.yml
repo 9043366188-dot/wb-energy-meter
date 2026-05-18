@@ -57,11 +57,17 @@ jobs:
       - name: Run unit tests (consumption / periods)
         run: python tests/test_step3_consumption.py
 
+      - name: Run unit tests (aggregator)
+        run: python tests/test_step4_aggregator.py
+
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
 
-      - name: Run full daemon e2e test
+      - name: Run full daemon e2e test (Step 3)
         run: python tests/test_step3_daemon.py
+
+      - name: Run full daemon e2e test (Step 4 — aggregator catch-up)
+        run: python tests/test_step4_daemon.py
 
       - name: Stop mosquitto
         if: always()

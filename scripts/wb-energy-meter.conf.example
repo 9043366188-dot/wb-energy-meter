@@ -20,6 +20,27 @@ status:
   freq_min_hz: 49.0
   freq_max_hz: 51.0
 
+# Шаг 4: воркер почасовых агрегатов
+aggregator:
+  enabled: true
+  # Сколько дней назад дотягивать catch-up при старте.
+  catchup_days: 90
+  # Максимальное время фонового catch-up в секундах. После него
+  # поток корректно завершится; недостающее можно добить вручную:
+  #   wb-energy-meter-cli aggregates catchup --days 90
+  max_catchup_duration_s: 300
+  # Сколько часов назад перепроверять на дыры (раз в patcher_interval_h).
+  recompute_recent_h: 168     # 7 суток
+  # Через сколько секунд после HH:00 запускать почасовой расчёт.
+  # Запас даёт wb-mqtt-db время записать значения завершившегося часа.
+  hour_offset_s: 90
+  # Задержка перед стартом catch-up после запуска демона.
+  catchup_start_delay_s: 10
+  # Интервал работы латальщика (часы).
+  patcher_interval_h: 6
+  rpc_timeout_s: 15.0
+  rpc_max_retries: 3
+
 log_file: /var/log/wb-energy-meter/wb-energy-meter.log
 
 meters:

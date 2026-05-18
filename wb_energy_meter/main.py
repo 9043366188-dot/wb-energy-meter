@@ -20,6 +20,8 @@ from .mqtt_client import MqttService
 from .repo import GroupRepo, KvRepo, MeterRepo, import_registry_from_config
 from .status import StatusEngine
 from .wb_db_client import WbDbClient
+from .aggregates_repo import AggregateRepo
+from .aggregator import Aggregator, AggregatorConfig
 
 
 log = logging.getLogger(__name__)
@@ -104,8 +106,35 @@ def main(argv=None):
         broker=cfg.mqtt.host, port=cfg.mqtt.port,
         username=cfg.mqtt.username, password=cfg.mqtt.password,
         default_timeout_s=10.0)
-    consumption_service = ConsumptionService(wb_db_client)
-    log.info("Расчёт расхода через wb-mqtt-db RPC: готов")
+
+    aggregates_repo = AggregateRepo(db)
+    aggregator_cfg = AggregatorConfig(
+        enabled=cfg.aggregator.enabled,
+        max_catchup_duration_s=cfg.aggregator.max_catchup_duration_s,
+        catchup_days=cfg.aggregator.catchup_days,
+        recompute_recent_h=cfg.aggregator.recompute_recent_h,
+        hour_offset_s=cfg.aggregator.hour_offset_s,
+        catchup_start_delay_s=cfg.aggregator.catchup_start_delay_s,
+        patcher_interval_h=cfg.aggregator.patcher_interval_h,
+        rpc_timeout_s=cfg.aggregator.rpc_timeout_s,
+        rpc_max_retries=cfg.aggregator.rpc_max_retries,
+    )
+    aggregator = Aggregator(
+        config=aggregator_cfg,
+        db_client=wb_db_client,
+        meters_repo=meters_repo,
+        aggregates_repo=aggregates_repo,
+    )
+    aggregator.start()
+
+    # ConsumptionService теперь знает про агрегаты — будет использовать
+    # гибридный путь (агрегаты + хвосты RPC).
+    consumption_service = ConsumptionService(
+        wb_db_client,
+        aggregates_repo=aggregates_repo,
+        meters_repo=meters_repo,
+    )
+    log.info("Расчёт расхода: гибридный (агрегаты + RPC)")
 
     api = ApiServer(
         host=cfg.http.host, port=cfg.http.port,
@@ -114,12 +143,15 @@ def main(argv=None):
         mqtt_message_count=lambda: mqtt_service.message_count,
         mqtt_error_count=lambda: mqtt_service.error_count,
         wb_db_client=wb_db_client,
-        consumption_service=consumption_service)
+        consumption_service=consumption_service,
+        aggregates_repo=aggregates_repo,
+        aggregator=aggregator,
+    )
     try:
         api.start()
     except OSError as e:
         log.error("Не удалось запустить HTTP API: %s", e)
-        bg_tasks.stop(); status_engine.stop()
+        aggregator.stop(); bg_tasks.stop(); status_engine.stop()
         mqtt_service.stop(); db.close(); return 3
 
     stop_event = threading.Event()
@@ -135,7 +167,8 @@ def main(argv=None):
     finally:
         log.info("Остановка...")
         for stopper, name in [
-            (api.stop, "api"), (bg_tasks.stop, "bg_tasks"),
+            (api.stop, "api"), (aggregator.stop, "aggregator"),
+            (bg_tasks.stop, "bg_tasks"),
             (status_engine.stop, "status"), (mqtt_service.stop, "mqtt"),
             (db.close, "db"),
         ]:

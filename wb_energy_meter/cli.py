@@ -17,6 +17,8 @@ from .db import DEFAULT_DB_PATH, Database
 from .periods import PERIOD_PRESETS, build_period, parse_user_datetime
 from .repo import GroupRepo, KvRepo, MeterRepo
 from .wb_db_client import HistoryChannel, RpcError, WbDbClient
+from .aggregates_repo import AggregateRepo, align_hour_down
+from .aggregator import Aggregator, AggregatorConfig
 
 
 log = logging.getLogger(__name__)
@@ -469,6 +471,161 @@ def cmd_history_show(args, db, meters, groups, kv):
     return 0
 
 
+# ---------------- Шаг 4: aggregates ----------------
+
+def cmd_aggregates_status(args, db, meters, groups, kv):
+    """Статистика по таблице period_aggregates."""
+    aggs = AggregateRepo(db)
+    stats = aggs.stats()
+    print(f"Всего часов: {stats['rows_total']:,}")
+    if stats["earliest_ts"]:
+        print(f"Самая старая: {_fmt_ts(stats['earliest_ts'])}")
+    if stats["latest_ts"]:
+        print(f"Самая свежая: {_fmt_ts(stats['latest_ts'])}")
+    print()
+    print("По счётчикам:")
+    if not stats["by_meter"]:
+        print("  (нет данных)")
+    else:
+        rows = []
+        for r in stats["by_meter"]:
+            m = meters.get_by_id(r["meter_id"])
+            display = m.display_name if m else f"id={r['meter_id']}"
+            device_id = m.device_id if m else "?"
+            sum_kwh = (f"{r['sum_kwh']:.4f}" if r["sum_kwh"] is not None
+                       else "—")
+            earliest = (_fmt_ts(r["earliest_ts"]) if r["earliest_ts"]
+                        else "—")
+            latest = _fmt_ts(r["latest_ts"]) if r["latest_ts"] else "—"
+            rows.append([device_id, display, r["rows"], sum_kwh,
+                         earliest, latest])
+        _print_table(rows, headers=["device_id", "name", "hours",
+                                     "sum_kwh", "earliest", "latest"])
+    print()
+    print("По качеству:")
+    if not stats["by_quality"]:
+        print("  (нет данных)")
+    else:
+        for q, n in sorted(stats["by_quality"].items(),
+                           key=lambda x: -x[1]):
+            print(f"  {q:15s} {n}")
+    return 0
+
+
+def cmd_aggregates_show(args, db, meters, groups, kv):
+    """Показать почасовые агрегаты счётчика за период."""
+    m = meters.get_by_device_id(args.device_id)
+    if not m:
+        print(f"Счётчик не найден: {args.device_id}", file=sys.stderr)
+        return 2
+    try: period = _build_period_from_args(args)
+    except ValueError as e:
+        print(f"Ошибка периода: {e}", file=sys.stderr); return 2
+
+    aggs = AggregateRepo(db)
+    ts_from = align_hour_down(period.ts_from)
+    ts_to = align_hour_down(period.ts_to) + 3600
+    items = aggs.list_range(m.id, ts_from, ts_to)
+
+    print(f"Счётчик: {m.display_name}  ({args.device_id})")
+    print(f"Период:  {period.description}")
+    print(f"Часов:   {len(items)}")
+    if not items:
+        return 0
+    print()
+    rows = []
+    total = 0.0
+    for a in items:
+        kwh_str = (f"{a.ap_energy_delta:.4f}"
+                   if a.ap_energy_delta is not None else "—")
+        if a.ap_energy_delta is not None:
+            total += a.ap_energy_delta
+        rows.append([_fmt_ts(a.period_start), kwh_str, a.samples_count,
+                     a.quality_flag])
+    _print_table(rows, headers=["hour", "kWh", "samples", "quality"])
+    print()
+    print(f"Сумма: {total:.4f} кВт·ч")
+    return 0
+
+
+def cmd_aggregates_recompute(args, db, meters, groups, kv):
+    """Пересчитать диапазон часов вручную."""
+    m = meters.get_by_device_id(args.device_id)
+    if not m:
+        print(f"Счётчик не найден: {args.device_id}", file=sys.stderr)
+        return 2
+
+    # Период: --period или --from/--to. По умолчанию — последние 7 дней.
+    if not getattr(args, "period", None) and not getattr(args, "from_date", None):
+        args.period = "last_7d"
+    try: period = _build_period_from_args(args)
+    except ValueError as e:
+        print(f"Ошибка периода: {e}", file=sys.stderr); return 2
+
+    # Создаём временный Aggregator для одноразового действия. Воркера не
+    # запускаем — просто используем его методы.
+    client = _make_wb_db_client(args)
+    aggs_repo = AggregateRepo(db)
+    aggr_cfg = AggregatorConfig()
+    aggr = Aggregator(aggr_cfg, client, meters, aggs_repo)
+
+    # Находим нужные часы в диапазоне (все — не только missing)
+    ts_from = align_hour_down(period.ts_from)
+    ts_to = align_hour_down(period.ts_to) + 3600
+    hours = list(range(ts_from, ts_to, 3600))
+    if not hours:
+        print("Нет часов в диапазоне")
+        return 0
+
+    print(f"Пересчитываю {len(hours)} часов для {m.device_id}...")
+    # Используем внутренние методы напрямую — это CLI, можно
+    from .aggregator import _group_into_batches, compute_hourly_aggregate
+    done = 0
+    for batch in _group_into_batches(hours, max_span_hours=24):
+        batch_start = batch[0]
+        batch_end = batch[-1] + 3600
+        points = aggr._rpc_get_values_with_retry(
+            m.device_id, aggr_cfg.energy_channel,
+            batch_start - 3600, batch_end + 300,
+        )
+        if points is None:
+            print(f"  ! RPC отказал для {len(batch)} часов")
+            continue
+        new_aggs = [
+            compute_hourly_aggregate(
+                meter_id=m.id, hour_start=h,
+                points_with_context=points,
+            )
+            for h in batch
+        ]
+        aggs_repo.upsert_many(new_aggs)
+        done += len(batch)
+    print(f"Готово: пересчитано {done} часов")
+    return 0
+
+
+def cmd_aggregates_catchup(args, db, meters, groups, kv):
+    """Принудительный catch-up без запуска демона."""
+    days = args.days
+    client = _make_wb_db_client(args)
+    aggs_repo = AggregateRepo(db)
+    aggr_cfg = AggregatorConfig(catchup_days=days,
+                                 max_catchup_duration_s=args.max_duration)
+    aggr = Aggregator(aggr_cfg, client, meters, aggs_repo)
+
+    items = meters.list_all(only_enabled=True)
+    if not items:
+        print("В реестре нет счётчиков.")
+        return 0
+
+    print(f"Catch-up: {days} дней, max {args.max_duration} с, "
+          f"{len(items)} счётчиков")
+    # Запускаем синхронно (не start(), а сразу _do_catchup)
+    aggr._do_catchup()
+    print("Готово.")
+    return 0
+
+
 # ---------------- parser ----------------
 
 def build_parser():
@@ -572,6 +729,37 @@ def build_parser():
     s.add_argument("--all", action="store_true",
                    help="показать все точки, не только первые 30")
     s.set_defaults(func=cmd_history_show)
+
+    # aggregates (Шаг 4)
+    pa = sub.add_parser("aggregates",
+                        help="управление почасовыми агрегатами")
+    sa = pa.add_subparsers(dest="subcmd", required=True)
+
+    s = sa.add_parser("status", help="статистика по таблице period_aggregates")
+    s.set_defaults(func=cmd_aggregates_status)
+
+    s = sa.add_parser("show", help="показать почасовые агрегаты счётчика")
+    s.add_argument("device_id")
+    s.add_argument("--period", choices=list(PERIOD_PRESETS), default="last_24h")
+    s.add_argument("--from", dest="from_date")
+    s.add_argument("--to", dest="to_date")
+    s.set_defaults(func=cmd_aggregates_show)
+
+    s = sa.add_parser("recompute",
+                      help="пересчитать диапазон часов через RPC")
+    s.add_argument("device_id")
+    s.add_argument("--period", choices=list(PERIOD_PRESETS))
+    s.add_argument("--from", dest="from_date")
+    s.add_argument("--to", dest="to_date")
+    s.set_defaults(func=cmd_aggregates_recompute)
+
+    s = sa.add_parser("catchup",
+                      help="догнать пропущенные часы (вручную)")
+    s.add_argument("--days", type=int, default=90,
+                   help="сколько дней назад дотягивать (по умолчанию 90)")
+    s.add_argument("--max-duration", type=int, default=300,
+                   help="максимальное время catch-up в секундах (300)")
+    s.set_defaults(func=cmd_aggregates_catchup)
 
     return p
 

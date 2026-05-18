@@ -61,10 +61,25 @@ class StatusConfig:
 
 
 @dataclass
+class AggregatorConfigYaml:
+    """Конфигурация воркера почасовых агрегатов (Шаг 4)."""
+    enabled: bool = True
+    catchup_days: int = 90
+    max_catchup_duration_s: int = 300
+    recompute_recent_h: int = 168
+    hour_offset_s: int = 90
+    catchup_start_delay_s: int = 10
+    patcher_interval_h: int = 6
+    rpc_timeout_s: float = 15.0
+    rpc_max_retries: int = 3
+
+
+@dataclass
 class AppConfig:
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     http: HttpConfig = field(default_factory=HttpConfig)
     status: StatusConfig = field(default_factory=StatusConfig)
+    aggregator: AggregatorConfigYaml = field(default_factory=AggregatorConfigYaml)
     meters: list[MeterEntry] = field(default_factory=list)
     device_prefix: str = "wb-map3e_"
     log_file: str | None = "/var/log/wb-energy-meter/wb-energy-meter.log"
@@ -109,6 +124,17 @@ def load_config(path: str) -> AppConfig:
         if f_name in status_raw:
             setattr(sd, f_name, type(getattr(sd, f_name))(status_raw[f_name]))
     cfg.status = sd
+
+    aggr_raw = raw.get("aggregator") or {}
+    ag = AggregatorConfigYaml()
+    for f_name in ("enabled", "catchup_days", "max_catchup_duration_s",
+                   "recompute_recent_h", "hour_offset_s",
+                   "catchup_start_delay_s", "patcher_interval_h",
+                   "rpc_timeout_s", "rpc_max_retries"):
+        if f_name in aggr_raw:
+            cur_type = type(getattr(ag, f_name))
+            setattr(ag, f_name, cur_type(aggr_raw[f_name]))
+    cfg.aggregator = ag
 
     meters_raw = raw.get("meters") or []
     cfg.meters = [MeterEntry.from_dict(m) for m in meters_raw]
