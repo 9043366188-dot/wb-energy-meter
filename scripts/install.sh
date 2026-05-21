@@ -24,7 +24,7 @@ echo "    python3 $PY_VER"
 
 echo ">>> Установка системных зависимостей..."
 apt-get update -qq
-apt-get install -y --no-install-recommends python3-paho-mqtt python3-yaml
+apt-get install -y --no-install-recommends python3-paho-mqtt python3-yaml python3-flask
 
 if [[ -f "$DB_PATH" ]]; then
   BACKUP="$DB_PATH.backup-$(date +%Y%m%d-%H%M%S)"
@@ -112,11 +112,12 @@ echo
 echo "Проверка:    systemctl status wb-energy-meter"
 echo "Логи:        journalctl -u wb-energy-meter -f"
 echo "API:         curl -s http://127.0.0.1:8080/api/status | python3 -m json.tool"
+echo "API docs:    http://<IP>:8080/api/docs"
 echo
-echo "Новое в Шаге 3:"
-echo "  wb-energy-meter-cli history-info wb-map3e_16"
+echo "Полезные команды:"
+echo "  wb-energy-meter-cli meter list"
+echo "  wb-energy-meter-cli aggregates status"
 echo "  wb-energy-meter-cli consumption wb-map3e_16 --period last_24h"
-echo "  wb-energy-meter-cli consumption-summary --period this_month"
 echo
 
 if systemctl is-active --quiet wb-energy-meter.service; then
