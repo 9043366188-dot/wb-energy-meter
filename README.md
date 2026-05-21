@@ -6,7 +6,7 @@ WB-MAP3E (и совместимыми). Подключается к штатны
 дополнительного железа.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.4.0-blue)
+![Version](https://img.shields.io/badge/version-0.5.0-blue)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Wiren%20Board%20%7C%20Linux-lightgrey)
 
@@ -165,8 +165,9 @@ wb-energy-meter-cli history-show wb-map3e_17 "Total AP energy" --period last_7d
 
 ## HTTP API
 
-Сервис слушает по умолчанию на `0.0.0.0:8080`. Ответы в JSON, кодировка
-UTF-8, CORS разрешён.
+Сервис слушает по умолчанию на `0.0.0.0:8080` (Flask). Ответы в JSON,
+кодировка UTF-8, CORS разрешён. Человекочитаемое описание всех
+эндпоинтов — на странице `http://<IP>:8080/api/docs`.
 
 | Метод | URL | Описание |
 |---|---|---|
@@ -175,8 +176,11 @@ UTF-8, CORS разрешён.
 | GET | `/api/meters` | Полный реестр счётчиков |
 | GET | `/api/meters/<device_id>` | Подробности по одному счётчику |
 | GET | `/api/meters/<device_id>/consumption?period=today` | Расход |
+| GET | `/api/meters/<device_id>/hourly?period=last_7d` | Почасовые агрегаты |
 | GET | `/api/meters/<device_id>/history-info` | Какие каналы в `wb-mqtt-db` |
 | GET | `/api/summary/consumption?period=this_month` | Расход по всем |
+| GET | `/api/aggregates/status` | Статистика агрегатов + воркер |
+| GET | `/api/docs` | Описание API (HTML) |
 
 Поддерживаемые периоды: `today`, `yesterday`, `this_month`, `last_month`,
 `last_24h`, `last_7d`, `last_30d`, или произвольный через `?from=YYYY-MM-DD&to=YYYY-MM-DD`.
@@ -314,7 +318,7 @@ python tests/test_step3_daemon.py
 wb-energy-meter/
 ├── wb_energy_meter/           # пакет Python
 │   ├── __init__.py
-│   ├── api.py                 # HTTP API (http.server, до Шага 5)
+│   ├── api.py                 # HTTP API (Flask)
 │   ├── background.py          # фоновые задачи
 │   ├── cli.py                 # CLI-утилита
 │   ├── config.py              # загрузка YAML
@@ -389,8 +393,8 @@ A: На текущей стадии — никакой аутентификац�
 | 2 | 0.2.0 | SQLite, миграции, CLI, репозитории | ✅ |
 | 3 | 0.3.0 | MQTT-RPC к wb-mqtt-db, расчёт расхода | ✅ |
 | 4 | 0.4.0 | Воркер почасовых агрегатов + докатыватель | ✅ |
-| 5 | 0.5.0 | Переход на FastAPI | 🚧 |
-| 6 | 0.6.0 | Веб-интерфейс (SPA на Alpine.js) | ⏳ |
+| 5 | 0.5.0 | Переход на Flask (HTTP API) | ✅ |
+| 6 | 0.6.0 | Веб-интерфейс (SPA на Alpine.js) | 🚧 |
 | 7 | 0.7.0 | Двух-тарифный учёт | ⏳ |
 | 8 | 0.8.0 | Алерты + SMTP + snooze | ⏳ |
 | 9 | 0.9.0 | Excel-отчёты + автоматическая рассылка | ⏳ |

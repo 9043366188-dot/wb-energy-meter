@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wb-energy-meter"
-version = "0.4.0"
+version = "0.5.0"
 description = "Сервис учёта электроэнергии для контроллеров Wiren Board"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -30,6 +30,7 @@ classifiers = [
 dependencies = [
     "paho-mqtt>=1.6,<3",
     "pyyaml>=5.4",
+    "flask>=1.1",
 ]
 
 [project.optional-dependencies]

@@ -9,7 +9,32 @@
 
 ### Запланировано
 
-- Шаг 5: переход на FastAPI (рефакторинг API, без новых функций).
+- Шаг 6: веб-интерфейс (SPA на Alpine.js).
+
+## [0.5.0] — 2026-05-21
+
+### Изменено
+
+- **HTTP API переведён с `http.server` на Flask** (из Debian apt,
+  `python3-flask`). Все эндпоинты сохраняют URL и формат ответов —
+  внешний контракт не изменился.
+  - Маршрутизация теперь декларативная (`@app.route`), без ручного
+    разбора путей.
+  - Запуск через `werkzeug.serving.make_server` в отдельном потоке с
+    управляемым shutdown.
+  - JSON отдаётся с `ensure_ascii=False` (кириллица читаемая),
+    `JSON_SORT_KEYS=false` (порядок ключей сохраняется).
+
+### Добавлено
+
+- Страница `/api/docs` — человекочитаемое описание всех эндпоинтов
+  (замена Swagger; статический HTML, без зависимостей).
+- Зависимость `python3-flask` в `install.sh` (ставится через apt).
+
+### Производительность
+
+- Flask с `threaded=True` обрабатывает параллельные запросы лучше, чем
+  прежний `ThreadingHTTPServer`, при сопоставимом потреблении памяти.
 
 ## [0.4.0] — 2026-05-18
 
@@ -138,8 +163,9 @@
   `Install-WbEnergyMeter.cmd/ps1` (Windows).
 - systemd-юнит с автозапуском и автоперезапуском.
 
-[Unreleased]: https://github.com/YOURUSER/wb-energy-meter/compare/v0.4.0...HEAD
-[0.4.0]: https://github.com/YOURUSER/wb-energy-meter/releases/tag/v0.4.0
-[0.3.0]: https://github.com/YOURUSER/wb-energy-meter/releases/tag/v0.3.0
-[0.2.0]: https://github.com/YOURUSER/wb-energy-meter/releases/tag/v0.2.0
-[0.1.0]: https://github.com/YOURUSER/wb-energy-meter/releases/tag/v0.1.0
+[Unreleased]: https://github.com/9043366188-dot/wb-energy-meter/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/9043366188-dot/wb-energy-meter/releases/tag/v0.5.0
+[0.4.0]: https://github.com/9043366188-dot/wb-energy-meter/releases/tag/v0.4.0
+[0.3.0]: https://github.com/9043366188-dot/wb-energy-meter/releases/tag/v0.3.0
+[0.2.0]: https://github.com/9043366188-dot/wb-energy-meter/releases/tag/v0.2.0
+[0.1.0]: https://github.com/9043366188-dot/wb-energy-meter/releases/tag/v0.1.0
