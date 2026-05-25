@@ -127,6 +127,23 @@ def _dumps(body):
     return json.dumps(body, ensure_ascii=False, default=str)
 
 
+def _load_static(filename):
+    """Прочитать файл из папки static рядом с модулем.
+
+    Если файл недоступен (например, не скопирован) — отдаём
+    минимальную заглушку, чтобы сервис не падал.
+    """
+    import os
+    static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+    path = os.path.join(static_dir, filename)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        log.warning("Не смог прочитать static/%s: %s", filename, e)
+        return _ROOT_HTML_FALLBACK
+
+
 # ---------------------------------------------------------------------------
 # Flask app factory
 # ---------------------------------------------------------------------------
@@ -292,7 +309,7 @@ def create_app(state):
 
     @app.route("/")
     def root():
-        return Response(_ROOT_HTML, mimetype="text/html")
+        return Response(_load_static("index.html"), mimetype="text/html")
 
     @app.route("/api/docs")
     def api_docs():
@@ -360,20 +377,16 @@ class ApiServer:
             self._thread.join(timeout=5.0)
 
 
-_ROOT_HTML = """<!doctype html>
+_ROOT_HTML_FALLBACK = """<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><title>wb-energy-meter</title>
 <style>body{font-family:system-ui,sans-serif;max-width:780px;margin:2em auto;padding:0 1em}
 code{background:#f4f4f4;padding:2px 6px;border-radius:3px}
 a{color:#0366d6}</style></head>
-<body><h1>wb-energy-meter</h1><p>Сервис работает. Полноценный UI — на Шаге 6.</p>
-<p>См. <a href="/api/docs">описание API</a> или endpoint'ы напрямую:</p><ul>
+<body><h1>wb-energy-meter</h1>
+<p>Веб-интерфейс (static/index.html) не найден. Сервис работает, API доступен.</p>
+<p>См. <a href="/api/docs">описание API</a> или:</p><ul>
 <li><a href="/api/status"><code>/api/status</code></a></li>
 <li><a href="/api/meters"><code>/api/meters</code></a></li>
-<li><code>/api/meters/&lt;id&gt;</code></li>
-<li><code>/api/meters/&lt;id&gt;/consumption?period=today</code></li>
-<li><code>/api/meters/&lt;id&gt;/hourly?period=last_7d</code></li>
-<li><code>/api/meters/&lt;id&gt;/history-info</code></li>
-<li><code>/api/summary/consumption?period=this_month</code></li>
 <li><a href="/api/aggregates/status"><code>/api/aggregates/status</code></a></li>
 <li><a href="/health"><code>/health</code></a></li>
 </ul></body></html>

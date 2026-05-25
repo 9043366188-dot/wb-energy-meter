@@ -6,7 +6,7 @@ WB-MAP3E (и совместимыми). Подключается к штатны
 дополнительного железа.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.5.0-blue)
+![Version](https://img.shields.io/badge/version-0.6.0-blue)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Wiren%20Board%20%7C%20Linux-lightgrey)
 
@@ -48,7 +48,11 @@ Wiren Board даёт «сырые» данные счётчиков через M
 
 ## Возможности
 
-**Уже работает (версия 0.3.0):**
+**Уже работает (версия 0.6.0):**
+
+- **Веб-интерфейс** на `http://<IP>:8080/` — дашборд со статусами и
+  мгновенными значениями счётчиков, расчёт расхода за период с
+  графиками, светлая/тёмная тема.
 
 - Автоматическая сборка состояния всех счётчиков из MQTT (`/devices/+/...`),
   с поддержкой WB Conventions (метаданные канала: тип, единицы, точность).
@@ -319,6 +323,10 @@ wb-energy-meter/
 ├── wb_energy_meter/           # пакет Python
 │   ├── __init__.py
 │   ├── api.py                 # HTTP API (Flask)
+│   ├── aggregator.py          # воркер почасовых агрегатов
+│   ├── aggregates_repo.py     # доступ к period_aggregates
+│   ├── static/
+│   │   └── index.html         # веб-интерфейс (Alpine.js SPA)
 │   ├── background.py          # фоновые задачи
 │   ├── cli.py                 # CLI-утилита
 │   ├── config.py              # загрузка YAML
@@ -394,8 +402,8 @@ A: На текущей стадии — никакой аутентификац�
 | 3 | 0.3.0 | MQTT-RPC к wb-mqtt-db, расчёт расхода | ✅ |
 | 4 | 0.4.0 | Воркер почасовых агрегатов + докатыватель | ✅ |
 | 5 | 0.5.0 | Переход на Flask (HTTP API) | ✅ |
-| 6 | 0.6.0 | Веб-интерфейс (SPA на Alpine.js) | 🚧 |
-| 7 | 0.7.0 | Двух-тарифный учёт | ⏳ |
+| 6 | 0.6.0 | Веб-интерфейс (SPA на Alpine.js) | ✅ |
+| 7 | 0.7.0 | Двух-тарифный учёт | 🚧 |
 | 8 | 0.8.0 | Алерты + SMTP + snooze | ⏳ |
 | 9 | 0.9.0 | Excel-отчёты + автоматическая рассылка | ⏳ |
 | 10 | 1.0.0 | .deb-пакет, документация, релиз | ⏳ |

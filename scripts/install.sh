@@ -50,6 +50,11 @@ if [[ ! -f "$INSTALL_DIR/wb_energy_meter/migrations/001_initial_schema.sql" ]]; 
   echo "ОШИБКА: миграции не скопировались" >&2; exit 2
 fi
 
+if [[ ! -f "$INSTALL_DIR/wb_energy_meter/static/index.html" ]]; then
+  echo "[!] static/index.html не найден — веб-интерфейс будет недоступен" >&2
+  echo "    (сервис и API продолжат работать)" >&2
+fi
+
 echo ">>> Установка launcher'ов..."
 cat > "$LAUNCHER" <<EOF
 #!/bin/bash

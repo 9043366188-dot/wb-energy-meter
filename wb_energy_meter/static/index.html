@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="ru" x-data="app()" :data-theme="theme" x-init="init()">
+<head>
+<meta charset="utf-8">
+<title>wb-energy-meter</title>
+<meta name="viewport" content="width=1100">
+<style>
+:root[data-theme="dark"]{
+  --bg:#0d1117; --bg2:#161b22; --bg3:#1c2330; --line:#2d3543;
+  --txt:#e6edf3; --txt2:#9aa7b6; --txt3:#6b7886;
+  --accent:#2f9e8f; --accent2:#3dd6c0;
+  --ok:#3fb950; --warn:#d29922; --idle:#7d8590; --err:#f85149; --info:#58a6ff;
+  --shadow:0 4px 16px rgba(0,0,0,.4);
+}
+:root[data-theme="light"]{
+  --bg:#f4f6f9; --bg2:#ffffff; --bg3:#eef1f5; --line:#d6dde6;
+  --txt:#1a2027; --txt2:#5a6675; --txt3:#8a96a3;
+  --accent:#1a7d70; --accent2:#149484;
+  --ok:#1a7f37; --warn:#9a6700; --idle:#8a96a3; --err:#cf222e; --info:#0969da;
+  --shadow:0 2px 10px rgba(0,0,0,.08);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--txt);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  font-size:14px; line-height:1.4;
+  min-height:100vh;
+}
+.mono{font-family:"SF Mono","JetBrains Mono","Cascadia Code",Consolas,monospace;
+  font-variant-numeric:tabular-nums;}
+header{
+  background:var(--bg2); border-bottom:1px solid var(--line);
+  padding:0 24px; height:56px; display:flex; align-items:center;
+  gap:20px; position:sticky; top:0; z-index:10;
+}
+.logo{font-weight:700; font-size:17px; letter-spacing:-.3px;}
+.logo span{color:var(--accent2);}
+.dot{width:7px; height:7px; border-radius:50%; display:inline-block;}
+.conn{display:flex; align-items:center; gap:7px; font-size:12px; color:var(--txt2);}
+nav{display:flex; gap:4px; margin-left:8px;}
+nav button{
+  background:none; border:none; color:var(--txt2); cursor:pointer;
+  padding:8px 14px; border-radius:6px; font-size:13px; font-weight:500;
+}
+nav button:hover{background:var(--bg3); color:var(--txt);}
+nav button.active{background:var(--accent); color:#fff;}
+.spacer{flex:1;}
+.ico-btn{
+  background:var(--bg3); border:1px solid var(--line); color:var(--txt2);
+  cursor:pointer; padding:7px 11px; border-radius:6px; font-size:13px;
+}
+.ico-btn:hover{color:var(--txt); border-color:var(--accent);}
+main{padding:24px; max-width:1400px; margin:0 auto;}
+
+/* summary tiles */
+.tiles{display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+  gap:14px; margin-bottom:24px;}
+.tile{background:var(--bg2); border:1px solid var(--line); border-radius:10px;
+  padding:16px 18px;}
+.tile .lbl{font-size:11px; text-transform:uppercase; letter-spacing:.6px;
+  color:var(--txt3); margin-bottom:8px; font-weight:600;}
+.tile .val{font-size:28px; font-weight:700;}
+.tile .val small{font-size:14px; color:var(--txt2); font-weight:500;}
+.tile .sub{font-size:12px; color:var(--txt2); margin-top:4px;}
+.statusline{display:flex; gap:14px; flex-wrap:wrap; margin-top:6px;}
+.statusline span{display:flex; align-items:center; gap:5px; font-size:12px;}
+
+/* meter cards */
+.section-title{font-size:13px; text-transform:uppercase; letter-spacing:.6px;
+  color:var(--txt3); font-weight:600; margin:0 0 12px 2px;}
+.cards{display:grid; grid-template-columns:repeat(auto-fill,minmax(310px,1fr));
+  gap:14px;}
+.card{background:var(--bg2); border:1px solid var(--line); border-radius:10px;
+  padding:0; overflow:hidden; cursor:pointer; transition:border-color .15s;}
+.card:hover{border-color:var(--accent);}
+.card-head{display:flex; align-items:center; gap:10px; padding:14px 16px 10px;}
+.card-head .nm{font-weight:600; font-size:15px; flex:1; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap;}
+.badge{font-size:10px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.4px; padding:3px 7px; border-radius:5px;}
+.card-grp{font-size:11px; color:var(--txt3); padding:0 16px 10px;}
+.card-body{padding:0 16px 16px; display:grid; grid-template-columns:1fr 1fr;
+  gap:10px 12px;}
+.metric .k{font-size:10px; text-transform:uppercase; letter-spacing:.4px;
+  color:var(--txt3);}
+.metric .v{font-size:18px; font-weight:600; margin-top:2px;}
+.metric .v small{font-size:11px; color:var(--txt2); font-weight:400;}
+.phases{grid-column:1/-1; display:flex; gap:6px; margin-top:2px;}
+.phase{flex:1; background:var(--bg3); border-radius:5px; padding:6px 4px;
+  text-align:center;}
+.phase .pk{font-size:9px; color:var(--txt3);}
+.phase .pv{font-size:13px; font-weight:600; margin-top:1px;}
+.reason{grid-column:1/-1; font-size:11px; color:var(--txt2);
+  background:var(--bg3); border-radius:6px; padding:8px 10px; margin-top:2px;}
+
+/* table */
+table{width:100%; border-collapse:collapse; background:var(--bg2);
+  border:1px solid var(--line); border-radius:10px; overflow:hidden;}
+th,td{text-align:left; padding:11px 14px; border-bottom:1px solid var(--line);}
+th{font-size:11px; text-transform:uppercase; letter-spacing:.5px;
+  color:var(--txt3); font-weight:600; background:var(--bg3);}
+td.num{text-align:right;}
+tr:last-child td{border-bottom:none;}
+tbody tr:hover{background:var(--bg3);}
+tfoot td{font-weight:700; background:var(--bg3); border-top:2px solid var(--line);}
+
+/* period selector */
+.periods{display:flex; gap:6px; flex-wrap:wrap; margin-bottom:18px;
+  align-items:center;}
+.periods button{background:var(--bg2); border:1px solid var(--line);
+  color:var(--txt2); cursor:pointer; padding:8px 14px; border-radius:7px;
+  font-size:13px; font-weight:500;}
+.periods button:hover{color:var(--txt); border-color:var(--accent);}
+.periods button.active{background:var(--accent); color:#fff; border-color:var(--accent);}
+.periods .custom{display:flex; gap:6px; align-items:center; margin-left:8px;}
+.periods input[type=date]{background:var(--bg2); border:1px solid var(--line);
+  color:var(--txt); padding:7px 9px; border-radius:6px; font-size:13px;
+  font-family:inherit;}
+
+/* quality pills */
+.q{font-size:10px; font-weight:700; text-transform:uppercase; padding:2px 7px;
+  border-radius:4px; letter-spacing:.3px;}
+
+/* chart */
+.chart-wrap{background:var(--bg2); border:1px solid var(--line);
+  border-radius:10px; padding:18px; margin-top:18px;}
+.chart-wrap h3{font-size:14px; margin-bottom:14px; font-weight:600;}
+.bar:hover{opacity:.8;}
+
+/* loader / empty */
+.empty{text-align:center; color:var(--txt3); padding:50px 20px; font-size:14px;}
+.spin{display:inline-block; width:18px; height:18px;
+  border:2px solid var(--line); border-top-color:var(--accent);
+  border-radius:50%; animation:sp .7s linear infinite; vertical-align:middle;}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* detail modal */
+.overlay{position:fixed; inset:0; background:rgba(0,0,0,.55);
+  display:flex; align-items:flex-start; justify-content:center;
+  padding:40px 20px; z-index:50; overflow-y:auto;}
+.modal{background:var(--bg2); border:1px solid var(--line); border-radius:12px;
+  max-width:880px; width:100%; box-shadow:var(--shadow);}
+.modal-head{display:flex; align-items:center; gap:12px; padding:18px 22px;
+  border-bottom:1px solid var(--line); position:sticky; top:0;
+  background:var(--bg2); border-radius:12px 12px 0 0;}
+.modal-head .nm{font-size:18px; font-weight:700; flex:1;}
+.modal-body{padding:22px;}
+.ctrl-grid{display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr));
+  gap:10px;}
+.ctrl{background:var(--bg3); border-radius:7px; padding:10px 12px;}
+.ctrl .ck{font-size:10px; color:var(--txt3); text-transform:uppercase;
+  letter-spacing:.3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.ctrl .cv{font-size:16px; font-weight:600; margin-top:3px;}
+.ctrl .cv small{font-size:11px; color:var(--txt2); font-weight:400;}
+.close{background:none; border:none; color:var(--txt2); cursor:pointer;
+  font-size:22px; line-height:1; padding:4px 8px; border-radius:6px;}
+.close:hover{background:var(--bg3); color:var(--txt);}
+.warns{margin-top:14px;}
+.warn-item{font-size:12px; color:var(--warn); background:var(--bg3);
+  border-left:3px solid var(--warn); padding:8px 12px; border-radius:0 6px 6px 0;
+  margin-bottom:6px;}
+.muted{color:var(--txt3); font-size:12px;}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">wb<span>·</span>energy<span>·</span>meter</div>
+  <div class="conn">
+    <span class="dot" :style="`background:${mqtt.connected?'var(--ok)':'var(--err)'}`"></span>
+    <span x-text="mqtt.connected ? 'MQTT online' : 'MQTT offline'"></span>
+  </div>
+  <nav>
+    <button :class="{active:tab=='dash'}" @click="tab='dash'">Дашборд</button>
+    <button :class="{active:tab=='consumption'}" @click="tab='consumption'; loadConsumption()">Расход</button>
+  </nav>
+  <div class="spacer"></div>
+  <span class="muted mono" x-text="version ? 'v'+version : ''"></span>
+  <button class="ico-btn" @click="toggleTheme()" x-text="theme=='dark'?'☀ Светлая':'🌙 Тёмная'"></button>
+  <button class="ico-btn" @click="refresh()">⟳ Обновить</button>
+</header>
+
+<main>
+  <!-- ===================== DASHBOARD ===================== -->
+  <template x-if="tab=='dash'">
+    <div>
+      <div class="tiles">
+        <div class="tile">
+          <div class="lbl">Счётчиков</div>
+          <div class="val mono" x-text="meters.length"></div>
+          <div class="statusline">
+            <template x-for="(n,st) in byStatus" :key="st">
+              <span><span class="dot" :style="`background:${statusColor(st)}`"></span>
+                <span x-text="statusLabel(st)+': '+n"></span></span>
+            </template>
+          </div>
+        </div>
+        <div class="tile">
+          <div class="lbl">Суммарная мощность</div>
+          <div class="val mono"><span x-text="totalPowerKw"></span><small> кВт</small></div>
+          <div class="sub">сумма Total P по всем счётчикам</div>
+        </div>
+        <div class="tile">
+          <div class="lbl">Накопленная энергия</div>
+          <div class="val mono"><span x-text="totalEnergy"></span><small> кВт·ч</small></div>
+          <div class="sub">сумма Total AP energy</div>
+        </div>
+        <div class="tile">
+          <div class="lbl">MQTT</div>
+          <div class="val mono" x-text="mqtt.messages"></div>
+          <div class="sub"><span x-text="'ошибок: '+mqtt.errors"></span> · аптайм <span x-text="uptimeStr"></span></div>
+        </div>
+      </div>
+
+      <div class="section-title">Счётчики</div>
+      <template x-if="loading">
+        <div class="empty"><span class="spin"></span> загрузка…</div>
+      </template>
+      <template x-if="!loading && meters.length==0">
+        <div class="empty">Нет счётчиков в реестре. Добавьте через CLI: <code>wb-energy-meter-cli scan --add-all</code></div>
+      </template>
+      <div class="cards">
+        <template x-for="m in meters" :key="m.device_id">
+          <div class="card" @click="openDetail(m.device_id)">
+            <div class="card-head">
+              <span class="dot" :style="`background:${statusColor(m.status)}; width:10px; height:10px`"></span>
+              <span class="nm" x-text="m.display_name"></span>
+              <span class="badge" :style="badgeStyle(m.status)" x-text="statusLabel(m.status)"></span>
+            </div>
+            <div class="card-grp" x-text="m.group || '— без группы —'"></div>
+            <div class="card-body">
+              <div class="metric">
+                <div class="k">Мощность</div>
+                <div class="v mono"><span x-text="fmt(m.main_values['Total P'],3)"></span><small> кВт</small></div>
+              </div>
+              <div class="metric">
+                <div class="k">Энергия</div>
+                <div class="v mono"><span x-text="fmt(m.main_values['Total AP energy'],2)"></span><small> кВт·ч</small></div>
+              </div>
+              <div class="phases">
+                <template x-for="ph in ['L1','L2','L3']" :key="ph">
+                  <div class="phase">
+                    <div class="pk" x-text="'U'+ph"></div>
+                    <div class="pv mono" x-text="fmt(m.main_values['Urms '+ph],0)"></div>
+                  </div>
+                </template>
+              </div>
+              <template x-if="m.status!='ok' && m.status_reason">
+                <div class="reason" x-text="m.status_reason"></div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+  </template>
+
+  <!-- ===================== CONSUMPTION ===================== -->
+  <template x-if="tab=='consumption'">
+    <div>
+      <div class="periods">
+        <template x-for="p in presets" :key="p.id">
+          <button :class="{active:period.preset==p.id}" @click="setPreset(p.id)" x-text="p.label"></button>
+        </template>
+        <div class="custom">
+          <input type="date" x-model="period.from">
+          <span class="muted">—</span>
+          <input type="date" x-model="period.to">
+          <button @click="setCustom()">Применить</button>
+        </div>
+      </div>
+
+      <template x-if="consLoading">
+        <div class="empty"><span class="spin"></span> считаю расход…</div>
+      </template>
+
+      <template x-if="!consLoading">
+        <div>
+          <table>
+            <thead><tr><th>Счётчик</th><th>Группа</th>
+              <th class="num">Расход, кВт·ч</th><th>Качество</th></tr></thead>
+            <tbody>
+              <template x-for="it in consItems" :key="it.device_id">
+                <tr @click="openDetail(it.device_id)" style="cursor:pointer">
+                  <td x-text="it.display_name"></td>
+                  <td class="muted" x-text="it.group||'—'"></td>
+                  <td class="num mono" x-text="it.consumption_kwh!=null ? fmt(it.consumption_kwh,3) : '—'"></td>
+                  <td><span class="q" :style="qualityStyle(it.quality)" x-text="qualityLabel(it.quality)"></span></td>
+                </tr>
+              </template>
+            </tbody>
+            <tfoot><tr><td colspan="2">Итого</td>
+              <td class="num mono" x-text="fmt(consTotal,3)"></td>
+              <td x-text="consAnyUnknown?'частично':''"></td></tr></tfoot>
+          </table>
+
+          <div class="chart-wrap" x-show="chartBars.length>0">
+            <h3 x-text="'Почасовой расход — '+(chartMeterName||'')"></h3>
+            <div x-html="chartSvg"></div>
+            <div class="muted" style="margin-top:8px">Кликните на счётчик в таблице, чтобы увидеть его почасовой график</div>
+          </div>
+        </div>
+      </template>
+    </div>
+  </template>
+
+  <!-- ===================== DETAIL MODAL ===================== -->
+  <template x-if="detail">
+    <div class="overlay" @click.self="detail=null">
+      <div class="modal">
+        <div class="modal-head">
+          <span class="dot" :style="`background:${statusColor(detail.status)}; width:11px; height:11px`"></span>
+          <span class="nm" x-text="detail.display_name"></span>
+          <span class="badge" :style="badgeStyle(detail.status)" x-text="statusLabel(detail.status)"></span>
+          <button class="close" @click="detail=null">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="muted" style="margin-bottom:14px">
+            <span x-text="detail.device_id"></span> ·
+            serial <span class="mono" x-text="detail.serial||'—'"></span> ·
+            <span x-text="detail.group||'без группы'"></span> ·
+            драйвер <span x-text="detail.driver||'—'"></span>
+          </div>
+          <template x-if="detail.status_reason">
+            <div class="warn-item" x-text="detail.status_reason"></div>
+          </template>
+          <div class="ctrl-grid" style="margin-top:14px">
+            <template x-for="(c,name) in detail.controls" :key="name">
+              <div class="ctrl">
+                <div class="ck" x-text="name"></div>
+                <div class="cv mono">
+                  <span x-text="c.numeric!=null ? fmt(c.numeric,3) : (c.value!=null?c.value:'—')"></span>
+                  <template x-if="c.error"><small style="color:var(--err)"> err</small></template>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+    </div>
+  </template>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.0/dist/cdn.min.js" defer></script>
+<script>
+function app(){ return {
+  tab:'dash',
+  theme: localStorage_get('theme','dark'),
+  loading:true,
+  meters:[], byStatus:{}, mqtt:{connected:false,messages:0,errors:0},
+  version:'', uptime:0,
+  detail:null,
+  // consumption
+  consLoading:false, consItems:[], consTotal:0, consAnyUnknown:false,
+  period:{preset:'this_month', from:'', to:''},
+  presets:[
+    {id:'today',label:'Сегодня'},{id:'yesterday',label:'Вчера'},
+    {id:'this_month',label:'Этот месяц'},{id:'last_month',label:'Прошлый месяц'},
+    {id:'last_7d',label:'7 дней'},{id:'last_30d',label:'30 дней'},
+  ],
+  chartBars:[], chartSvg:'', chartMeterName:'',
+  _timer:null,
+
+  init(){
+    this.refresh();
+    this._timer=setInterval(()=>{ if(this.tab=='dash') this.loadStatus(); }, 5000);
+  },
+  toggleTheme(){ this.theme=this.theme=='dark'?'light':'dark';
+    try{localStorage.setItem('theme',this.theme)}catch(e){} },
+  refresh(){ this.loadStatus(); if(this.tab=='consumption') this.loadConsumption(); },
+
+  async loadStatus(){
+    try{
+      const r=await fetch('/api/status'); const d=await r.json();
+      this.meters=d.meters||[]; this.byStatus=d.meters_by_status||{};
+      this.mqtt=d.mqtt||this.mqtt; this.version=d.version; this.uptime=d.uptime_s||0;
+    }catch(e){ console.error(e); }
+    this.loading=false;
+  },
+
+  get totalPowerKw(){ let s=0; this.meters.forEach(m=>{
+    const v=m.main_values&&m.main_values['Total P']; if(typeof v=='number') s+=v; });
+    return s.toFixed(3); },
+  get totalEnergy(){ let s=0; this.meters.forEach(m=>{
+    const v=m.main_values&&m.main_values['Total AP energy']; if(typeof v=='number') s+=v; });
+    return s.toFixed(2); },
+  get uptimeStr(){ const s=this.uptime; if(s<3600) return Math.floor(s/60)+'м';
+    if(s<86400) return (s/3600).toFixed(1)+'ч'; return (s/86400).toFixed(1)+'д'; },
+
+  statusColor(st){ return {ok:'var(--ok)',warning:'var(--warn)',
+    no_measurement:'var(--idle)',incomplete:'var(--warn)',
+    no_connection:'var(--err)',device_error:'var(--err)',
+    unknown:'var(--txt3)'}[st]||'var(--txt3)'; },
+  statusLabel(st){ return {ok:'OK',warning:'Внимание',
+    no_measurement:'Нет нагрузки',incomplete:'Нет фазы',
+    no_connection:'Нет связи',device_error:'Ошибка',
+    unknown:'—'}[st]||st; },
+  badgeStyle(st){ const c=this.statusColor(st);
+    return `background:${c}22; color:${c}; border:1px solid ${c}55`; },
+
+  qualityLabel(q){ return {ok:'OK',edge_approx:'~прибл.',gap:'разрыв',
+    reset:'сброс',no_data:'нет данных',stale:'нет обновл.'}[q]||q; },
+  qualityStyle(q){ const c={ok:'var(--ok)',edge_approx:'var(--info)',
+    gap:'var(--warn)',reset:'var(--err)',no_data:'var(--idle)',
+    stale:'var(--idle)'}[q]||'var(--txt3)';
+    return `background:${c}22; color:${c}`; },
+
+  fmt(v,d){ if(v==null||v===undefined||isNaN(v)) return '—';
+    return Number(v).toFixed(d); },
+
+  async openDetail(devId){
+    try{ const r=await fetch('/api/meters/'+encodeURIComponent(devId));
+      this.detail=await r.json(); }catch(e){ console.error(e); }
+    // also load hourly chart for consumption tab
+    if(this.tab=='consumption'){ this.loadHourly(devId); }
+  },
+
+  setPreset(id){ this.period.preset=id; this.period.from=''; this.period.to='';
+    this.loadConsumption(); },
+  setCustom(){ if(this.period.from&&this.period.to){ this.period.preset='';
+    this.loadConsumption(); } },
+  periodQuery(){ if(this.period.preset) return 'period='+this.period.preset;
+    return 'from='+this.period.from+'&to='+this.period.to; },
+
+  async loadConsumption(){
+    this.consLoading=true; this.chartBars=[]; this.chartSvg=''; this.chartMeterName='';
+    try{
+      const r=await fetch('/api/summary/consumption?'+this.periodQuery());
+      const d=await r.json();
+      this.consItems=d.items||[]; this.consTotal=d.consumption_kwh_total||0;
+      this.consAnyUnknown=d.any_unknown||false;
+    }catch(e){ console.error(e); }
+    this.consLoading=false;
+  },
+
+  async loadHourly(devId){
+    try{
+      const r=await fetch('/api/meters/'+encodeURIComponent(devId)+'/hourly?'+this.periodQuery());
+      const d=await r.json();
+      const items=d.items||[];
+      this.chartMeterName=d.display_name||devId;
+      this.chartBars=items.map(it=>({t:it.period_start, v:it.consumption_kwh}));
+      this.renderChart();
+    }catch(e){ console.error(e); }
+  },
+
+  renderChart(){
+    const bars=this.chartBars.filter(b=>b.v!=null);
+    if(bars.length==0){ this.chartSvg='<div class="muted">Нет данных за период</div>'; return; }
+    const W=Math.max(600, bars.length*14), H=200, pad=30;
+    const max=Math.max(...bars.map(b=>b.v), 0.001);
+    const bw=(W-pad*2)/bars.length;
+    let svg=`<svg viewBox="0 0 ${W} ${H}" style="width:100%; max-width:${W}px">`;
+    // axis
+    svg+=`<line x1="${pad}" y1="${H-pad}" x2="${W-pad}" y2="${H-pad}" stroke="var(--line)"/>`;
+    bars.forEach((b,i)=>{
+      const h=(b.v/max)*(H-pad*2);
+      const x=pad+i*bw, y=H-pad-h;
+      svg+=`<rect class="bar" x="${x+1}" y="${y}" width="${Math.max(1,bw-2)}" height="${h}" `+
+           `fill="var(--accent2)" rx="1"><title>${fmtTime(b.t)}: ${b.v.toFixed(3)} кВт·ч</title></rect>`;
+    });
+    svg+=`<text x="${pad}" y="14" fill="var(--txt2)" font-size="11">max ${max.toFixed(3)} кВт·ч</text>`;
+    svg+=`</svg>`;
+    this.chartSvg=svg;
+  },
+}; }
+
+function localStorage_get(k,def){ try{ return localStorage.getItem(k)||def; }catch(e){ return def; } }
+function fmtTime(ts){ const d=new Date(ts*1000);
+  return d.toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+</script>
+</body>
+</html>
