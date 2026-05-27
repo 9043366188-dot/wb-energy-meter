@@ -51,8 +51,15 @@ class MeterEntry:
 
 @dataclass
 class StatusConfig:
-    no_connection_timeout_s: int = 300
-    stale_warning_timeout_s: int = 60
+    # Нет ЛЮБЫХ сообщений от устройства дольше этого времени → no_connection.
+    # Для event-driven счётчиков (WB-MAP3E fw2) рекомендуется 600-1800 с,
+    # потому что счётчик молчит когда нет нагрузки, и опрос серийника
+    # раз в минуту — единственный признак жизни.
+    no_connection_timeout_s: int = 600
+
+    # Данные обновлялись, но давно — предупреждение.
+    stale_warning_timeout_s: int = 120
+
     undervoltage_v: float = 198.0
     overvoltage_v: float = 253.0
     phase_lost_v: float = 150.0

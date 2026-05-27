@@ -1,9 +1,8 @@
 # wb-energy-meter — пример конфига
+
 mqtt:
   host: 127.0.0.1
   port: 1883
-  keepalive: 30
-  client_id_prefix: wb-energy-meter
 
 http:
   host: 0.0.0.0
@@ -12,31 +11,24 @@ http:
 device_prefix: "wb-map3e_"
 
 status:
-  no_connection_timeout_s: 300
-  stale_warning_timeout_s: 60
+  # Нет ЛЮБЫХ сообщений дольше N секунд -> "нет связи".
+  # Для WB-MAP3E fw2 (event-driven) рекомендуется 600-1800 с.
+  # При включённом канале Uptime (раз в 2с) достаточно 60 с.
+  no_connection_timeout_s: 600
+  stale_warning_timeout_s: 120
   undervoltage_v: 198.0
   overvoltage_v: 253.0
   phase_lost_v: 150.0
   freq_min_hz: 49.0
   freq_max_hz: 51.0
 
-# Шаг 4: воркер почасовых агрегатов
 aggregator:
   enabled: true
-  # Сколько дней назад дотягивать catch-up при старте.
   catchup_days: 90
-  # Максимальное время фонового catch-up в секундах. После него
-  # поток корректно завершится; недостающее можно добить вручную:
-  #   wb-energy-meter-cli aggregates catchup --days 90
   max_catchup_duration_s: 300
-  # Сколько часов назад перепроверять на дыры (раз в patcher_interval_h).
-  recompute_recent_h: 168     # 7 суток
-  # Через сколько секунд после HH:00 запускать почасовой расчёт.
-  # Запас даёт wb-mqtt-db время записать значения завершившегося часа.
+  recompute_recent_h: 168
   hour_offset_s: 90
-  # Задержка перед стартом catch-up после запуска демона.
   catchup_start_delay_s: 10
-  # Интервал работы латальщика (часы).
   patcher_interval_h: 6
   rpc_timeout_s: 15.0
   rpc_max_retries: 3

@@ -12,12 +12,34 @@ from typing import Callable, Optional
 
 import paho.mqtt.client as mqtt
 
-from .model import ControlState, MeterRegistry, MeterState
+from .model import ControlState, MeterRegistry, MeterState, MEASUREMENT_CHANNELS
 
 
 log = logging.getLogger(__name__)
 
 TOPIC_RE = re.compile(r"^/devices/([^/]+)/(meta|controls)(?:/(.+))?$")
+
+# Порог «ненулевого» измерения:
+# напряжение > 10 В, ток > 0.01 А, мощность > 0.001 кВт
+_MEASUREMENT_THRESHOLDS = {
+    "voltage": 10.0,
+    "current": 0.01,
+    "power": 0.001,
+    "power_consumption": 0.0001,
+    "value": 0.0001,
+}
+
+
+def _is_nonzero_measurement(channel_name: str, ctrl: ControlState) -> bool:
+    """Вернуть True если канал измерительный и его значение выше порога."""
+    if channel_name not in MEASUREMENT_CHANNELS:
+        return False
+    v = ctrl.as_float()
+    if v is None:
+        return False
+    ch_type = ctrl.meta.get("type", "")
+    threshold = _MEASUREMENT_THRESHOLDS.get(ch_type, 0.0001)
+    return abs(v) > threshold
 
 
 class MqttService:
@@ -136,7 +158,7 @@ class MqttService:
             ctrl = ControlState(name=control_name, first_seen_ts=now)
             meter.controls[control_name] = ctrl
         if len(parts) == 1:
-            self._handle_control_value(ctrl, text)
+            self._handle_control_value(meter, ctrl, control_name, text, now)
             return
         if parts[1] == "meta":
             if len(parts) == 2:
@@ -161,8 +183,7 @@ class MqttService:
         elif rest == "driver":
             meter.driver = text.strip() or meter.driver
 
-    def _handle_control_value(self, ctrl, text):
-        now = time.time()
+    def _handle_control_value(self, meter, ctrl, control_name, text, now):
         ctrl.raw_value = text
         if ctrl.name == "Serial" or ctrl.meta.get("type") == "text":
             ctrl.value = text.strip()
@@ -170,6 +191,11 @@ class MqttService:
             ctrl.value = _parse_float_safe(text)
         ctrl.last_update_ts = now
         ctrl.update_count += 1
+
+        # Обновляем last_measurement_ts только если это измерительный канал
+        # с ненулевым значением выше порога.
+        if _is_nonzero_measurement(control_name, ctrl):
+            meter.last_measurement_ts = now
 
     def _handle_control_meta_json(self, ctrl, text):
         try:

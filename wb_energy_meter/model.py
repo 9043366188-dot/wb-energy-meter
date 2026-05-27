@@ -15,11 +15,25 @@ MAIN_CHANNELS: tuple[str, ...] = (
     "Total AP energy", "Total P", "Frequency", "Serial",
     "Urms L1", "Urms L2", "Urms L3",
     "Irms L1", "Irms L2", "Irms L3",
+    "Uptime",
 )
 
 NUMERIC_CONTROL_TYPES = {
     "voltage", "current", "power", "power_consumption", "value",
 }
+
+# Каналы, которые считаются "измерительными" — их обновление означает что
+# счётчик реально измеряет нагрузку, а не просто жив.
+# Serial, meta и служебные каналы сюда НЕ входят.
+MEASUREMENT_CHANNELS = frozenset({
+    "Urms L1", "Urms L2", "Urms L3",
+    "Irms L1", "Irms L2", "Irms L3",
+    "Total P", "Total Q", "Total S",
+    "P L1", "P L2", "P L3",
+    "Q L1", "Q L2", "Q L3",
+    "Frequency",
+    "Total AP energy", "Total AQ energy",
+})
 
 
 class MeterStatus(str, Enum):
@@ -91,6 +105,10 @@ class MeterState:
     controls: dict[str, ControlState] = field(default_factory=dict)
     first_seen_ts: float = 0.0
     last_any_ts: float = 0.0
+    # Отдельный timestamp для измерительных каналов с ненулевыми значениями.
+    # Обновляется только когда приходит U/I/P/F > порога.
+    # 0.0 означает «ни разу не было ненулевых измерений».
+    last_measurement_ts: float = 0.0
     status: MeterStatus = MeterStatus.UNKNOWN
     status_reason: str = ""
 
@@ -132,6 +150,11 @@ class MeterState:
             "last_update_ts": self.last_any_ts,
             "last_update_age_s": (
                 time.time() - self.last_any_ts if self.last_any_ts > 0 else None
+            ),
+            "last_measurement_ts": self.last_measurement_ts or None,
+            "last_measurement_age_s": (
+                time.time() - self.last_measurement_ts
+                if self.last_measurement_ts > 0 else None
             ),
             "main_values": main,
             "controls_count": len(self.controls),
