@@ -69,6 +69,7 @@ meters:
     # Retained для MQTT — чтобы счётчик был «жив»
     pub = mqtt.Client(client_id=f"step4-pub-{uuid.uuid4().hex[:6]}")
     pub.connect("127.0.0.1", 1883, 5)
+    pub.loop_start()
     msgs = [
         ("/devices/wb-map3e_16/meta", '{"driver":"wb-modbus"}'),
         ("/devices/wb-map3e_16/meta/name", "Тестовый"),
@@ -77,6 +78,7 @@ meters:
     ]
     for t, p in msgs:
         pub.publish(t, p, qos=1, retain=True).wait_for_publish(5)
+        pub.loop_stop()
     pub.disconnect()
 
     # Запускаем демон
