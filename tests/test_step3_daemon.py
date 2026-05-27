@@ -52,6 +52,7 @@ meters:
     # Заливаем retained-снимок счётчика, чтобы демон его увидел
     pub = mqtt.Client(client_id=f"e2e-pub-{uuid.uuid4().hex[:6]}")
     pub.connect("127.0.0.1", 1883, 5)
+    pub.loop_start()
     msgs = [
         ("/devices/wb-map3e_16/meta",
          '{"driver":"wb-modbus","title":{"en":"Тестовый"}}'),
@@ -69,6 +70,7 @@ meters:
     ]
     for t, p in msgs:
         pub.publish(t, p, qos=1, retain=True).wait_for_publish(5)
+        pub.loop_stop()
     pub.disconnect()
 
     # Запускаем демон
