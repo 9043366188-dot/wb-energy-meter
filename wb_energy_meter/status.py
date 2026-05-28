@@ -26,12 +26,17 @@ log = logging.getLogger(__name__)
 
 
 class StatusEngine:
-    def __init__(self, registry, status_cfg, interval_s=2.0):
+    def __init__(self, registry, status_cfg, interval_s=2.0,
+                 alert_repo=None, meters_repo=None):
         self._registry = registry
         self._cfg = status_cfg
         self._interval = interval_s
+        self._alert_repo = alert_repo
+        self._meters_repo = meters_repo
         self._stop_event = threading.Event()
         self._thread = None
+        # Предыдущие статусы для отслеживания переходов: device_id → status
+        self._prev_status: dict[str, str] = {}
 
     def start(self):
         if self._thread: return
@@ -57,9 +62,33 @@ class StatusEngine:
 
     def _recompute_one(self, meter):
         status, reason = self._classify(meter)
+        old_status = self._prev_status.get(meter.device_id)
         with self._registry.lock():
             meter.status = status
             meter.status_reason = reason
+        new_val = status.value
+        # Записываем переход если статус изменился
+        if old_status is not None and old_status != new_val:
+            self._record_transition(meter.device_id, old_status, new_val, reason)
+        self._prev_status[meter.device_id] = new_val
+
+    def _record_transition(self, device_id: str, old_status: str,
+                           new_status: str, detail: str) -> None:
+        """Записать переход статуса в историю событий."""
+        if self._alert_repo is None or self._meters_repo is None:
+            return
+        try:
+            m = self._meters_repo.get_by_device_id(device_id)
+            if m is None:
+                return
+            self._alert_repo.record_transition(
+                meter_id=m.id,
+                old_status=old_status,
+                new_status=new_status,
+                detail=detail or None,
+            )
+        except Exception as e:
+            log.debug("Не смог записать переход статуса %s: %s", device_id, e)
 
     def _classify(self, meter):
         now = time.time()

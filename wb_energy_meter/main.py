@@ -1,5 +1,3 @@
-"""Точка входа демона."""
-
 from __future__ import annotations
 
 import argparse
@@ -22,7 +20,7 @@ from .status import StatusEngine
 from .wb_db_client import WbDbClient
 from .aggregates_repo import AggregateRepo
 from .aggregator import Aggregator, AggregatorConfig
-
+from .alert_repo import AlertRepo
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +55,8 @@ def main(argv=None):
     log.info("Префикс:   %s", cfg.device_prefix)
 
     db = Database(path=args.db_path)
-    try: db.open()
+    try:
+        db.open()
     except Exception as e:
         log.error("Не удалось открыть БД: %s", e); return 4
 
@@ -84,7 +83,8 @@ def main(argv=None):
         for m in db_meters
     ])
     if len(db_meters) == 0:
-        log.warning("В реестре БД нет счётчиков. Добавьте через CLI.")
+        log.warning("В реестре БД нет счётчиков. "
+                    "Добавьте через CLI.")
 
     mqtt_service = MqttService(
         broker=cfg.mqtt.host, port=cfg.mqtt.port,
@@ -96,7 +96,9 @@ def main(argv=None):
     if not connected:
         log.warning("MQTT не подключился за 5 сек, продолжаем в фоне")
 
-    status_engine = StatusEngine(registry, cfg.status, interval_s=2.0)
+    status_engine = StatusEngine(
+        registry, cfg.status, interval_s=2.0,
+        alert_repo=AlertRepo(db), meters_repo=meters_repo)
     status_engine.start()
 
     bg_tasks = BackgroundTasks(registry, meters_repo, interval_s=60.0)
@@ -127,8 +129,6 @@ def main(argv=None):
     )
     aggregator.start()
 
-    # ConsumptionService теперь знает про агрегаты — будет использовать
-    # гибридный путь (агрегаты + хвосты RPC).
     consumption_service = ConsumptionService(
         wb_db_client,
         aggregates_repo=aggregates_repo,
@@ -139,6 +139,8 @@ def main(argv=None):
     api = ApiServer(
         host=cfg.http.host, port=cfg.http.port,
         registry=registry, meters_repo=meters_repo,
+        groups_repo=groups_repo,
+        alert_repo=AlertRepo(db),                         # ← история статусов
         is_mqtt_connected=lambda: mqtt_service.is_connected,
         mqtt_message_count=lambda: mqtt_service.message_count,
         mqtt_error_count=lambda: mqtt_service.error_count,

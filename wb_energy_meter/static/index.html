@@ -6,143 +6,239 @@
 <meta name="viewport" content="width=1100">
 <style>
 :root[data-theme="dark"]{
-  --bg:#0d1117; --bg2:#161b22; --bg3:#1c2330; --line:#2d3543;
-  --txt:#e6edf3; --txt2:#9aa7b6; --txt3:#6b7886;
-  --accent:#2f9e8f; --accent2:#3dd6c0;
-  --ok:#3fb950; --warn:#d29922; --idle:#7d8590; --err:#f85149; --info:#58a6ff;
-  --shadow:0 4px 16px rgba(0,0,0,.4);
+  --bg:#0d1117;--bg2:#161b22;--bg3:#1c2330;--line:#2d3543;
+  --txt:#e6edf3;--txt2:#9aa7b6;--txt3:#6b7886;
+  --accent:#2f9e8f;--accent2:#3dd6c0;
+  --ok:#3fb950;--warn:#d29922;--idle:#7d8590;--err:#f85149;--info:#58a6ff;
 }
 :root[data-theme="light"]{
-  --bg:#f4f6f9; --bg2:#ffffff; --bg3:#eef1f5; --line:#d6dde6;
-  --txt:#1a2027; --txt2:#5a6675; --txt3:#8a96a3;
-  --accent:#1a7d70; --accent2:#149484;
-  --ok:#1a7f37; --warn:#9a6700; --idle:#8a96a3; --err:#cf222e; --info:#0969da;
-  --shadow:0 2px 10px rgba(0,0,0,.08);
+  --bg:#f4f6f9;--bg2:#ffffff;--bg3:#eef1f5;--line:#d6dde6;
+  --txt:#1a2027;--txt2:#5a6675;--txt3:#8a96a3;
+  --accent:#1a7d70;--accent2:#149484;
+  --ok:#1a7f37;--warn:#9a6700;--idle:#8a96a3;--err:#cf222e;--info:#0969da;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--txt);
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-  font-size:14px;line-height:1.4;min-height:100vh;}
-.mono{font-family:"SF Mono","JetBrains Mono","Cascadia Code",Consolas,monospace;
-  font-variant-numeric:tabular-nums;}
+  font-size:14px;line-height:1.4;min-height:100vh}
+.mono{font-family:"SF Mono","JetBrains Mono",Consolas,monospace;font-variant-numeric:tabular-nums}
 header{background:var(--bg2);border-bottom:1px solid var(--line);
-  padding:0 24px;height:56px;display:flex;align-items:center;
-  gap:20px;position:sticky;top:0;z-index:10;}
-.logo{font-weight:700;font-size:17px;letter-spacing:-.3px;}
-.logo span{color:var(--accent2);}
-.dot{width:7px;height:7px;border-radius:50%;display:inline-block;}
-.conn{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--txt2);}
-nav{display:flex;gap:4px;margin-left:8px;}
+  padding:0 24px;height:56px;display:flex;align-items:center;gap:20px;
+  position:sticky;top:0;z-index:10}
+.logo{font-weight:700;font-size:17px;letter-spacing:-.3px}
+.logo span{color:var(--accent2)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+.conn{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--txt2)}
+nav{display:flex;gap:4px;margin-left:8px}
 nav button{background:none;border:none;color:var(--txt2);cursor:pointer;
-  padding:8px 14px;border-radius:6px;font-size:13px;font-weight:500;}
-nav button:hover{background:var(--bg3);color:var(--txt);}
-nav button.active{background:var(--accent);color:#fff;}
-.spacer{flex:1;}
+  padding:8px 14px;border-radius:6px;font-size:13px;font-weight:500}
+nav button:hover{background:var(--bg3);color:var(--txt)}
+nav button.active{background:var(--accent);color:#fff}
+.spacer{flex:1}
 .ico-btn{background:var(--bg3);border:1px solid var(--line);color:var(--txt2);
-  cursor:pointer;padding:7px 11px;border-radius:6px;font-size:13px;}
-.ico-btn:hover{color:var(--txt);border-color:var(--accent);}
-main{padding:24px;max-width:1400px;margin:0 auto;}
+  cursor:pointer;padding:7px 11px;border-radius:6px;font-size:13px}
+.ico-btn:hover{color:var(--txt);border-color:var(--accent)}
+main{padding:24px;max-width:1400px;margin:0 auto}
 /* tiles */
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
-  gap:14px;margin-bottom:24px;}
-.tile{background:var(--bg2);border:1px solid var(--line);border-radius:10px;
-  padding:16px 18px;}
+  gap:14px;margin-bottom:24px}
+.tile{background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:16px 18px}
 .tile .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.6px;
-  color:var(--txt3);margin-bottom:8px;font-weight:600;}
-.tile .val{font-size:28px;font-weight:700;}
-.tile .val small{font-size:14px;color:var(--txt2);font-weight:500;}
-.tile .sub{font-size:12px;color:var(--txt2);margin-top:4px;}
-.statusline{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;}
-.statusline span{display:flex;align-items:center;gap:5px;font-size:12px;}
+  color:var(--txt3);margin-bottom:8px;font-weight:600}
+.tile .val{font-size:28px;font-weight:700}
+.tile .val small{font-size:14px;color:var(--txt2);font-weight:500}
+.tile .sub{font-size:12px;color:var(--txt2);margin-top:4px}
+.statusline{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px}
+.statusline span{display:flex;align-items:center;gap:5px;font-size:12px}
 /* cards */
 .section-title{font-size:13px;text-transform:uppercase;letter-spacing:.6px;
-  color:var(--txt3);font-weight:600;margin:0 0 12px 2px;}
-.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px;}
+  color:var(--txt3);font-weight:600;margin:0 0 12px 2px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px}
 .card{background:var(--bg2);border:1px solid var(--line);border-radius:10px;
-  padding:0;overflow:hidden;cursor:pointer;transition:border-color .15s;}
-.card:hover{border-color:var(--accent);}
-.card-head{display:flex;align-items:center;gap:10px;padding:14px 16px 10px;}
+  overflow:hidden;cursor:pointer;transition:border-color .15s}
+.card:hover{border-color:var(--accent)}
+.card-head{display:flex;align-items:center;gap:10px;padding:14px 16px 10px}
 .card-head .nm{font-weight:600;font-size:15px;flex:1;overflow:hidden;
-  text-overflow:ellipsis;white-space:nowrap;}
+  text-overflow:ellipsis;white-space:nowrap}
 .badge{font-size:10px;font-weight:700;text-transform:uppercase;
-  letter-spacing:.4px;padding:3px 7px;border-radius:5px;}
-.card-grp{font-size:11px;color:var(--txt3);padding:0 16px 6px;}
-.card-body{padding:0 16px 14px;display:grid;grid-template-columns:1fr 1fr;gap:10px 12px;}
-.metric .k{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--txt3);}
-.metric .v{font-size:18px;font-weight:600;margin-top:2px;}
-.metric .v small{font-size:11px;color:var(--txt2);font-weight:400;}
-.phases{grid-column:1/-1;display:flex;gap:6px;margin-top:2px;}
-.phase{flex:1;background:var(--bg3);border-radius:5px;padding:6px 4px;text-align:center;}
-.phase .pk{font-size:9px;color:var(--txt3);}
-.phase .pv{font-size:13px;font-weight:600;margin-top:1px;}
-/* card footer — аптайм и время обновления */
+  letter-spacing:.4px;padding:3px 7px;border-radius:5px}
+.card-grp{font-size:11px;color:var(--txt3);padding:0 16px 6px}
+.card-body{padding:0 16px 14px;display:grid;grid-template-columns:1fr 1fr;gap:10px 12px}
+.metric .k{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--txt3)}
+.metric .v{font-size:18px;font-weight:600;margin-top:2px}
+.metric .v small{font-size:11px;color:var(--txt2);font-weight:400}
+.phases{grid-column:1/-1;display:flex;gap:6px;margin-top:2px}
+.phase{flex:1;background:var(--bg3);border-radius:5px;padding:6px 4px;text-align:center}
+.phase .pk{font-size:9px;color:var(--txt3)}
+.phase .pv{font-size:13px;font-weight:600;margin-top:1px}
 .card-footer{grid-column:1/-1;display:flex;justify-content:space-between;
-  align-items:center;margin-top:4px;padding-top:8px;border-top:1px solid var(--line);}
-.card-footer .cf-item{font-size:11px;color:var(--txt3);}
-.card-footer .cf-val{color:var(--txt2);font-weight:500;}
-.cf-ok{color:var(--ok);}
-.cf-warn{color:var(--warn);}
-.cf-err{color:var(--err);}
+  align-items:center;margin-top:4px;padding-top:8px;border-top:1px solid var(--line)}
+.card-footer .cf-item{font-size:11px;color:var(--txt3)}
+.card-footer .cf-val{color:var(--txt2);font-weight:500}
+.cf-ok{color:var(--ok)}.cf-warn{color:var(--warn)}.cf-err{color:var(--err)}
 .reason{grid-column:1/-1;font-size:11px;color:var(--txt2);
-  background:var(--bg3);border-radius:6px;padding:8px 10px;margin-top:2px;}
+  background:var(--bg3);border-radius:6px;padding:8px 10px;margin-top:2px}
 /* table */
 table{width:100%;border-collapse:collapse;background:var(--bg2);
-  border:1px solid var(--line);border-radius:10px;overflow:hidden;}
-th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);}
+  border:1px solid var(--line);border-radius:10px;overflow:hidden}
+th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line)}
 th{font-size:11px;text-transform:uppercase;letter-spacing:.5px;
-  color:var(--txt3);font-weight:600;background:var(--bg3);}
-td.num{text-align:right;}
-tr:last-child td{border-bottom:none;}
-tbody tr:hover{background:var(--bg3);}
-tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line);}
+  color:var(--txt3);font-weight:600;background:var(--bg3)}
+td.num{text-align:right}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--bg3)}
+tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 /* periods */
-.periods{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;align-items:center;}
+.periods{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;align-items:center}
 .periods button{background:var(--bg2);border:1px solid var(--line);
   color:var(--txt2);cursor:pointer;padding:8px 14px;border-radius:7px;
-  font-size:13px;font-weight:500;}
-.periods button:hover{color:var(--txt);border-color:var(--accent);}
-.periods button.active{background:var(--accent);color:#fff;border-color:var(--accent);}
-.periods .custom{display:flex;gap:6px;align-items:center;margin-left:8px;}
+  font-size:13px;font-weight:500}
+.periods button:hover{color:var(--txt);border-color:var(--accent)}
+.periods button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.periods .custom{display:flex;gap:6px;align-items:center;margin-left:8px}
 .periods input[type=date]{background:var(--bg2);border:1px solid var(--line);
-  color:var(--txt);padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit;}
-/* quality */
+  color:var(--txt);padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit}
 .q{font-size:10px;font-weight:700;text-transform:uppercase;padding:2px 7px;
-  border-radius:4px;letter-spacing:.3px;}
-/* chart */
+  border-radius:4px;letter-spacing:.3px}
 .chart-wrap{background:var(--bg2);border:1px solid var(--line);
-  border-radius:10px;padding:18px;margin-top:18px;}
-.chart-wrap h3{font-size:14px;margin-bottom:14px;font-weight:600;}
-.bar:hover{opacity:.8;}
-/* loader */
-.empty{text-align:center;color:var(--txt3);padding:50px 20px;font-size:14px;}
+  border-radius:10px;padding:18px;margin-top:18px}
+.chart-wrap h3{font-size:14px;margin-bottom:14px;font-weight:600}
+.bar:hover{opacity:.8}
+.empty{text-align:center;color:var(--txt3);padding:50px 20px;font-size:14px}
 .spin{display:inline-block;width:18px;height:18px;
   border:2px solid var(--line);border-top-color:var(--accent);
-  border-radius:50%;animation:sp .7s linear infinite;vertical-align:middle;}
+  border-radius:50%;animation:sp .7s linear infinite;vertical-align:middle}
 @keyframes sp{to{transform:rotate(360deg)}}
 /* modal */
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);
   display:flex;align-items:flex-start;justify-content:center;
-  padding:40px 20px;z-index:50;overflow-y:auto;}
+  padding:40px 20px;z-index:50;overflow-y:auto}
 .modal{background:var(--bg2);border:1px solid var(--line);border-radius:12px;
-  max-width:880px;width:100%;box-shadow:var(--shadow);}
+  max-width:880px;width:100%;box-shadow:0 4px 16px rgba(0,0,0,.4)}
 .modal-head{display:flex;align-items:center;gap:12px;padding:18px 22px;
   border-bottom:1px solid var(--line);position:sticky;top:0;
-  background:var(--bg2);border-radius:12px 12px 0 0;}
-.modal-head .nm{font-size:18px;font-weight:700;flex:1;}
-.modal-body{padding:22px;}
-.ctrl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;}
-.ctrl{background:var(--bg3);border-radius:7px;padding:10px 12px;}
+  background:var(--bg2);border-radius:12px 12px 0 0}
+.modal-head .nm{font-size:18px;font-weight:700;flex:1}
+.modal-body{padding:22px}
+.ctrl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
+.ctrl{background:var(--bg3);border-radius:7px;padding:10px 12px}
 .ctrl .ck{font-size:10px;color:var(--txt3);text-transform:uppercase;
-  letter-spacing:.3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.ctrl .cv{font-size:16px;font-weight:600;margin-top:3px;}
-.ctrl .cv small{font-size:11px;color:var(--txt2);font-weight:400;}
+  letter-spacing:.3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ctrl .cv{font-size:16px;font-weight:600;margin-top:3px}
 .close{background:none;border:none;color:var(--txt2);cursor:pointer;
-  font-size:22px;line-height:1;padding:4px 8px;border-radius:6px;}
-.close:hover{background:var(--bg3);color:var(--txt);}
+  font-size:22px;line-height:1;padding:4px 8px;border-radius:6px}
+.close:hover{background:var(--bg3);color:var(--txt)}
 .warn-item{font-size:12px;color:var(--warn);background:var(--bg3);
   border-left:3px solid var(--warn);padding:8px 12px;
-  border-radius:0 6px 6px 0;margin-bottom:6px;}
-.muted{color:var(--txt3);font-size:12px;}
+  border-radius:0 6px 6px 0;margin-bottom:6px}
+.muted{color:var(--txt3);font-size:12px}
+/* zones */
+.zone-header{display:flex;align-items:center;gap:12px;margin:20px 0 10px;padding-left:4px}
+.zone-badge{width:12px;height:12px;border-radius:3px;flex-shrink:0}
+.zone-title{font-size:14px;font-weight:700;letter-spacing:-.2px}
+.zone-summary{font-size:12px;color:var(--txt2);margin-left:4px}
+.zone-section{margin-bottom:20px}
+.zone-section:first-child .zone-header{margin-top:0}
+/* settings page */
+.settings-section{margin-bottom:28px}
+.settings-section h2{font-size:15px;font-weight:700;margin-bottom:14px;
+  padding-bottom:8px;border-bottom:1px solid var(--line)}
+.reg-table{width:100%;border-collapse:collapse;background:var(--bg2);
+  border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.reg-table th,.reg-table td{text-align:left;padding:10px 14px;
+  border-bottom:1px solid var(--line)}
+.reg-table th{font-size:11px;text-transform:uppercase;letter-spacing:.5px;
+  color:var(--txt3);font-weight:600;background:var(--bg3)}
+.reg-table tr:last-child td{border-bottom:none}
+.reg-table tbody tr:hover{background:var(--bg3)}
+.btn{border:none;cursor:pointer;padding:6px 12px;border-radius:6px;
+  font-size:12px;font-weight:600;transition:opacity .1s}
+.btn:hover{opacity:.8}
+.btn-sm{padding:4px 10px;font-size:11px}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-danger{background:var(--err);color:#fff}
+.btn-secondary{background:var(--bg3);border:1px solid var(--line);color:var(--txt)}
+.btn-success{background:var(--ok);color:#fff}
+/* inline edit inputs */
+.edit-row input,.edit-row select{background:var(--bg3);border:1px solid var(--accent);
+  color:var(--txt);padding:5px 9px;border-radius:5px;font-size:13px;
+  font-family:inherit;width:100%}
+/* scan results */
+.unregistered-list{display:flex;flex-direction:column;gap:8px}
+.unrg-item{background:var(--bg2);border:1px solid var(--line);border-radius:8px;
+  padding:12px 16px;display:flex;align-items:center;gap:12px}
+.unrg-item .unrg-info{flex:1}
+.unrg-item .unrg-id{font-family:monospace;font-size:13px;font-weight:600}
+.unrg-item .unrg-sub{font-size:11px;color:var(--txt3);margin-top:2px}
+/* confirm dialog */
+.confirm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);
+  display:flex;align-items:center;justify-content:center;z-index:100}
+.confirm-box{background:var(--bg2);border:1px solid var(--line);
+  border-radius:12px;padding:28px;max-width:400px;width:90%;
+  box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.confirm-box h3{font-size:16px;font-weight:700;margin-bottom:10px}
+.confirm-box p{color:var(--txt2);font-size:14px;margin-bottom:20px}
+.confirm-box .actions{display:flex;gap:10px;justify-content:flex-end}
+/* toast */
+.toast{position:fixed;bottom:24px;right:24px;z-index:200;
+  padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;
+  box-shadow:0 4px 16px rgba(0,0,0,.3);animation:fadein .2s ease}
+@keyframes fadein{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.toast-ok{background:var(--ok);color:#fff}
+.toast-err{background:var(--err);color:#fff}
+/* reports */
+.report-tabs{display:flex;gap:4px;margin-bottom:20px;background:var(--bg2);
+  border:1px solid var(--line);border-radius:8px;padding:4px}
+.report-tabs button{flex:1;background:none;border:none;color:var(--txt2);
+  cursor:pointer;padding:9px 12px;border-radius:6px;font-size:13px;font-weight:500}
+.report-tabs button:hover{color:var(--txt);background:var(--bg3)}
+.report-tabs button.active{background:var(--accent);color:#fff}
+.report-row{display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap}
+.report-row label{font-size:12px;color:var(--txt2);font-weight:500}
+.report-row select{background:var(--bg2);border:1px solid var(--line);
+  color:var(--txt);padding:7px 10px;border-radius:6px;font-size:13px;font-family:inherit}
+.dl-btn{background:var(--ok);color:#fff;border:none;cursor:pointer;
+  padding:8px 16px;border-radius:7px;font-size:13px;font-weight:600}
+.dl-btn:hover{opacity:.88}
+.rep-table{width:100%;border-collapse:collapse;background:var(--bg2);
+  border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-top:4px}
+.rep-table th,.rep-table td{text-align:left;padding:10px 14px;
+  border-bottom:1px solid var(--line);font-size:13px}
+.rep-table th{font-size:11px;text-transform:uppercase;letter-spacing:.5px;
+  color:var(--txt3);font-weight:600;background:var(--bg3)}
+.rep-table td.num{text-align:right;font-family:monospace}
+.rep-table tr:last-child td{border-bottom:none}
+.rep-table tfoot td{font-weight:700;background:var(--bg3);
+  border-top:2px solid var(--line)}
+.rep-table tbody tr:hover{background:var(--bg3)}
+.zone-sep td{background:var(--bg3)!important;font-weight:700;color:var(--txt2);
+  font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:6px 14px}
+.delta-pos{color:var(--err)}
+.delta-neg{color:var(--ok)}
+.delta-neu{color:var(--txt2)}
+.profile-wrap{background:var(--bg2);border:1px solid var(--line);
+  border-radius:10px;padding:18px;margin-top:4px}
+.profile-meta{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:16px}
+.profile-meta .pm{background:var(--bg3);border-radius:7px;padding:10px 16px}
+.profile-meta .pm .pk{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--txt3)}
+.profile-meta .pm .pv{font-size:20px;font-weight:700;margin-top:3px}
+.cmp-header{font-size:12px;color:var(--txt3);font-weight:600}
+/* roles */
+.role-btn{border:1px solid var(--line);background:var(--bg3);color:var(--txt2);
+  cursor:pointer;padding:4px 10px;border-radius:5px;font-size:11px;font-weight:600}
+.role-btn.active-input{background:#1a7f37;color:#fff;border-color:#1a7f37}
+.role-btn.active-consumer{background:var(--accent);color:#fff;border-color:var(--accent)}
+.role-btn.active-other{background:var(--txt3);color:#fff;border-color:var(--txt3)}
+/* availability */
+.avail-bar-wrap{background:var(--bg3);border-radius:4px;overflow:hidden;height:8px;
+  width:120px;display:inline-block;vertical-align:middle}
+.avail-bar{height:100%;border-radius:4px;transition:width .3s}
+.avail-100{background:var(--ok)}.avail-99{background:var(--ok)}
+.avail-95{background:var(--warn)}.avail-low{background:var(--err)}
+.incident-row{background:var(--bg3);border-radius:6px;padding:8px 12px;
+  margin-bottom:6px;font-size:12px}
+.incident-row .ir-time{color:var(--txt2);font-family:monospace}
+.incident-row .ir-dur{color:var(--txt3);margin-left:12px}
 </style>
 </head>
 <body>
@@ -155,6 +251,8 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line);
   <nav>
     <button :class="{active:tab=='dash'}" @click="tab='dash'">Дашборд</button>
     <button :class="{active:tab=='consumption'}" @click="tab='consumption';loadConsumption()">Расход</button>
+    <button :class="{active:tab=='settings'}" @click="tab='settings';loadSettings()">Настройки</button>
+    <button :class="{active:tab=='reports'}" @click="tab='reports';initReports()">Отчёты</button>
   </nav>
   <div class="spacer"></div>
   <span class="muted mono" x-text="version?'v'+version:''"></span>
@@ -195,24 +293,39 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line);
           <div class="sub">ошибок: <span x-text="mqtt.errors"></span> · аптайм <span x-text="uptimeStr"></span></div>
         </div>
       </div>
-
       <div class="section-title">Счётчики</div>
       <template x-if="loading">
         <div class="empty"><span class="spin"></span> загрузка…</div>
       </template>
       <template x-if="!loading && meters.length==0">
-        <div class="empty">Нет счётчиков. Добавьте: <code>wb-energy-meter-cli scan --add-all</code></div>
+        <div class="empty">Нет счётчиков. Добавьте на вкладке <b>Настройки</b>.</div>
       </template>
-
-      <div class="cards">
-        <template x-for="m in meters" :key="m.device_id">
-          <div class="card" @click="openDetail(m.device_id)">
+      <template x-for="zone in groupedMeters" :key="zone.name">
+        <div class="zone-section">
+          <div class="zone-header">
+            <span class="zone-badge" :style="`background:${zoneColor(zone.name)}`"></span>
+            <span class="zone-title" x-text="zone.name"></span>
+            <span class="zone-summary"
+              x-text="zone.meters.length + ' шт · ' + zonePower(zone.meters) + ' кВт'"></span>
+          </div>
+          <div class="cards">
+            <template x-for="m in zone.meters" :key="m.device_id">
+              <div class="card" @click="openDetail(m.device_id)">
             <div class="card-head">
               <span class="dot" :style="`background:${statusColor(m.status)};width:10px;height:10px`"></span>
               <span class="nm" x-text="m.display_name"></span>
               <span class="badge" :style="badgeStyle(m.status)" x-text="statusLabel(m.status)"></span>
+              <template x-if="m.role==='input'">
+                <span style="font-size:10px;font-weight:700;color:var(--ok);
+                  border:1px solid var(--ok);padding:2px 6px;border-radius:4px">ВВОД</span>
+              </template>
             </div>
             <div class="card-grp" x-text="m.group||'— без группы —'"></div>
+            <template x-if="m.notes">
+              <div style="font-size:11px;color:var(--txt2);font-style:italic;
+                          padding:0 16px 6px;line-height:1.4"
+                   x-text="m.notes"></div>
+            </template>
             <div class="card-body">
               <div class="metric">
                 <div class="k">Мощность</div>
@@ -230,20 +343,17 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line);
                   </div>
                 </template>
               </div>
-              <!-- Аптайм счётчика и время последнего обновления -->
               <div class="card-footer">
                 <div class="cf-item">
                   <template x-if="meterUptime(m)">
                     <span>⏱ аптайм: <span class="cf-val" x-text="meterUptime(m)"></span></span>
                   </template>
                   <template x-if="!meterUptime(m)">
-                    <span>⏱ аптайм: <span class="muted">—</span></span>
+                    <span class="muted">⏱ аптайм: —</span>
                   </template>
                 </div>
-                <div class="cf-item">
-                  <span :class="updateAgeClass(m.last_update_age_s)">
-                    <span x-text="fmtAge(m.last_update_age_s)"></span>
-                  </span>
+                <div :class="updateAgeClass(m.last_update_age_s)">
+                  <span x-text="fmtAge(m.last_update_age_s)"></span>
                 </div>
               </div>
               <template x-if="m.status!='ok' && m.status_reason">
@@ -295,10 +405,800 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line);
           <div class="chart-wrap" x-show="chartBars.length>0">
             <h3 x-text="'Почасовой расход — '+(chartMeterName||'')"></h3>
             <div x-html="chartSvg"></div>
-            <div class="muted" style="margin-top:8px">Кликните на счётчик в таблице для графика</div>
+            <div class="muted" style="margin-top:8px">Кликните на счётчик для графика</div>
           </div>
         </div>
       </template>
+    </div>
+  </template>
+
+  <!-- SETTINGS -->
+  <template x-if="tab=='settings'">
+    <div>
+      <!-- Управление зонами -->
+      <div class="settings-section">
+        <h2>Зоны</h2>
+        <table class="reg-table" style="margin-bottom:12px">
+          <thead><tr>
+            <th style="width:20px"></th>
+            <th>Название</th><th>Счётчиков</th><th style="width:200px">Действия</th>
+          </tr></thead>
+          <tbody>
+            <template x-for="z in zones" :key="z.id">
+              <tr>
+                <td><span class="zone-badge" :style="`background:${zoneColor(z.name)};width:10px;height:10px;display:inline-block;border-radius:3px`"></span></td>
+                <template x-if="zoneEditId !== z.id">
+                  <td style="font-weight:600" x-text="z.name"></td>
+                </template>
+                <template x-if="zoneEditId === z.id">
+                  <td class="edit-row">
+                    <input x-model="zoneEditName"
+                           @keydown.enter="saveZoneEdit(z.id)"
+                           @keydown.escape="zoneEditId=null">
+                  </td>
+                </template>
+                <td class="muted" x-text="z.meter_count + ' шт'"></td>
+                <td>
+                  <template x-if="zoneEditId !== z.id">
+                    <div style="display:flex;gap:6px">
+                      <button class="btn btn-sm btn-secondary" @click="startZoneEdit(z)">✏ Переименовать</button>
+                      <button class="btn btn-sm btn-danger" @click="askDeleteZone(z)">✕</button>
+                    </div>
+                  </template>
+                  <template x-if="zoneEditId === z.id">
+                    <div style="display:flex;gap:6px">
+                      <button class="btn btn-sm btn-success" @click="saveZoneEdit(z.id)">✓ Сохранить</button>
+                      <button class="btn btn-sm btn-secondary" @click="zoneEditId=null">Отмена</button>
+                    </div>
+                  </template>
+                </td>
+              </tr>
+            </template>
+            <template x-if="zones.length===0">
+              <tr><td colspan="4" style="text-align:center;color:var(--txt3);padding:16px">
+                Зон пока нет. Создайте первую.
+              </td></tr>
+            </template>
+          </tbody>
+        </table>
+        <!-- Создать новую зону -->
+        <div style="display:flex;gap:8px;align-items:center">
+          <input x-model="zoneNewName" placeholder="Название новой зоны"
+                 @keydown.enter="createZone()"
+                 style="background:var(--bg3);border:1px solid var(--line);
+                        color:var(--txt);padding:7px 11px;border-radius:6px;
+                        font-size:13px;font-family:inherit;width:220px">
+          <button class="btn btn-primary" @click="createZone()">+ Создать зону</button>
+        </div>
+      </div>
+
+      <!-- Зарегистрированные счётчики -->
+      <div class="settings-section">
+        <h2>Зарегистрированные счётчики</h2>
+        <template x-if="settingsLoading">
+          <div class="empty"><span class="spin"></span> загрузка…</div>
+        </template>
+        <template x-if="!settingsLoading">
+          <table class="reg-table">
+            <thead><tr>
+              <th>Имя</th><th>Группа</th><th>Комментарий</th><th>Роль</th><th>device_id</th>
+              <th>Serial</th><th style="width:160px">Действия</th>
+            </tr></thead>
+            <tbody>
+              <template x-for="m in regMeters" :key="m.device_id">
+                <tr>
+                  <!-- Обычный режим -->
+                  <template x-if="editingId !== m.device_id">
+                    <td x-text="m.display_name"></td>
+                  </template>
+                  <template x-if="editingId === m.device_id">
+                    <td class="edit-row">
+                      <input x-model="editName" @keydown.enter="saveEdit(m.device_id)" @keydown.escape="editingId=null">
+                    </td>
+                  </template>
+                  <template x-if="editingId !== m.device_id">
+                    <td class="muted" x-text="m.group_name||'—'"></td>
+                  </template>
+                  <template x-if="editingId !== m.device_id">
+                    <td class="muted" style="font-style:italic;font-size:12px;max-width:180px;
+                        overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                        x-text="m.notes||'—'" :title="m.notes||''"></td>
+                  </template>
+                  <template x-if="editingId === m.device_id">
+                    <td class="edit-row">
+                      <input x-model="editNotes" placeholder="комментарий (необяз.)"
+                             @keydown.escape="editingId=null" style="font-style:italic">
+                    </td>
+                  </template>
+                  <!-- Роль — обычный режим -->
+                  <template x-if="editingId !== m.device_id">
+                    <td>
+                      <span :style="`color:${roleColor(m.role)};font-weight:600;font-size:12px`"
+                            x-text="roleLabel(m.role)"></span>
+                    </td>
+                  </template>
+                  <!-- Роль — режим редактирования -->
+                  <template x-if="editingId === m.device_id">
+                    <td style="white-space:nowrap">
+                      <button class="role-btn" :class="editRole==='input'?'active-input':''"
+                        @click="editRole='input'">Ввод</button>
+                      <button class="role-btn" :class="editRole==='consumer'?'active-consumer':''"
+                        @click="editRole='consumer'">Потребитель</button>
+                      <button class="role-btn" :class="editRole==='other'?'active-other':''"
+                        @click="editRole='other'">Прочее</button>
+                    </td>
+                  </template>
+                  <template x-if="editingId === m.device_id">
+                    <td class="edit-row">
+                      <input x-model="editGroup" placeholder="группа (необяз.)"
+                             @keydown.enter="saveEdit(m.device_id)" @keydown.escape="editingId=null"
+                             list="groups-list">
+                      <datalist id="groups-list">
+                        <template x-for="g in allGroups" :key="g">
+                          <option :value="g"></option>
+                        </template>
+                      </datalist>
+                    </td>
+                  </template>
+                  <td class="muted mono" style="font-size:12px" x-text="m.device_id"></td>
+                  <td class="muted mono" style="font-size:12px" x-text="m.serial_number||'—'"></td>
+                  <td>
+                    <template x-if="editingId !== m.device_id">
+                      <div style="display:flex;gap:6px">
+                        <button class="btn btn-sm btn-secondary"
+                          @click="startEdit(m)">✏ Изменить</button>
+                        <button class="btn btn-sm btn-danger"
+                          @click="askDelete(m)">✕</button>
+                      </div>
+                    </template>
+                    <template x-if="editingId === m.device_id">
+                      <div style="display:flex;gap:6px">
+                        <button class="btn btn-sm btn-success"
+                          @click="saveEdit(m.device_id)">✓ Сохранить</button>
+                        <button class="btn btn-sm btn-secondary"
+                          @click="editingId=null">Отмена</button>
+                      </div>
+                    </template>
+                  </td>
+                </tr>
+              </template>
+              <template x-if="regMeters.length===0">
+                <tr><td colspan="5" style="text-align:center;color:var(--txt3);padding:20px">
+                  Реестр пуст. Добавьте счётчики через кнопку «Сканировать».
+                </td></tr>
+              </template>
+            </tbody>
+          </table>
+        </template>
+      </div>
+
+      <!-- Незарегистрированные счётчики -->
+      <div class="settings-section">
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+          <h2 style="margin:0;border:none;padding:0">Найдены в MQTT, не в реестре</h2>
+          <button class="btn btn-secondary" @click="scanUnregistered()" style="font-size:12px">
+            <span x-show="!scanLoading">🔍 Сканировать</span>
+            <span x-show="scanLoading"><span class="spin"></span> Сканирование…</span>
+          </button>
+        </div>
+        <template x-if="unregistered.length===0 && !scanLoading">
+          <div style="color:var(--txt3);font-size:13px;padding:12px 0">
+            Все счётчики из MQTT уже в реестре.
+          </div>
+        </template>
+        <div class="unregistered-list">
+          <template x-for="u in unregistered" :key="u.device_id">
+            <div class="unrg-item">
+              <div class="unrg-info">
+                <div class="unrg-id" x-text="u.device_id"></div>
+                <div class="unrg-sub">
+                  <span x-text="u.mqtt_name ? 'MQTT: '+u.mqtt_name : ''"></span>
+                  <span x-show="u.serial"> · серийник: <span x-text="u.serial"></span></span>
+                  <span x-show="u.last_update_age_s!=null">
+                    · обновление <span x-text="fmtAge(u.last_update_age_s)"></span>
+                  </span>
+                </div>
+              </div>
+              <!-- Форма быстрого добавления -->
+              <template x-if="addingId !== u.device_id">
+                <button class="btn btn-primary btn-sm"
+                  @click="startAdd(u)">+ Добавить</button>
+              </template>
+              <template x-if="addingId === u.device_id">
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                  <input x-model="addName" placeholder="Имя счётчика"
+                         style="background:var(--bg3);border:1px solid var(--accent);
+                                color:var(--txt);padding:5px 9px;border-radius:5px;
+                                font-size:13px;font-family:inherit;width:180px"
+                         @keydown.enter="confirmAdd(u.device_id)" @keydown.escape="addingId=null">
+                  <input x-model="addGroup" placeholder="Группа"
+                         style="background:var(--bg3);border:1px solid var(--line);
+                                color:var(--txt);padding:5px 9px;border-radius:5px;
+                                font-size:13px;font-family:inherit;width:130px"
+                         list="groups-list2" @keydown.enter="confirmAdd(u.device_id)" @keydown.escape="addingId=null">
+                  <input x-model="addNotes" placeholder="Комментарий"
+                         style="background:var(--bg3);border:1px solid var(--line);
+                                color:var(--txt);padding:5px 9px;border-radius:5px;
+                                font-size:13px;font-family:inherit;width:160px;font-style:italic"
+                         @keydown.enter="confirmAdd(u.device_id)" @keydown.escape="addingId=null">
+                  <datalist id="groups-list2">
+                    <template x-for="g in allGroups" :key="g">
+                      <option :value="g"></option>
+                    </template>
+                  </datalist>
+                  <button class="btn btn-success btn-sm" @click="confirmAdd(u.device_id)">✓</button>
+                  <button class="btn btn-secondary btn-sm" @click="addingId=null">✕</button>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </template>
+
+
+  <!-- REPORTS -->
+  <template x-if="tab=='reports'">
+    <div>
+      <!-- Под-вкладки -->
+      <div class="report-tabs">
+        <button :class="{active:rMode=='vedomost'}" @click="rMode='vedomost';loadVedomost()">
+          📋 Ведомость расхода
+        </button>
+        <button :class="{active:rMode=='profile'}" @click="rMode='profile';loadProfile()">
+          📈 Профиль нагрузки
+        </button>
+        <button :class="{active:rMode=='compare'}" @click="rMode='compare';loadCompare()">
+          ⚖ Сравнение периодов
+        </button>
+        <button :class="{active:rMode=='avail'}" @click="rMode='avail';loadAvail()">
+          🕒 Доступность
+        </button>
+        <button :class="{active:rMode=='balance'}" @click="rMode='balance';loadBalance()">
+          ⚡ Баланс
+        </button>
+      </div>
+
+      <!-- ===== ВЕДОМОСТЬ РАСХОДА ===== -->
+      <template x-if="rMode=='vedomost'">
+        <div>
+          <div class="report-row">
+            <label>Период:</label>
+            <template x-for="p in presets" :key="p.id">
+              <button :class="{'periods':true,'active':rPeriod===p.id}"
+                style="background:var(--bg2);border:1px solid var(--line);
+                       color:var(--txt2);cursor:pointer;padding:7px 12px;
+                       border-radius:6px;font-size:12px;font-weight:500"
+                :style="rPeriod===p.id?'background:var(--accent);color:#fff;border-color:var(--accent)':''"
+                @click="rPeriod=p.id;rFrom='';rTo='';loadVedomost()"
+                x-text="p.label"></button>
+            </template>
+            <input type="date" x-model="rFrom"
+              style="background:var(--bg2);border:1px solid var(--line);color:var(--txt);
+                     padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit">
+            <span class="muted">—</span>
+            <input type="date" x-model="rTo"
+              style="background:var(--bg2);border:1px solid var(--line);color:var(--txt);
+                     padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit">
+            <button style="background:var(--bg3);border:1px solid var(--line);color:var(--txt);
+                           cursor:pointer;padding:7px 14px;border-radius:6px;font-size:13px"
+              @click="rPeriod='';loadVedomost()">Применить</button>
+            <div class="spacer"></div>
+            <button class="dl-btn" @click="downloadVedomost()">⬇ Скачать CSV</button>
+          </div>
+
+          <template x-if="rLoading">
+            <div class="empty"><span class="spin"></span> загрузка…</div>
+          </template>
+
+          <template x-if="!rLoading">
+            <div>
+              <table class="rep-table">
+                <thead><tr>
+                  <th>Счётчик</th>
+                  <th>Комментарий</th>
+                  <th class="num">Расход, кВт·ч</th>
+                  <th>Качество</th>
+                </tr></thead>
+                <tbody>
+                  <template x-for="row in vedomostRows" :key="row._key">
+                    <!-- Разделитель зоны -->
+                    <template x-if="row._zone_sep">
+                      <tr class="zone-sep">
+                        <td colspan="4">
+                          <span :style="`background:${zoneColor(row._zone_sep)};
+                            width:9px;height:9px;border-radius:2px;
+                            display:inline-block;margin-right:7px;vertical-align:middle`"></span>
+                          <span x-text="row._zone_sep"></span>
+                          <span class="muted" x-text="' · ' + row._zone_kwh.toFixed(3) + ' кВт·ч'"></span>
+                        </td>
+                      </tr>
+                    </template>
+                    <!-- Строка счётчика -->
+                    <template x-if="!row._zone_sep">
+                      <tr>
+                        <td>
+                          <div style="font-weight:600;font-size:13px" x-text="row.display_name"></div>
+                          <div class="muted" style="font-size:11px" x-text="row.device_id"></div>
+                        </td>
+                        <td class="muted" style="font-style:italic;font-size:12px"
+                            x-text="row.notes||'—'"></td>
+                        <td class="num" x-text="row.consumption_kwh!=null?fmt(row.consumption_kwh,3):'—'"></td>
+                        <td>
+                          <span class="q" :style="qualityStyle(row.quality)"
+                            x-text="qualityLabel(row.quality)"></span>
+                        </td>
+                      </tr>
+                    </template>
+                  </template>
+                </tbody>
+                <tfoot><tr>
+                  <td colspan="2">Итого</td>
+                  <td class="num" x-text="fmt(rTotal,3)"></td>
+                  <td></td>
+                </tr></tfoot>
+              </table>
+              <div class="muted" style="margin-top:8px" x-text="rPeriodLabel"></div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ===== ПРОФИЛЬ НАГРУЗКИ ===== -->
+      <template x-if="rMode=='profile'">
+        <div>
+          <div class="report-row">
+            <label>Счётчик:</label>
+            <select x-model="profileMeterId" @change="loadProfile()">
+              <option value="">— выберите —</option>
+              <template x-for="m in regMeters" :key="m.device_id">
+                <option :value="m.device_id" x-text="m.display_name"></option>
+              </template>
+            </select>
+            <label>Период:</label>
+            <template x-for="p in profilePresets" :key="p.id">
+              <button
+                :style="profilePeriod===p.id?'background:var(--accent);color:#fff;border-color:var(--accent)':
+                  'background:var(--bg2);border:1px solid var(--line);color:var(--txt2)'"
+                style="cursor:pointer;padding:7px 12px;border-radius:6px;font-size:12px;font-weight:500"
+                @click="profilePeriod=p.id;profileFrom='';profileTo='';loadProfile()"
+                x-text="p.label"></button>
+            </template>
+            <input type="date" x-model="profileFrom"
+              style="background:var(--bg2);border:1px solid var(--line);color:var(--txt);
+                     padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit">
+            <span class="muted">—</span>
+            <input type="date" x-model="profileTo"
+              style="background:var(--bg2);border:1px solid var(--line);color:var(--txt);
+                     padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit">
+            <button style="background:var(--bg3);border:1px solid var(--line);color:var(--txt);
+                           cursor:pointer;padding:7px 14px;border-radius:6px;font-size:13px"
+              @click="profilePeriod='';loadProfile()">Применить</button>
+            <div class="spacer"></div>
+            <button class="dl-btn" @click="downloadProfile()">⬇ Скачать CSV</button>
+          </div>
+
+          <template x-if="profileLoading">
+            <div class="empty"><span class="spin"></span> загрузка…</div>
+          </template>
+          <template x-if="!profileLoading && !profileMeterId">
+            <div class="empty">Выберите счётчик</div>
+          </template>
+          <template x-if="!profileLoading && profileMeterId && profileHours.length===0">
+            <div class="empty">Нет данных за выбранный период</div>
+          </template>
+
+          <template x-if="!profileLoading && profileHours.length>0">
+            <div>
+              <!-- Сводка -->
+              <div class="profile-meta">
+                <div class="pm">
+                  <div class="pk">Итого за период</div>
+                  <div class="pv mono"><span x-text="fmt(profileTotal,3)"></span><small style="font-size:13px;color:var(--txt2)"> кВт·ч</small></div>
+                </div>
+                <div class="pm">
+                  <div class="pk">Пиковый час</div>
+                  <div class="pv mono"><span x-text="fmt(profilePeak.v,3)"></span><small style="font-size:13px;color:var(--txt2)"> кВт·ч</small></div>
+                  <div class="muted" x-text="profilePeak.label"></div>
+                </div>
+                <div class="pm">
+                  <div class="pk">Среднее в час</div>
+                  <div class="pv mono"><span x-text="fmt(profileTotal/Math.max(profileHours.filter(h=>h.v!=null).length,1),3)"></span><small style="font-size:13px;color:var(--txt2)"> кВт·ч</small></div>
+                </div>
+                <div class="pm">
+                  <div class="pk">Часов с данными</div>
+                  <div class="pv mono" x-text="profileHours.filter(h=>h.v!=null).length + ' / ' + profileHours.length"></div>
+                </div>
+              </div>
+              <!-- График -->
+              <div class="profile-wrap">
+                <div x-html="profileSvg"></div>
+              </div>
+              <!-- Таблица первых 48 часов -->
+              <div style="margin-top:14px;max-height:300px;overflow-y:auto;border-radius:10px;border:1px solid var(--line)">
+                <table class="rep-table" style="border:none;border-radius:0">
+                  <thead><tr><th>Час</th><th class="num">кВт·ч</th><th>Качество</th></tr></thead>
+                  <tbody>
+                    <template x-for="h in profileHours.slice(0,96)" :key="h.t">
+                      <tr>
+                        <td class="mono" style="font-size:12px" x-text="fmtHour(h.t)"></td>
+                        <td class="num" x-text="h.v!=null?fmt(h.v,4):'—'"></td>
+                        <td><span class="q" :style="qualityStyle(h.q)" x-text="qualityLabel(h.q)||'—'"></span></td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ===== СРАВНЕНИЕ ПЕРИОДОВ ===== -->
+      <template x-if="rMode=='compare'">
+        <div>
+          <div class="report-row" style="flex-wrap:wrap;gap:16px">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="width:10px;height:10px;background:var(--accent2);
+                border-radius:2px;display:inline-block"></span>
+              <label>Период A:</label>
+              <select x-model="cmpPeriodA" @change="loadCompare()">
+                <template x-for="p in presets" :key="p.id">
+                  <option :value="p.id" x-text="p.label"></option>
+                </template>
+              </select>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="width:10px;height:10px;background:var(--info);
+                border-radius:2px;display:inline-block"></span>
+              <label>Период B:</label>
+              <select x-model="cmpPeriodB" @change="loadCompare()">
+                <template x-for="p in presets" :key="p.id">
+                  <option :value="p.id" x-text="p.label"></option>
+                </template>
+              </select>
+            </div>
+            <div class="spacer"></div>
+            <button class="dl-btn" @click="downloadCompare()">⬇ Скачать CSV</button>
+          </div>
+
+          <template x-if="cmpLoading">
+            <div class="empty"><span class="spin"></span> сравниваю…</div>
+          </template>
+
+          <template x-if="!cmpLoading && cmpRows.length>0">
+            <div>
+              <table class="rep-table">
+                <thead><tr>
+                  <th>Счётчик</th>
+                  <th class="num">
+                    <span style="color:var(--accent2)" x-text="cmpLabelA"></span>
+                    кВт·ч
+                  </th>
+                  <th class="num">
+                    <span style="color:var(--info)" x-text="cmpLabelB"></span>
+                    кВт·ч
+                  </th>
+                  <th class="num">Δ кВт·ч</th>
+                  <th class="num">Δ %</th>
+                </tr></thead>
+                <tbody>
+                  <template x-for="r in cmpRows" :key="r.device_id">
+                    <tr>
+                      <td>
+                        <div style="font-weight:600" x-text="r.display_name"></div>
+                        <div class="muted" style="font-size:11px" x-text="r.group||''"></div>
+                      </td>
+                      <td class="num mono" x-text="r.a!=null?fmt(r.a,3):'—'"></td>
+                      <td class="num mono" x-text="r.b!=null?fmt(r.b,3):'—'"></td>
+                      <td class="num mono"
+                        :class="r.delta>0?'delta-pos':r.delta<0?'delta-neg':'delta-neu'"
+                        x-text="r.delta!=null?(r.delta>0?'+':'')+fmt(r.delta,3):'—'"></td>
+                      <td class="num"
+                        :class="r.pct>5?'delta-pos':r.pct<-5?'delta-neg':'delta-neu'"
+                        x-text="r.pct!=null?(r.pct>0?'+':'')+r.pct.toFixed(1)+'%':'—'"></td>
+                    </tr>
+                  </template>
+                </tbody>
+                <tfoot><tr>
+                  <td>Итого</td>
+                  <td class="num mono" x-text="fmt(cmpTotalA,3)"></td>
+                  <td class="num mono" x-text="fmt(cmpTotalB,3)"></td>
+                  <td class="num mono"
+                    :class="(cmpTotalB-cmpTotalA)>0?'delta-pos':(cmpTotalB-cmpTotalA)<0?'delta-neg':''"
+                    x-text="(cmpTotalB-cmpTotalA>0?'+':'')+fmt(cmpTotalB-cmpTotalA,3)"></td>
+                  <td class="num"
+                    :class="cmpTotalA>0&&(cmpTotalB-cmpTotalA)/cmpTotalA*100>5?'delta-pos':
+                      cmpTotalA>0&&(cmpTotalB-cmpTotalA)/cmpTotalA*100<-5?'delta-neg':''"
+                    x-text="cmpTotalA>0?(((cmpTotalB-cmpTotalA)/cmpTotalA*100)>0?'+':'')+
+                      ((cmpTotalB-cmpTotalA)/cmpTotalA*100).toFixed(1)+'%':'—'"></td>
+                </tr></tfoot>
+              </table>
+              <div class="muted" style="margin-top:8px">
+                🔴 рост &gt;5%  ·  🟢 снижение &gt;5%
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ===== ДОСТУПНОСТЬ ===== -->
+      <template x-if="rMode=='avail'">
+        <div>
+          <div class="report-row">
+            <label>Период:</label>
+            <template x-for="p in presets" :key="p.id">
+              <button
+                :style="availPeriod===p.id?'background:var(--accent);color:#fff;border-color:var(--accent)':
+                  'background:var(--bg2);border:1px solid var(--line);color:var(--txt2)'"
+                style="cursor:pointer;padding:7px 12px;border-radius:6px;font-size:12px;font-weight:500"
+                @click="availPeriod=p.id;loadAvail()"
+                x-text="p.label"></button>
+            </template>
+            <div class="spacer"></div>
+            <button class="dl-btn" @click="downloadAvail()">⬇ Скачать CSV</button>
+          </div>
+          <template x-if="availLoading">
+            <div class="empty"><span class="spin"></span> загрузка…</div>
+          </template>
+          <template x-if="!availLoading && availItems.length>0">
+            <div>
+              <table class="rep-table">
+                <thead><tr>
+                  <th>Счётчик</th><th>Зона</th><th>Роль</th>
+                  <th class="num">Доступность</th><th>Недоступность</th>
+                  <th class="num">Инцидентов</th>
+                </tr></thead>
+                <tbody>
+                  <template x-for="r in availItems" :key="r.device_id">
+                    <tr style="cursor:pointer"
+                        @click="availSelected=availSelected===r.device_id?null:r.device_id;
+                                if(availSelected)loadAvailDetail(r.device_id)">
+                      <td>
+                        <div style="font-weight:600" x-text="r.display_name"></div>
+                        <div class="muted mono" style="font-size:11px" x-text="r.device_id"></div>
+                      </td>
+                      <td class="muted" x-text="r.group||'—'"></td>
+                      <td><span x-text="roleLabel(r.role)" :style="`color:${roleColor(r.role)};font-weight:600;font-size:12px`"></span></td>
+                      <td class="num">
+                        <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
+                          <div class="avail-bar-wrap">
+                            <div class="avail-bar"
+                              :class="r.availability_pct>=99.9?'avail-100':r.availability_pct>=99?'avail-99':r.availability_pct>=95?'avail-95':'avail-low'"
+                              :style="`width:${r.availability_pct}%`"></div>
+                          </div>
+                          <span class="mono" style="font-size:13px;font-weight:700"
+                            :style="`color:${r.availability_pct>=99.9?'var(--ok)':r.availability_pct>=99?'var(--ok)':r.availability_pct>=95?'var(--warn)':'var(--err)'}`"
+                            x-text="r.availability_pct.toFixed(2)+'%'"></span>
+                        </div>
+                      </td>
+                      <td class="muted" x-text="fmtDuration(r.unavailable_s)"></td>
+                      <td class="num" x-text="r.incidents||'—'"></td>
+                    </tr>
+                    <!-- Раскрывающийся список инцидентов -->
+                    <template x-if="availSelected===r.device_id">
+                      <tr>
+                        <td colspan="6" style="background:var(--bg);padding:12px 16px">
+                          <template x-if="availDetail[r.device_id]">
+                            <div>
+                              <template x-if="availDetail[r.device_id].intervals.length===0">
+                                <div class="muted">Инцидентов за период не было 🎉</div>
+                              </template>
+                              <template x-for="iv in availDetail[r.device_id].intervals" :key="iv.started_at">
+                                <div class="incident-row">
+                                  <span class="ir-time" x-text="iv.started_label"></span>
+                                  <span class="muted"> → </span>
+                                  <span class="ir-time" x-text="iv.ended_label"></span>
+                                  <span class="ir-dur" x-text="' · ' + fmtDuration(iv.duration_s||0)"></span>
+                                  <span class="muted" style="margin-left:8px"
+                                    x-text="iv.rule_type==='no_connection'?'нет связи':'ошибка устройства'"></span>
+                                  <template x-if="iv.status==='active'">
+                                    <span style="margin-left:8px;color:var(--err);font-weight:700">● продолжается</span>
+                                  </template>
+                                </div>
+                              </template>
+                            </div>
+                          </template>
+                          <template x-if="!availDetail[r.device_id]">
+                            <div class="empty" style="padding:12px 0"><span class="spin"></span></div>
+                          </template>
+                        </td>
+                      </tr>
+                    </template>
+                  </template>
+                </tbody>
+              </table>
+              <div class="muted" style="margin-top:8px">
+                Кликните на счётчик чтобы увидеть список инцидентов
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ===== БАЛАНС ===== -->
+      <template x-if="rMode=='balance'">
+        <div>
+          <div class="report-row">
+            <label>Период:</label>
+            <template x-for="p in presets" :key="p.id">
+              <button
+                :style="balancePeriod===p.id?'background:var(--accent);color:#fff;border-color:var(--accent)':
+                  'background:var(--bg2);border:1px solid var(--line);color:var(--txt2)'"
+                style="cursor:pointer;padding:7px 12px;border-radius:6px;font-size:12px;font-weight:500"
+                @click="balancePeriod=p.id;loadBalance()"
+                x-text="p.label"></button>
+            </template>
+            <div class="spacer"></div>
+            <button class="dl-btn" @click="downloadBalance()">⬇ Скачать CSV</button>
+          </div>
+
+          <template x-if="balanceLoading">
+            <div class="empty"><span class="spin"></span> считаю баланс…</div>
+          </template>
+
+          <!-- Нет данных о ролях -->
+          <template x-if="!balanceLoading && balanceData && !balanceData.has_inputs">
+            <div style="background:var(--bg2);border:1px solid var(--warn);
+                        border-radius:10px;padding:24px;text-align:center">
+              <div style="font-size:24px;margin-bottom:12px">⚠️</div>
+              <div style="font-weight:700;margin-bottom:8px">Нет вводных счётчиков</div>
+              <div style="color:var(--txt2);font-size:13px">
+                Чтобы рассчитать баланс, назначьте роль <b>«Ввод»</b> хотя бы одному счётчику.<br>
+                Это делается на вкладке <b>Настройки → Зарегистрированные счётчики</b>.
+              </div>
+            </div>
+          </template>
+
+          <template x-if="!balanceLoading && balanceData && balanceData.has_inputs">
+            <div>
+              <!-- Сводка -->
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:20px">
+                <!-- Ввод -->
+                <div style="background:var(--bg2);border:2px solid var(--ok);
+                            border-radius:10px;padding:16px 20px">
+                  <div style="font-size:11px;text-transform:uppercase;letter-spacing:.6px;
+                              color:var(--ok);font-weight:700;margin-bottom:8px">
+                    ⬇ Ввод (<span x-text="balanceData.input.meters.length"></span> сч.)
+                  </div>
+                  <div style="font-size:32px;font-weight:700;font-family:monospace">
+                    <span x-text="fmt(balanceData.input.total_kwh,3)"></span>
+                    <small style="font-size:14px;color:var(--txt2)"> кВт·ч</small>
+                  </div>
+                </div>
+                <!-- Потребители -->
+                <div style="background:var(--bg2);border:2px solid var(--accent2);
+                            border-radius:10px;padding:16px 20px">
+                  <div style="font-size:11px;text-transform:uppercase;letter-spacing:.6px;
+                              color:var(--accent2);font-weight:700;margin-bottom:8px">
+                    ⬆ Потребители (<span x-text="balanceData.consumer.meters.length"></span> сч.)
+                  </div>
+                  <div style="font-size:32px;font-weight:700;font-family:monospace">
+                    <span x-text="fmt(balanceData.consumer.total_kwh,3)"></span>
+                    <small style="font-size:14px;color:var(--txt2)"> кВт·ч</small>
+                  </div>
+                </div>
+                <!-- Небаланс -->
+                <div :style="`background:var(--bg2);border:2px solid ${Math.abs(balanceData.imbalance_pct||0)>5?'var(--err)':'var(--line)'};border-radius:10px;padding:16px 20px`">
+                  <div style="font-size:11px;text-transform:uppercase;letter-spacing:.6px;
+                              color:var(--txt3);font-weight:700;margin-bottom:8px">
+                    Δ Небаланс
+                  </div>
+                  <div style="font-size:32px;font-weight:700;font-family:monospace"
+                    :style="`color:${Math.abs(balanceData.imbalance_pct||0)>5?'var(--err)':Math.abs(balanceData.imbalance_pct||0)>2?'var(--warn)':'var(--ok)'}`">
+                    <span x-text="(balanceData.imbalance_kwh>0?'+':'')+fmt(balanceData.imbalance_kwh,3)"></span>
+                    <small style="font-size:14px"> кВт·ч</small>
+                  </div>
+                  <div style="margin-top:4px;font-size:13px"
+                    :style="`color:${Math.abs(balanceData.imbalance_pct||0)>5?'var(--err)':Math.abs(balanceData.imbalance_pct||0)>2?'var(--warn)':'var(--ok)'}`"
+                    x-text="balanceData.imbalance_pct!=null?(balanceData.imbalance_pct>0?'+':'')+balanceData.imbalance_pct.toFixed(2)+'% от ввода':'—'">
+                  </div>
+                  <div class="muted" style="margin-top:4px;font-size:11px">
+                    потери + погрешность учёта
+                  </div>
+                </div>
+              </div>
+
+              <!-- Детализация по вводам -->
+              <template x-if="balanceData.input.meters.length>0">
+                <div style="margin-bottom:16px">
+                  <div class="section-title" style="margin-bottom:8px">
+                    Вводные счётчики
+                  </div>
+                  <table class="rep-table">
+                    <thead><tr>
+                      <th>Счётчик</th><th>Зона</th>
+                      <th class="num">Расход, кВт·ч</th><th>Качество</th>
+                    </tr></thead>
+                    <tbody>
+                      <template x-for="m in balanceData.input.meters" :key="m.device_id">
+                        <tr>
+                          <td>
+                            <div style="font-weight:600" x-text="m.display_name"></div>
+                            <div class="muted mono" style="font-size:11px" x-text="m.device_id"></div>
+                          </td>
+                          <td class="muted" x-text="m.group||'—'"></td>
+                          <td class="num mono" x-text="m.consumption_kwh!=null?fmt(m.consumption_kwh,3):'—'"></td>
+                          <td><span class="q" :style="qualityStyle(m.quality)" x-text="qualityLabel(m.quality)"></span></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                    <tfoot><tr>
+                      <td colspan="2" style="font-weight:700">Итого ввод</td>
+                      <td class="num mono" style="color:var(--ok);font-weight:700"
+                        x-text="fmt(balanceData.input.total_kwh,3)"></td>
+                      <td></td>
+                    </tr></tfoot>
+                  </table>
+                </div>
+              </template>
+
+              <!-- Детализация по потребителям -->
+              <template x-if="balanceData.consumer.meters.length>0">
+                <div style="margin-bottom:16px">
+                  <div class="section-title" style="margin-bottom:8px">
+                    Счётчики потребителей
+                  </div>
+                  <table class="rep-table">
+                    <thead><tr>
+                      <th>Счётчик</th><th>Зона</th>
+                      <th class="num">Расход, кВт·ч</th><th>Качество</th>
+                    </tr></thead>
+                    <tbody>
+                      <template x-for="m in balanceData.consumer.meters" :key="m.device_id">
+                        <tr>
+                          <td>
+                            <div style="font-weight:600" x-text="m.display_name"></div>
+                            <div class="muted mono" style="font-size:11px" x-text="m.device_id"></div>
+                          </td>
+                          <td class="muted" x-text="m.group||'—'"></td>
+                          <td class="num mono" x-text="m.consumption_kwh!=null?fmt(m.consumption_kwh,3):'—'"></td>
+                          <td><span class="q" :style="qualityStyle(m.quality)" x-text="qualityLabel(m.quality)"></span></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                    <tfoot><tr>
+                      <td colspan="2" style="font-weight:700">Итого потребители</td>
+                      <td class="num mono" style="color:var(--accent2);font-weight:700"
+                        x-text="fmt(balanceData.consumer.total_kwh,3)"></td>
+                      <td></td>
+                    </tr></tfoot>
+                  </table>
+                </div>
+              </template>
+
+              <!-- Прочие (если есть) -->
+              <template x-if="balanceData.other.meters.length>0">
+                <div style="margin-bottom:16px">
+                  <div class="section-title" style="margin-bottom:8px">
+                    Прочие (не учтены в балансе)
+                  </div>
+                  <table class="rep-table">
+                    <thead><tr>
+                      <th>Счётчик</th><th>Зона</th>
+                      <th class="num">Расход, кВт·ч</th><th>Качество</th>
+                    </tr></thead>
+                    <tbody>
+                      <template x-for="m in balanceData.other.meters" :key="m.device_id">
+                        <tr>
+                          <td>
+                            <div style="font-weight:600" x-text="m.display_name"></div>
+                          </td>
+                          <td class="muted" x-text="m.group||'—'"></td>
+                          <td class="num mono" x-text="m.consumption_kwh!=null?fmt(m.consumption_kwh,3):'—'"></td>
+                          <td><span class="q" :style="qualityStyle(m.quality)" x-text="qualityLabel(m.quality)"></span></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </template>
+
     </div>
   </template>
 
@@ -337,6 +1237,48 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line);
       </div>
     </div>
   </template>
+
+  <!-- CONFIRM DELETE ZONE -->
+  <template x-if="confirmZone">
+    <div class="confirm-overlay">
+      <div class="confirm-box">
+        <h3>Удалить зону?</h3>
+        <p>
+          <b x-text="confirmZone.name"></b><br>
+          <span x-text="confirmZone.meter_count + ' счётчиков'"></span> перейдут в «Без зоны».<br><br>
+          Сами счётчики и их данные останутся.
+        </p>
+        <div class="actions">
+          <button class="btn btn-secondary" @click="confirmZone=null">Отмена</button>
+          <button class="btn btn-danger" @click="confirmDeleteZone()">Удалить зону</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- CONFIRM DELETE DIALOG -->
+  <template x-if="confirmTarget">
+    <div class="confirm-overlay">
+      <div class="confirm-box">
+        <h3>Удалить счётчик?</h3>
+        <p>
+          <b x-text="confirmTarget.display_name"></b><br>
+          <span class="mono" style="font-size:12px" x-text="confirmTarget.device_id"></span><br><br>
+          Агрегаты расхода останутся в БД, но счётчик пропадёт со всех экранов.
+          Это действие нельзя отменить.
+        </p>
+        <div class="actions">
+          <button class="btn btn-secondary" @click="confirmTarget=null">Отмена</button>
+          <button class="btn btn-danger" @click="confirmDelete()">Удалить</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- TOAST -->
+  <template x-if="toast">
+    <div class="toast" :class="toast.ok?'toast-ok':'toast-err'" x-text="toast.msg"></div>
+  </template>
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.0/dist/cdn.min.js" defer></script>
@@ -345,6 +1287,7 @@ function app(){ return {
   tab:'dash', theme:lsGet('theme','dark'), loading:true,
   meters:[], byStatus:{}, mqtt:{connected:false,messages:0,errors:0},
   version:'', uptime:0, detail:null,
+  // consumption
   consLoading:false, consItems:[], consTotal:0, consAnyUnknown:false,
   period:{preset:'this_month',from:'',to:''},
   presets:[
@@ -352,7 +1295,33 @@ function app(){ return {
     {id:'this_month',label:'Этот месяц'},{id:'last_month',label:'Прошлый месяц'},
     {id:'last_7d',label:'7 дней'},{id:'last_30d',label:'30 дней'},
   ],
-  chartBars:[], chartSvg:'', chartMeterName:'', _timer:null,
+  chartBars:[], chartSvg:'', chartMeterName:'',
+  // settings
+  settingsLoading:false, regMeters:[], unregistered:[], allGroups:[],
+  // zones
+  zones:[], zoneEditId:null, zoneEditName:'', zoneNewName:'', confirmZone:null,
+  scanLoading:false,
+  editingId:null, editName:'', editGroup:'', editNotes:'', editRole:'consumer',
+  addingId:null, addName:'', addGroup:'', addNotes:'',
+  confirmTarget:null,
+  // reports
+  rMode:'vedomost', rLoading:false,
+  rPeriod:'this_month', rFrom:'', rTo:'',
+  vedomostRows:[], rTotal:0, rPeriodLabel:'',
+  profileMeterId:'', profilePeriod:'last_7d', profileFrom:'', profileTo:'',
+  profileHours:[], profileTotal:0, profilePeak:{v:0,label:''},
+  profileSvg:'', profileLoading:false,
+  profilePresets:[
+    {id:'today',label:'Сегодня'},{id:'yesterday',label:'Вчера'},
+    {id:'last_7d',label:'7 дней'},{id:'this_month',label:'Этот месяц'},
+    {id:'last_30d',label:'30 дней'},
+  ],
+  cmpPeriodA:'this_month', cmpPeriodB:'last_month',
+  cmpRows:[], cmpTotalA:0, cmpTotalB:0,
+  cmpLabelA:'', cmpLabelB:'', cmpLoading:false,
+  // toast
+  toast:null, _toastTimer:null,
+  _timer:null,
 
   init(){
     this.refresh();
@@ -360,7 +1329,11 @@ function app(){ return {
   },
   toggleTheme(){ this.theme=this.theme=='dark'?'light':'dark';
     try{localStorage.setItem('theme',this.theme)}catch(e){} },
-  refresh(){ this.loadStatus(); if(this.tab=='consumption') this.loadConsumption(); },
+  refresh(){
+    this.loadStatus();
+    if(this.tab=='consumption') this.loadConsumption();
+    if(this.tab=='settings') this.loadSettings();
+  },
 
   async loadStatus(){
     try{
@@ -371,16 +1344,41 @@ function app(){ return {
     this.loading=false;
   },
 
+  // ---- Zones / grouping ----
+  get groupedMeters(){
+    const groups = {};
+    this.meters.forEach(m=>{
+      const z = m.group || '— Без зоны —';
+      if(!groups[z]) groups[z]={name:z,meters:[]};
+      groups[z].meters.push(m);
+    });
+    // Сортировка: сначала именованные зоны, потом "Без зоны"
+    const named = Object.keys(groups).filter(k=>k!=='— Без зоны —').sort();
+    const order = [...named, '— Без зоны —'].filter(k=>groups[k]);
+    return order.map(k=>groups[k]);
+  },
+  zoneColor(name){
+    if(name==='— Без зоны —') return 'var(--txt3)';
+    // Детерминированный цвет из имени зоны
+    let h=0;
+    for(let i=0;i<name.length;i++) h=(h*31+name.charCodeAt(i))%360;
+    return `hsl(${h},55%,45%)`;
+  },
+  zonePower(meters){
+    let s=0;
+    meters.forEach(m=>{const v=m.main_values&&m.main_values['Total P'];if(typeof v=='number')s+=v;});
+    return s.toFixed(3);
+  },
+
+  // ---- Dashboard helpers ----
   get totalPowerKw(){
     let s=0; this.meters.forEach(m=>{
-      const v=m.main_values&&m.main_values['Total P'];
-      if(typeof v=='number') s+=v;
+      const v=m.main_values&&m.main_values['Total P']; if(typeof v=='number') s+=v;
     }); return s.toFixed(3);
   },
   get totalEnergy(){
     let s=0; this.meters.forEach(m=>{
-      const v=m.main_values&&m.main_values['Total AP energy'];
-      if(typeof v=='number') s+=v;
+      const v=m.main_values&&m.main_values['Total AP energy']; if(typeof v=='number') s+=v;
     }); return s.toFixed(2);
   },
   get uptimeStr(){
@@ -389,30 +1387,24 @@ function app(){ return {
     if(s<86400) return (s/3600).toFixed(1)+'ч';
     return (s/86400).toFixed(1)+'д';
   },
-
-  // Аптайм самого счётчика из его канала "Uptime (s)" или "Uptime"
   meterUptime(m){
-    const v = (m.main_values&&m.main_values['Uptime (s)']) ??
-              (m.main_values&&m.main_values['Uptime']);
+    const v=(m.main_values&&m.main_values['Uptime (s)'])??
+            (m.main_values&&m.main_values['Uptime']);
     if(v==null||isNaN(v)) return null;
     return fmtSeconds(v);
   },
-
-  // Класс цвета для строки "последнее обновление"
   updateAgeClass(age){
     if(age==null) return 'muted';
-    if(age<120) return 'cf-item cf-ok';     // < 2 мин — зелёный
-    if(age<600) return 'cf-item cf-warn';   // < 10 мин — жёлтый
-    return 'cf-item cf-err';                // > 10 мин — красный
+    if(age<120) return 'cf-item cf-ok';
+    if(age<600) return 'cf-item cf-warn';
+    return 'cf-item cf-err';
   },
-
   fmtAge(age){
     if(age==null) return '—';
     if(age<60) return Math.round(age)+'с назад';
     if(age<3600) return Math.round(age/60)+'мин назад';
     return (age/3600).toFixed(1)+'ч назад';
   },
-
   statusColor(st){ return {
     ok:'var(--ok)',warning:'var(--warn)',no_measurement:'var(--idle)',
     incomplete:'var(--warn)',no_connection:'var(--err)',
@@ -427,10 +1419,8 @@ function app(){ return {
     const c=this.statusColor(st);
     return `background:${c}22;color:${c};border:1px solid ${c}55`;
   },
-  qualityLabel(q){ return {
-    ok:'OK',edge_approx:'~прибл.',gap:'разрыв',
-    reset:'сброс',no_data:'нет данных',stale:'нет обновл.'}[q]||q;
-  },
+  qualityLabel(q){ return {ok:'OK',edge_approx:'~прибл.',gap:'разрыв',
+    reset:'сброс',no_data:'нет данных',stale:'нет обновл.'}[q]||q; },
   qualityStyle(q){
     const c={ok:'var(--ok)',edge_approx:'var(--info)',gap:'var(--warn)',
       reset:'var(--err)',no_data:'var(--idle)',stale:'var(--idle)'}[q]||'var(--txt3)';
@@ -440,22 +1430,19 @@ function app(){ return {
     if(v==null||v===undefined||isNaN(v)) return '—';
     return Number(v).toFixed(d);
   },
-
   async openDetail(devId){
-    try{
-      const r=await fetch('/api/meters/'+encodeURIComponent(devId));
-      this.detail=await r.json();
-    }catch(e){ console.error(e); }
+    try{ const r=await fetch('/api/meters/'+encodeURIComponent(devId));
+      this.detail=await r.json(); }catch(e){ console.error(e); }
     if(this.tab=='consumption') this.loadHourly(devId);
   },
 
+  // ---- Consumption ----
   setPreset(id){ this.period.preset=id; this.period.from=''; this.period.to='';
     this.loadConsumption(); },
   setCustom(){ if(this.period.from&&this.period.to){
     this.period.preset=''; this.loadConsumption(); } },
   periodQuery(){ if(this.period.preset) return 'period='+this.period.preset;
     return 'from='+this.period.from+'&to='+this.period.to; },
-
   async loadConsumption(){
     this.consLoading=true; this.chartBars=[]; this.chartSvg=''; this.chartMeterName='';
     try{
@@ -466,7 +1453,6 @@ function app(){ return {
     }catch(e){ console.error(e); }
     this.consLoading=false;
   },
-
   async loadHourly(devId){
     try{
       const r=await fetch('/api/meters/'+encodeURIComponent(devId)+'/hourly?'+this.periodQuery());
@@ -476,7 +1462,6 @@ function app(){ return {
       this.renderChart();
     }catch(e){ console.error(e); }
   },
-
   renderChart(){
     const bars=this.chartBars.filter(b=>b.v!=null);
     if(!bars.length){ this.chartSvg='<div class="muted">Нет данных за период</div>'; return; }
@@ -488,31 +1473,473 @@ function app(){ return {
     bars.forEach((b,i)=>{
       const h=(b.v/max)*(H-pad*2),x=pad+i*bw,y=H-pad-h;
       svg+=`<rect class="bar" x="${x+1}" y="${y}" width="${Math.max(1,bw-2)}" height="${h}" `+
-           `fill="var(--accent2)" rx="1"><title>${fmtTime(b.t)}: ${b.v.toFixed(3)} кВт·ч</title></rect>`;
+        `fill="var(--accent2)" rx="1"><title>${fmtTime(b.t)}: ${b.v.toFixed(3)} кВт·ч</title></rect>`;
     });
     svg+=`<text x="${pad}" y="14" fill="var(--txt2)" font-size="11">max ${max.toFixed(3)} кВт·ч</text>`;
     svg+=`</svg>`;
     this.chartSvg=svg;
   },
+
+  // ---- Settings ----
+  async loadSettings(){
+    this.settingsLoading=true;
+    try{
+      const [rm, gr] = await Promise.all([
+        fetch('/api/registry/meters').then(r=>r.json()),
+        fetch('/api/registry/groups').then(r=>r.json()),
+      ]);
+      this.regMeters=rm.items||[];
+      this.zones=gr.groups||[];
+      this.allGroups=(gr.groups||[]).map(g=>g.name);
+    }catch(e){ console.error(e); }
+    this.settingsLoading=false;
+    this.scanUnregistered();
+  },
+  async reloadGroups(){
+    try{
+      const gr=await fetch('/api/registry/groups').then(r=>r.json());
+      this.zones=gr.groups||[];
+      this.allGroups=(gr.groups||[]).map(g=>g.name);
+    }catch(e){ console.error(e); }
+  },
+  async createZone(){
+    const name=this.zoneNewName.trim();
+    if(!name) return;
+    try{
+      const r=await fetch('/api/registry/groups',
+        {method:'POST',headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({name})});
+      if(!r.ok){const e=await r.json();this.showToast(e.error||'Ошибка',false);return;}
+      this.zoneNewName='';
+      this.showToast('Зона создана');
+      await this.reloadGroups();
+    }catch(e){this.showToast('Ошибка: '+e,false);}
+  },
+  startZoneEdit(z){this.zoneEditId=z.id;this.zoneEditName=z.name;},
+  async saveZoneEdit(id){
+    const name=this.zoneEditName.trim();
+    if(!name){this.zoneEditId=null;return;}
+    try{
+      const r=await fetch('/api/registry/groups/'+id,
+        {method:'PATCH',headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({name})});
+      if(!r.ok){const e=await r.json();this.showToast(e.error||'Ошибка',false);return;}
+      this.zoneEditId=null;
+      this.showToast('Зона переименована');
+      await this.reloadGroups();
+      await this.loadSettings();
+      await this.loadStatus();
+    }catch(e){this.showToast('Ошибка: '+e,false);}
+  },
+  askDeleteZone(z){this.confirmZone=z;},
+  async confirmDeleteZone(){
+    const z=this.confirmZone; this.confirmZone=null;
+    try{
+      const r=await fetch('/api/registry/groups/'+z.id,{method:'DELETE'});
+      if(!r.ok){const e=await r.json();this.showToast(e.error||'Ошибка',false);return;}
+      this.showToast('Зона удалена, счётчики переведены в "без зоны"');
+      await this.reloadGroups();
+      await this.loadSettings();
+      await this.loadStatus();
+    }catch(e){this.showToast('Ошибка: '+e,false);}
+  },
+  async scanUnregistered(){
+    this.scanLoading=true;
+    try{
+      const r=await fetch('/api/meters/unregistered');
+      const d=await r.json();
+      this.unregistered=d.items||[];
+    }catch(e){ console.error(e); }
+    this.scanLoading=false;
+  },
+
+  startEdit(m){
+    this.editingId=m.device_id;
+    this.editName=m.display_name;
+    this.editGroup=m.group_name||'';
+    this.editNotes=m.notes||'';
+    this.editRole=m.role||'consumer';
+  },
+  async saveEdit(deviceId){
+    const body={display_name:this.editName.trim(),group:this.editGroup.trim(),notes:this.editNotes.trim()};
+    // Роль сохраняем отдельным запросом если изменилась
+    const origRole=(this.regMeters.find(m=>m.device_id===deviceId)||{}).role||'consumer';
+    const roleChanged=this.editRole!==origRole;
+    try{
+      const r=await fetch('/api/registry/meters/'+encodeURIComponent(deviceId),
+        {method:'PATCH',headers:{'Content-Type':'application/json'},
+         body:JSON.stringify(body)});
+      if(!r.ok){ const e=await r.json(); this.showToast(e.error||'Ошибка',false); return; }
+      this.editingId=null;
+      if(roleChanged) await this.saveRole(deviceId, this.editRole);
+      else { this.showToast('Сохранено'); await this.loadSettings(); await this.loadStatus(); }
+    }catch(e){ this.showToast('Ошибка: '+e,false); }
+  },
+
+  startAdd(u){
+    this.addingId=u.device_id;
+    this.addName=u.mqtt_name||u.device_id;
+    this.addGroup='';
+  },
+  async confirmAdd(deviceId){
+    const name=this.addName.trim()||deviceId;
+    const body={device_id:deviceId, display_name:name,
+                group:this.addGroup.trim()||null,
+                notes:this.addNotes.trim()||null};
+    try{
+      const r=await fetch('/api/registry/meters',
+        {method:'POST',headers:{'Content-Type':'application/json'},
+         body:JSON.stringify(body)});
+      if(!r.ok){ const e=await r.json(); this.showToast(e.error||'Ошибка',false); return; }
+      this.addingId=null; this.addNotes='';
+      this.showToast('Счётчик добавлен');
+      await this.loadSettings();
+      await this.loadStatus();
+    }catch(e){ this.showToast('Ошибка: '+e,false); }
+  },
+
+  askDelete(m){ this.confirmTarget=m; },
+  async confirmDelete(){
+    const did=this.confirmTarget.device_id;
+    this.confirmTarget=null;
+    try{
+      const r=await fetch('/api/registry/meters/'+encodeURIComponent(did),
+        {method:'DELETE'});
+      if(!r.ok){ const e=await r.json(); this.showToast(e.error||'Ошибка',false); return; }
+      this.showToast('Счётчик удалён');
+      await this.loadSettings();
+      await this.loadStatus();
+    }catch(e){ this.showToast('Ошибка: '+e,false); }
+  },
+
+  // ---- Reports ----
+  initReports(){
+    if(!this.regMeters.length) this.loadSettings();
+    if(this.rMode==='vedomost') this.loadVedomost();
+    else if(this.rMode==='avail') this.loadAvail();
+    else if(this.rMode==='balance') this.loadBalance();
+    else if(this.rMode==='profile') this.loadProfile();
+    else this.loadCompare();
+  },
+  _rPeriodQuery(preset, from_, to_){
+    if(preset) return 'period='+preset;
+    if(from_&&to_) return 'from='+from_+'&to='+to_;
+    return 'period=this_month';
+  },
+  async loadVedomost(){
+    this.rLoading=true;
+    const q=this._rPeriodQuery(this.rPeriod,this.rFrom,this.rTo);
+    try{
+      // Получаем notes из regMeters (уже загружены в настройках)
+      const notesMap={};
+      this.regMeters.forEach(m=>{ notesMap[m.device_id]=m.notes; });
+      const r=await fetch('/api/summary/consumption?'+q);
+      const d=await r.json();
+      const items=d.items||[];
+      this.rTotal=d.consumption_kwh_total||0;
+      this.rPeriodLabel=d.period?
+        (d.period.description||''):('');
+      // Группируем по зонам
+      const zones={};
+      items.forEach(it=>{
+        const z=it.group||'— Без зоны —';
+        if(!zones[z]) zones[z]={name:z,items:[],total:0};
+        zones[z].items.push({...it,notes:notesMap[it.device_id]||null});
+        zones[z].total+=(it.consumption_kwh||0);
+      });
+      const rows=[];
+      const named=Object.keys(zones).filter(k=>k!=='— Без зоны —').sort();
+      const order=[...named,'— Без зоны —'].filter(k=>zones[k]);
+      order.forEach(z=>{
+        rows.push({_zone_sep:z,_zone_kwh:zones[z].total,_key:'z_'+z});
+        zones[z].items.forEach((it,i)=>{
+          rows.push({...it,_key:it.device_id+'_'+i,_zone_sep:null});
+        });
+      });
+      this.vedomostRows=rows;
+    }catch(e){ console.error(e); }
+    this.rLoading=false;
+  },
+  downloadVedomost(){
+    const lines=[];
+    const pLabel=this.rPeriodLabel||this.rPeriod||'период';
+    lines.push('\uFEFF'); // BOM для Excel
+    lines.push(`wb-energy-meter — Ведомость расхода (${pLabel})`);
+    lines.push('');
+    lines.push('Зона;Счётчик;device_id;Комментарий;Расход кВт·ч;Качество');
+    let curZone='';
+    this.vedomostRows.forEach(r=>{
+      if(r._zone_sep){ curZone=r._zone_sep; return; }
+      const v=r.consumption_kwh!=null?r.consumption_kwh.toFixed(3):'';
+      lines.push([curZone,r.display_name,r.device_id,
+        r.notes||'',v,r.quality||''].join(';'));
+    });
+    lines.push('');
+    lines.push(`;;ИТОГО;;${this.rTotal.toFixed(3)};`);
+    const blob=new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=`vedomost_${this.rPeriod||'custom'}_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+  },
+
+  async loadProfile(){
+    if(!this.profileMeterId){ this.profileLoading=false; return; }
+    this.profileLoading=true;
+    const q=this._rPeriodQuery(this.profilePeriod,this.profileFrom,this.profileTo);
+    try{
+      const r=await fetch('/api/meters/'+encodeURIComponent(this.profileMeterId)+'/hourly?'+q);
+      const d=await r.json();
+      const items=d.items||[];
+      this.profileHours=items.map(it=>({
+        t:it.period_start, v:it.consumption_kwh, q:it.quality
+      }));
+      const vals=this.profileHours.filter(h=>h.v!=null).map(h=>h.v);
+      this.profileTotal=vals.reduce((a,b)=>a+b,0);
+      if(vals.length>0){
+        const maxV=Math.max(...vals);
+        const peak=this.profileHours.find(h=>h.v===maxV);
+        this.profilePeak={v:maxV,label:peak?fmtHour(peak.t):''};
+      } else { this.profilePeak={v:0,label:''}; }
+      this.renderProfileSvg();
+    }catch(e){ console.error(e); }
+    this.profileLoading=false;
+  },
+  renderProfileSvg(){
+    const bars=this.profileHours.filter(b=>b.v!=null);
+    if(!bars.length){ this.profileSvg='<div class="muted">Нет данных</div>'; return; }
+    const W=Math.max(700,bars.length*12), H=220, padL=48, padR=12, padT=20, padB=30;
+    const max=Math.max(...bars.map(b=>b.v),0.001);
+    const bw=(W-padL-padR)/bars.length;
+    let svg=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px">`;
+    // Сетка
+    for(let i=0;i<=4;i++){
+      const y=padT+(H-padT-padB)*i/4;
+      const val=(max*(4-i)/4);
+      svg+=`<line x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}" stroke="var(--line)" stroke-dasharray="3,3"/>`;
+      svg+=`<text x="${padL-4}" y="${y+4}" fill="var(--txt3)" font-size="10" text-anchor="end">${val.toFixed(2)}</text>`;
+    }
+    // Ось X
+    svg+=`<line x1="${padL}" y1="${H-padB}" x2="${W-padR}" y2="${H-padB}" stroke="var(--line)"/>`;
+    bars.forEach((b,i)=>{
+      const h=(b.v/max)*(H-padT-padB);
+      const x=padL+i*bw, y=H-padB-h;
+      const color=b.v===this.profilePeak.v?'var(--warn)':'var(--accent2)';
+      svg+=`<rect class="bar" x="${x+1}" y="${y}" width="${Math.max(1,bw-2)}" height="${h}" `+
+        `fill="${color}" rx="1"><title>${fmtHour(b.t)}: ${b.v.toFixed(3)} кВт·ч</title></rect>`;
+      // Метки оси X каждые 24 часа (или каждые 4 для коротких периодов)
+      const step=bars.length>72?24:bars.length>24?4:1;
+      if(i%step===0){
+        const d=new Date(b.t*1000);
+        const lbl=bars.length>72?
+          `${String(d.getDate()).padStart(2,'0')}.${String(d.getMonth()+1).padStart(2,'0')}`:
+          `${String(d.getHours()).padStart(2,'0')}:00`;
+        svg+=`<text x="${x+bw/2}" y="${H-padB+14}" fill="var(--txt3)" `+
+          `font-size="9" text-anchor="middle">${lbl}</text>`;
+      }
+    });
+    // Подсветка пика
+    if(this.profilePeak.v>0){
+      svg+=`<text x="${W-padR}" y="${padT}" fill="var(--warn)" `+
+        `font-size="10" text-anchor="end">▲ пик: ${this.profilePeak.v.toFixed(3)} кВт·ч (${this.profilePeak.label})</text>`;
+    }
+    svg+=`</svg>`;
+    this.profileSvg=svg;
+  },
+  downloadProfile(){
+    if(!this.profileHours.length) return;
+    const lines=['\uFEFF','wb-energy-meter — Профиль нагрузки','',
+      'Дата-час;Расход кВт·ч;Качество'];
+    this.profileHours.forEach(h=>{
+      lines.push([fmtHour(h.t),h.v!=null?h.v.toFixed(4):'',h.q||''].join(';'));
+    });
+    lines.push('');
+    lines.push(`;ИТОГО;${this.profileTotal.toFixed(3)}`);
+    const blob=new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=`profile_${this.profileMeterId}_${this.profilePeriod||'custom'}.csv`;
+    a.click();
+  },
+
+  async loadCompare(){
+    this.cmpLoading=true;
+    try{
+      const [da,db]=await Promise.all([
+        fetch('/api/summary/consumption?period='+this.cmpPeriodA).then(r=>r.json()),
+        fetch('/api/summary/consumption?period='+this.cmpPeriodB).then(r=>r.json()),
+      ]);
+      const labelOf=d=>(d.period&&d.period.description)||'период';
+      this.cmpLabelA=labelOf(da); this.cmpLabelB=labelOf(db);
+      const mapA={},mapB={};
+      (da.items||[]).forEach(it=>{ mapA[it.device_id]=it; });
+      (db.items||[]).forEach(it=>{ mapB[it.device_id]=it; });
+      const ids=[...new Set([...Object.keys(mapA),...Object.keys(mapB)])];
+      this.cmpRows=ids.map(id=>{
+        const a=mapA[id]?.consumption_kwh??null;
+        const b=mapB[id]?.consumption_kwh??null;
+        const delta=(a!=null&&b!=null)?b-a:null;
+        const pct=(delta!=null&&a!=null&&a>0)?(delta/a*100):null;
+        return {
+          device_id:id,
+          display_name:(mapA[id]||mapB[id])?.display_name||id,
+          group:(mapA[id]||mapB[id])?.group||'',
+          a,b,delta,pct,
+        };
+      }).sort((x,y)=>(y.b||0)-(x.b||0));
+      this.cmpTotalA=da.consumption_kwh_total||0;
+      this.cmpTotalB=db.consumption_kwh_total||0;
+    }catch(e){ console.error(e); }
+    this.cmpLoading=false;
+  },
+  downloadCompare(){
+    const lines=['\uFEFF','wb-energy-meter — Сравнение периодов','',
+      `Счётчик;Зона;${this.cmpLabelA} кВт·ч;${this.cmpLabelB} кВт·ч;Δ кВт·ч;Δ %`];
+    this.cmpRows.forEach(r=>{
+      lines.push([r.display_name,r.group||'',
+        r.a!=null?r.a.toFixed(3):'',
+        r.b!=null?r.b.toFixed(3):'',
+        r.delta!=null?r.delta.toFixed(3):'',
+        r.pct!=null?r.pct.toFixed(1)+'%':''].join(';'));
+    });
+    lines.push('');
+    lines.push([`ИТОГО`,'',this.cmpTotalA.toFixed(3),this.cmpTotalB.toFixed(3),
+      (this.cmpTotalB-this.cmpTotalA).toFixed(3),
+      this.cmpTotalA>0?((this.cmpTotalB-this.cmpTotalA)/this.cmpTotalA*100).toFixed(1)+'%':''].join(';'));
+    const blob=new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=`compare_${this.cmpPeriodA}_vs_${this.cmpPeriodB}.csv`;
+    a.click();
+  },
+
+  // ---- Balance ----
+  balancePeriod:'this_month', balanceLoading:false, balanceData:null,
+
+  async loadBalance(){
+    this.balanceLoading=true;
+    try{
+      const r=await fetch('/api/reports/balance?period='+this.balancePeriod);
+      this.balanceData=await r.json();
+    }catch(e){ console.error(e); this.balanceData=null; }
+    this.balanceLoading=false;
+  },
+  downloadBalance(){
+    if(!this.balanceData) return;
+    const d=this.balanceData;
+    const lines=['\uFEFF',
+      'wb-energy-meter — Баланс электроэнергии',
+      `Период: ${d.period&&d.period.description||this.balancePeriod}`,
+      '',
+      '=== ВВОД ===',
+      'Счётчик;device_id;Зона;Расход кВт·ч;Качество',
+    ];
+    (d.input.meters||[]).forEach(m=>{
+      lines.push([m.display_name,m.device_id,m.group||'',
+        m.consumption_kwh!=null?m.consumption_kwh.toFixed(3):'',
+        m.quality||''].join(';'));
+    });
+    lines.push([';ИТОГО ВВОД;;;'+d.input.total_kwh.toFixed(3)].join(''));
+    lines.push('');
+    lines.push('=== ПОТРЕБИТЕЛИ ===');
+    lines.push('Счётчик;device_id;Зона;Расход кВт·ч;Качество');
+    (d.consumer.meters||[]).forEach(m=>{
+      lines.push([m.display_name,m.device_id,m.group||'',
+        m.consumption_kwh!=null?m.consumption_kwh.toFixed(3):'',
+        m.quality||''].join(';'));
+    });
+    lines.push([';ИТОГО ПОТРЕБИТЕЛИ;;;'+d.consumer.total_kwh.toFixed(3)].join(''));
+    lines.push('');
+    lines.push('=== ИТОГ ===');
+    lines.push(`Ввод кВт·ч;;${d.input.total_kwh.toFixed(3)}`);
+    lines.push(`Потребители кВт·ч;;${d.consumer.total_kwh.toFixed(3)}`);
+    lines.push(`Небаланс кВт·ч;;${d.imbalance_kwh.toFixed(3)}`);
+    lines.push(`Небаланс %;;${d.imbalance_pct!=null?d.imbalance_pct.toFixed(2)+'%':'—'}`);
+    const blob=new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=`balance_${this.balancePeriod}_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+  },
+
+  // ---- Availability ----
+  availPeriod:'last_30d', availLoading:false, availItems:[],
+  availSelected:null, availDetail:{},
+
+  async loadAvail(){
+    this.availLoading=true; this.availSelected=null; this.availDetail={};
+    try{
+      const r=await fetch('/api/availability/summary?period='+this.availPeriod);
+      const d=await r.json();
+      this.availItems=d.items||[];
+    }catch(e){ console.error(e); }
+    this.availLoading=false;
+  },
+  async loadAvailDetail(deviceId){
+    try{
+      const r=await fetch('/api/meters/'+encodeURIComponent(deviceId)+
+        '/availability?period='+this.availPeriod);
+      const d=await r.json();
+      this.availDetail={...this.availDetail,[deviceId]:d};
+    }catch(e){ console.error(e); }
+  },
+  downloadAvail(){
+    if(!this.availItems.length) return;
+    const lines=['\uFEFF','wb-energy-meter — Доступность','',
+      'Счётчик;device_id;Зона;Роль;Доступность %;Недоступность с;Инцидентов'];
+    this.availItems.forEach(r=>{
+      lines.push([r.display_name,r.device_id,r.group||'',
+        this.roleLabel(r.role),
+        r.availability_pct.toFixed(2)+'%',
+        r.unavailable_s||0,
+        r.incidents||0].join(';'));
+    });
+    const blob=new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=`availability_${this.availPeriod}.csv`;
+    a.click();
+  },
+
+  // ---- Roles ----
+  roleLabel(r){return {input:'Ввод',consumer:'Потребитель',other:'Прочее'}[r]||r||'—';},
+  roleColor(r){return {input:'var(--ok)',consumer:'var(--accent2)',other:'var(--txt3)'}[r]||'var(--txt3)';},
+  async saveRole(deviceId, role){
+    try{
+      const r=await fetch('/api/registry/meters/'+encodeURIComponent(deviceId)+'/role',
+        {method:'PATCH',headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({role})});
+      if(!r.ok){const e=await r.json();this.showToast(e.error||'Ошибка',false);return;}
+      this.showToast('Роль изменена');
+      await this.loadSettings(); await this.loadStatus();
+    }catch(e){this.showToast('Ошибка: '+e,false);}
+  },
+
+  showToast(msg, ok=true){
+    clearTimeout(this._toastTimer);
+    this.toast={msg,ok};
+    this._toastTimer=setTimeout(()=>{ this.toast=null; },3000);
+  },
 }; }
 
 function lsGet(k,def){ try{ return localStorage.getItem(k)||def; }catch(e){ return def; } }
-
 function fmtTime(ts){
   return new Date(ts*1000).toLocaleString('ru-RU',
     {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
 }
-
-// Форматирование секунд в "Xд Xч Xмин"
+function fmtHour(ts){
+  const d=new Date(ts*1000);
+  return d.toLocaleString('ru-RU',
+    {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
+}
 function fmtSeconds(s){
-  s=Math.round(s);
-  if(s<0) return '—';
+  s=Math.round(s); if(s<0) return '—';
   if(s<60) return s+'с';
-  if(s<3600){ const m=Math.floor(s/60); return m+'мин'; }
+  if(s<3600){ return Math.floor(s/60)+'мин'; }
   if(s<86400){ const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);
-    return h+'ч'+(m?(' '+m+'мин'):''); }
+    return h+'ч'+(m?' '+m+'мин':''); }
   const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600);
-  return d+'д'+(h?(' '+h+'ч'):'');
+  return d+'д'+(h?' '+h+'ч':'');
 }
 </script>
 </body>
