@@ -10,7 +10,8 @@ from flask import Flask, Response, request
 
 from . import __version__
 from .aggregates_repo import align_hour_down
-from .channels import CATEGORIES, CHANNEL_INFO, get_channel_info
+from .channels import (CATEGORIES, CHANNEL_INFO, get_channel_info,
+                       localize_units)
 from .periods import PERIOD_PRESETS, build_period, parse_user_datetime
 from .repo import GroupNameConflict
 from .wb_db_client import RpcError
@@ -123,8 +124,10 @@ def _meter_detail(m):
             "order": c.meta.get("order"),
             "readonly": c.meta.get("readonly"),
             # Единицы измерения (C3): приоритет у meta устройства,
-            # иначе — из словаря каналов.
-            "units": meta_units if meta_units else info["units"],
+            # иначе — из словаря каналов. Единицы из meta приходят
+            # латиницей ("V", "kWh") — переводим на русский.
+            "units": (localize_units(meta_units) if meta_units
+                      else info["units"]),
             "error": c.error, "update_count": c.update_count,
             "last_update_ts": c.last_update_ts,
             "last_update_age_s": c.age_seconds,

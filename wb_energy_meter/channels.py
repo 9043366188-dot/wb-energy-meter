@@ -151,3 +151,32 @@ def get_channel_info(name: Optional[str]) -> dict:
                 return out
     return {"label": name, "units": None, "hint": None,
             "category": "other", "main": False}
+
+
+# Единицы, которые WirenBoard присылает в meta, — латиницей ("V", "kWh").
+# В русском интерфейсе показываем их по-русски.
+UNITS_RU = {
+    "V": "В", "mV": "мВ", "kV": "кВ",
+    "A": "А", "mA": "мА",
+    "W": "Вт", "kW": "кВт", "mW": "мВт",
+    "VA": "ВА", "kVA": "кВА",
+    "var": "вар", "kvar": "квар", "VAR": "вар", "kVAR": "квар",
+    "Wh": "Вт·ч", "kWh": "кВт·ч",
+    "varh": "вар·ч", "kvarh": "квар·ч",
+    "VAh": "ВА·ч", "kVAh": "кВА·ч",
+    "Hz": "Гц", "kHz": "кГц",
+    "deg": "°", "degC": "°C", "C": "°C",
+    "s": "с", "ms": "мс", "min": "мин", "h": "ч",
+    "%": "%", "Ohm": "Ом",
+}
+
+
+def localize_units(units: Optional[str]) -> Optional[str]:
+    """Перевести обозначение единицы измерения на русский.
+
+    Незнакомую единицу возвращаем как есть — лучше латиница,
+    чем пустое место.
+    """
+    if not units:
+        return None
+    return UNITS_RU.get(units.strip(), units.strip())
