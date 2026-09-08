@@ -77,7 +77,11 @@ class WbDbClient:
                    limit=10000, min_interval_ms=None, timeout_s=None):
         params = {
             "channels": [[device, control]],
-            "request_timestamps": True,
+            # ver=1 — короткие имена полей ответа ("t"/"v"), их и парсим
+            # ниже. По умолчанию (ver=0) сервис отвечает полями
+            # "timestamp"/"value", и без этого флага все точки молча
+            # отбраковывались как будто истории нет вовсе.
+            "ver": 1,
             "limit": int(limit),
         }
         ts_filter = {}
