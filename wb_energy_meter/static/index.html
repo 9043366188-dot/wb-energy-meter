@@ -121,10 +121,27 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 .modal-head .nm{font-size:18px;font-weight:700;flex:1}
 .modal-body{padding:22px}
 .ctrl-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px}
-.ctrl{background:var(--bg3);border-radius:7px;padding:10px 12px}
+.ctrl{background:var(--bg3);border-radius:7px;padding:10px 12px;
+  border:1px solid transparent;position:relative}
+.ctrl-clickable{cursor:pointer;transition:border-color .12s,background .12s}
+.ctrl-clickable:hover{border-color:var(--accent);background:var(--bg2)}
+.ctrl[data-hint]:hover::after{
+  content:attr(data-hint);position:absolute;left:0;top:100%;margin-top:6px;
+  background:var(--bg3);border:1px solid var(--line);color:var(--txt2);
+  font-size:12px;max-width:280px;padding:8px 10px;border-radius:6px;
+  z-index:60;pointer-events:none;line-height:1.4;white-space:normal;
+  box-shadow:0 4px 12px rgba(0,0,0,.25)}
 .ctrl .ck{font-size:10px;color:var(--txt3);text-transform:uppercase;
   letter-spacing:.3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ctrl .cv{font-size:16px;font-weight:600;margin-top:3px}
+.cat-header{display:flex;align-items:center;gap:8px;cursor:pointer;
+  padding:9px 2px;user-select:none}
+.cat-header:hover{color:var(--accent2)}
+.cat-arrow{color:var(--txt3);font-size:10px;width:10px;display:inline-block}
+.cat-block{margin-top:8px}
+.bulk-bar{display:flex;align-items:center;gap:10px;margin-bottom:10px;
+  background:var(--bg2);border:1px solid var(--accent);border-radius:8px;
+  padding:9px 14px;font-size:13px}
 .close{background:none;border:none;color:var(--txt2);cursor:pointer;
   font-size:22px;line-height:1;padding:4px 8px;border-radius:6px}
 .close:hover{background:var(--bg3);color:var(--txt)}
@@ -422,13 +439,19 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         <h2>Зоны</h2>
         <table class="reg-table" style="margin-bottom:12px">
           <thead><tr>
-            <th style="width:20px"></th>
+            <th style="width:36px">Цвет</th>
             <th>Название</th><th>Счётчиков</th><th style="width:200px">Действия</th>
           </tr></thead>
           <tbody>
             <template x-for="z in zones" :key="z.id">
               <tr>
-                <td><span class="zone-badge" :style="`background:${zoneColor(z.name)};width:10px;height:10px;display:inline-block;border-radius:3px`"></span></td>
+                <td>
+                  <input type="color" :value="z.color||'#2f9e8f'"
+                    @change="changeZoneColor(z,$event.target.value)"
+                    title="Цвет зоны"
+                    style="width:26px;height:22px;border:none;background:none;
+                           cursor:pointer;padding:0;vertical-align:middle">
+                </td>
                 <template x-if="zoneEditId !== z.id">
                   <td style="font-weight:600" x-text="z.name"></td>
                 </template>
@@ -481,96 +504,138 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           <div class="empty"><span class="spin"></span> загрузка…</div>
         </template>
         <template x-if="!settingsLoading">
-          <table class="reg-table">
-            <thead><tr>
-              <th>Имя</th><th>Группа</th><th>Комментарий</th><th>Роль</th><th>device_id</th>
-              <th>Serial</th><th style="width:160px">Действия</th>
-            </tr></thead>
-            <tbody>
-              <template x-for="m in regMeters" :key="m.device_id">
-                <tr>
-                  <!-- Обычный режим -->
-                  <template x-if="editingId !== m.device_id">
-                    <td x-text="m.display_name"></td>
-                  </template>
-                  <template x-if="editingId === m.device_id">
-                    <td class="edit-row">
-                      <input x-model="editName" @keydown.enter="saveEdit(m.device_id)" @keydown.escape="editingId=null">
-                    </td>
-                  </template>
-                  <template x-if="editingId !== m.device_id">
-                    <td class="muted" x-text="m.group_name||'—'"></td>
-                  </template>
-                  <template x-if="editingId !== m.device_id">
-                    <td class="muted" style="font-style:italic;font-size:12px;max-width:180px;
-                        overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                        x-text="m.notes||'—'" :title="m.notes||''"></td>
-                  </template>
-                  <template x-if="editingId === m.device_id">
-                    <td class="edit-row">
-                      <input x-model="editNotes" placeholder="комментарий (необяз.)"
-                             @keydown.escape="editingId=null" style="font-style:italic">
-                    </td>
-                  </template>
-                  <!-- Роль — обычный режим -->
-                  <template x-if="editingId !== m.device_id">
+          <div>
+            <!-- Панель массового назначения зоны -->
+            <div class="bulk-bar" x-show="selectedMeters.length>0">
+              <span>Выбрано <b x-text="selectedMeters.length"></b></span>
+              <select x-model="bulkGroup">
+                <option value="">— Без зоны —</option>
+                <template x-for="g in allGroups" :key="g">
+                  <option :value="g" x-text="g"></option>
+                </template>
+              </select>
+              <button class="btn btn-sm btn-primary" @click="applyBulkGroup()">Применить</button>
+              <button class="btn btn-sm btn-secondary" @click="selectedMeters=[]">Отмена</button>
+            </div>
+            <table class="reg-table">
+              <thead><tr>
+                <th style="width:26px">
+                  <input type="checkbox" :checked="allSelected" @change="toggleSelectAll($event)">
+                </th>
+                <th>Имя</th><th>Группа</th><th>Комментарий</th><th>Роль</th><th>device_id</th>
+                <th>Serial</th><th style="width:160px">Действия</th>
+              </tr></thead>
+              <tbody>
+                <template x-for="m in regMeters" :key="m.device_id">
+                  <tr>
+                    <!-- Чекбокс выбора для массового назначения зоны -->
+                    <td><input type="checkbox" :value="m.device_id" x-model="selectedMeters"></td>
+
+                    <!-- Имя -->
                     <td>
-                      <span :style="`color:${roleColor(m.role)};font-weight:600;font-size:12px`"
-                            x-text="roleLabel(m.role)"></span>
+                      <template x-if="editingId !== m.device_id">
+                        <span x-text="m.display_name"></span>
+                      </template>
+                      <template x-if="editingId === m.device_id">
+                        <input x-model="editName" @keydown.enter="saveEdit(m.device_id)" @keydown.escape="editingId=null"
+                               style="background:var(--bg3);border:1px solid var(--accent);
+                                      color:var(--txt);padding:5px 9px;border-radius:5px;
+                                      font-size:13px;font-family:inherit;width:100%">
+                      </template>
                     </td>
-                  </template>
-                  <!-- Роль — режим редактирования -->
-                  <template x-if="editingId === m.device_id">
+
+                    <!-- Группа: выпадающий список вместо свободного текста (A8) -->
+                    <td>
+                      <template x-if="editingId !== m.device_id">
+                        <span class="muted" x-text="m.group_name||'—'"></span>
+                      </template>
+                      <template x-if="editingId === m.device_id">
+                        <div>
+                          <select x-model="editGroup"
+                                  style="background:var(--bg3);border:1px solid var(--accent);
+                                         color:var(--txt);padding:5px 9px;border-radius:5px;
+                                         font-size:13px;font-family:inherit;width:100%">
+                            <option value="">— Без зоны —</option>
+                            <template x-for="g in allGroups" :key="g">
+                              <option :value="g" x-text="g"></option>
+                            </template>
+                            <option value="__new__">+ Новая зона…</option>
+                          </select>
+                          <template x-if="editGroup==='__new__'">
+                            <input x-model="editGroupNew" placeholder="имя новой зоны"
+                                   @keydown.enter="saveEdit(m.device_id)"
+                                   style="margin-top:5px;background:var(--bg3);border:1px solid var(--accent);
+                                          color:var(--txt);padding:5px 9px;border-radius:5px;
+                                          font-size:13px;font-family:inherit;width:100%">
+                          </template>
+                        </div>
+                      </template>
+                    </td>
+
+                    <!-- Комментарий -->
+                    <td>
+                      <template x-if="editingId !== m.device_id">
+                        <span class="muted" style="font-style:italic;font-size:12px;max-width:180px;
+                            overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block"
+                            x-text="m.notes||'—'" :title="m.notes||''"></span>
+                      </template>
+                      <template x-if="editingId === m.device_id">
+                        <input x-model="editNotes" placeholder="комментарий (необяз.)"
+                               @keydown.escape="editingId=null"
+                               style="font-style:italic;background:var(--bg3);border:1px solid var(--accent);
+                                      color:var(--txt);padding:5px 9px;border-radius:5px;
+                                      font-size:13px;font-family:inherit;width:100%">
+                      </template>
+                    </td>
+
+                    <!-- Роль -->
                     <td style="white-space:nowrap">
-                      <button class="role-btn" :class="editRole==='input'?'active-input':''"
-                        @click="editRole='input'">Ввод</button>
-                      <button class="role-btn" :class="editRole==='consumer'?'active-consumer':''"
-                        @click="editRole='consumer'">Потребитель</button>
-                      <button class="role-btn" :class="editRole==='other'?'active-other':''"
-                        @click="editRole='other'">Прочее</button>
+                      <template x-if="editingId !== m.device_id">
+                        <span :style="`color:${roleColor(m.role)};font-weight:600;font-size:12px`"
+                              x-text="roleLabel(m.role)"></span>
+                      </template>
+                      <template x-if="editingId === m.device_id">
+                        <span>
+                          <button class="role-btn" :class="editRole==='input'?'active-input':''"
+                            @click="editRole='input'">Ввод</button>
+                          <button class="role-btn" :class="editRole==='consumer'?'active-consumer':''"
+                            @click="editRole='consumer'">Потребитель</button>
+                          <button class="role-btn" :class="editRole==='other'?'active-other':''"
+                            @click="editRole='other'">Прочее</button>
+                        </span>
+                      </template>
                     </td>
-                  </template>
-                  <template x-if="editingId === m.device_id">
-                    <td class="edit-row">
-                      <input x-model="editGroup" placeholder="группа (необяз.)"
-                             @keydown.enter="saveEdit(m.device_id)" @keydown.escape="editingId=null"
-                             list="groups-list">
-                      <datalist id="groups-list">
-                        <template x-for="g in allGroups" :key="g">
-                          <option :value="g"></option>
-                        </template>
-                      </datalist>
+
+                    <td class="muted mono" style="font-size:12px" x-text="m.device_id"></td>
+                    <td class="muted mono" style="font-size:12px" x-text="m.serial_number||'—'"></td>
+                    <td>
+                      <template x-if="editingId !== m.device_id">
+                        <div style="display:flex;gap:6px">
+                          <button class="btn btn-sm btn-secondary"
+                            @click="startEdit(m)">✏ Изменить</button>
+                          <button class="btn btn-sm btn-danger"
+                            @click="askDelete(m)">✕</button>
+                        </div>
+                      </template>
+                      <template x-if="editingId === m.device_id">
+                        <div style="display:flex;gap:6px">
+                          <button class="btn btn-sm btn-success"
+                            @click="saveEdit(m.device_id)">✓ Сохранить</button>
+                          <button class="btn btn-sm btn-secondary"
+                            @click="editingId=null">Отмена</button>
+                        </div>
+                      </template>
                     </td>
-                  </template>
-                  <td class="muted mono" style="font-size:12px" x-text="m.device_id"></td>
-                  <td class="muted mono" style="font-size:12px" x-text="m.serial_number||'—'"></td>
-                  <td>
-                    <template x-if="editingId !== m.device_id">
-                      <div style="display:flex;gap:6px">
-                        <button class="btn btn-sm btn-secondary"
-                          @click="startEdit(m)">✏ Изменить</button>
-                        <button class="btn btn-sm btn-danger"
-                          @click="askDelete(m)">✕</button>
-                      </div>
-                    </template>
-                    <template x-if="editingId === m.device_id">
-                      <div style="display:flex;gap:6px">
-                        <button class="btn btn-sm btn-success"
-                          @click="saveEdit(m.device_id)">✓ Сохранить</button>
-                        <button class="btn btn-sm btn-secondary"
-                          @click="editingId=null">Отмена</button>
-                      </div>
-                    </template>
-                  </td>
-                </tr>
-              </template>
-              <template x-if="regMeters.length===0">
-                <tr><td colspan="5" style="text-align:center;color:var(--txt3);padding:20px">
-                  Реестр пуст. Добавьте счётчики через кнопку «Сканировать».
-                </td></tr>
-              </template>
-            </tbody>
-          </table>
+                  </tr>
+                </template>
+                <template x-if="regMeters.length===0">
+                  <tr><td colspan="8" style="text-align:center;color:var(--txt3);padding:20px">
+                    Реестр пуст. Добавьте счётчики через кнопку «Сканировать».
+                  </td></tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
         </template>
       </div>
 
@@ -613,21 +678,28 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                                 color:var(--txt);padding:5px 9px;border-radius:5px;
                                 font-size:13px;font-family:inherit;width:180px"
                          @keydown.enter="confirmAdd(u.device_id)" @keydown.escape="addingId=null">
-                  <input x-model="addGroup" placeholder="Группа"
+                  <select x-model="addGroup"
                          style="background:var(--bg3);border:1px solid var(--line);
                                 color:var(--txt);padding:5px 9px;border-radius:5px;
-                                font-size:13px;font-family:inherit;width:130px"
-                         list="groups-list2" @keydown.enter="confirmAdd(u.device_id)" @keydown.escape="addingId=null">
+                                font-size:13px;font-family:inherit;width:150px">
+                    <option value="">— Без зоны —</option>
+                    <template x-for="g in allGroups" :key="g">
+                      <option :value="g" x-text="g"></option>
+                    </template>
+                    <option value="__new__">+ Новая зона…</option>
+                  </select>
+                  <template x-if="addGroup==='__new__'">
+                    <input x-model="addGroupNew" placeholder="имя новой зоны"
+                           style="background:var(--bg3);border:1px solid var(--accent);
+                                  color:var(--txt);padding:5px 9px;border-radius:5px;
+                                  font-size:13px;font-family:inherit;width:150px"
+                           @keydown.enter="confirmAdd(u.device_id)" @keydown.escape="addingId=null">
+                  </template>
                   <input x-model="addNotes" placeholder="Комментарий"
                          style="background:var(--bg3);border:1px solid var(--line);
                                 color:var(--txt);padding:5px 9px;border-radius:5px;
                                 font-size:13px;font-family:inherit;width:160px;font-style:italic"
                          @keydown.enter="confirmAdd(u.device_id)" @keydown.escape="addingId=null">
-                  <datalist id="groups-list2">
-                    <template x-for="g in allGroups" :key="g">
-                      <option :value="g"></option>
-                    </template>
-                  </datalist>
                   <button class="btn btn-success btn-sm" @click="confirmAdd(u.device_id)">✓</button>
                   <button class="btn btn-secondary btn-sm" @click="addingId=null">✕</button>
                 </div>
@@ -1206,13 +1278,13 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 
   <!-- DETAIL MODAL -->
   <template x-if="detail">
-    <div class="overlay" @click.self="detail=null">
+    <div class="overlay" @click.self="closeDetail()">
       <div class="modal">
         <div class="modal-head">
           <span class="dot" :style="`background:${statusColor(detail.status)};width:11px;height:11px`"></span>
           <span class="nm" x-text="detail.display_name"></span>
           <span class="badge" :style="badgeStyle(detail.status)" x-text="statusLabel(detail.status)"></span>
-          <button class="close" @click="detail=null">×</button>
+          <button class="close" @click="closeDetail()">×</button>
         </div>
         <div class="modal-body">
           <div class="muted" style="margin-bottom:14px">
@@ -1224,17 +1296,126 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           <template x-if="detail.status_reason">
             <div class="warn-item" x-text="detail.status_reason"></div>
           </template>
-          <div class="ctrl-grid" style="margin-top:14px">
-            <template x-for="(c,name) in detail.controls" :key="name">
-              <div class="ctrl">
-                <div class="ck" x-text="name"></div>
-                <div class="cv mono">
-                  <span x-text="c.numeric!=null?fmt(c.numeric,3):(c.value!=null?c.value:'—')"></span>
-                  <template x-if="c.error"><small style="color:var(--err)"> err</small></template>
-                </div>
+
+          <!-- ===== СЕТКА ПАРАМЕТРОВ (категоризация, §5 ТЗ) ===== -->
+          <template x-if="!detailChannel">
+            <div style="margin-top:14px">
+              <div class="section-title" style="margin-bottom:8px">Основные</div>
+              <div class="ctrl-grid">
+                <template x-for="c in detailMainControls" :key="c.name">
+                  <div class="ctrl" :class="c.numeric!=null?'ctrl-clickable':''"
+                       :data-hint="c.hint||null" :title="c.hint||c.label"
+                       @click="c.numeric!=null && openChannelChart(c.name)">
+                    <div class="ck" x-text="c.label||c.name"></div>
+                    <div class="cv mono">
+                      <span x-text="c.numeric!=null?fmt(c.numeric,3):(c.value!=null?c.value:'—')"></span>
+                      <small style="color:var(--txt2);font-weight:400" x-show="c.units" x-text="c.units"></small>
+                      <template x-if="c.error"><small style="color:var(--err)"> err</small></template>
+                    </div>
+                  </div>
+                </template>
               </div>
-            </template>
-          </div>
+
+              <template x-for="cat in detailOtherCategories" :key="cat.id">
+                <div class="cat-block">
+                  <div class="cat-header" @click="toggleDetailCat(cat.id)">
+                    <span class="cat-arrow" x-text="isDetailCatOpen(cat.id)?'▾':'▸'"></span>
+                    <span style="font-weight:600;font-size:13px" x-text="cat.label"></span>
+                    <span class="muted" x-text="'· '+cat.items.length"></span>
+                  </div>
+                  <div class="ctrl-grid" x-show="isDetailCatOpen(cat.id)">
+                    <template x-for="c in cat.items" :key="c.name">
+                      <div class="ctrl" :class="c.numeric!=null?'ctrl-clickable':''"
+                           :data-hint="c.hint||null" :title="c.hint||c.label"
+                           @click="c.numeric!=null && openChannelChart(c.name)">
+                        <div class="ck" x-text="c.label||c.name"></div>
+                        <div class="cv mono">
+                          <span x-text="c.numeric!=null?fmt(c.numeric,3):(c.value!=null?c.value:'—')"></span>
+                          <small style="color:var(--txt2);font-weight:400" x-show="c.units" x-text="c.units"></small>
+                          <template x-if="c.error"><small style="color:var(--err)"> err</small></template>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <!-- ===== ГРАФИК ИСТОРИИ ПАРАМЕТРА (задача 2, §4.3 ТЗ) ===== -->
+          <template x-if="detailChannel">
+            <div style="margin-top:10px">
+              <button class="btn btn-secondary btn-sm" @click="closeChannelChart()" style="margin-bottom:12px">← К параметрам</button>
+              <div style="margin-bottom:10px">
+                <div style="font-weight:700;font-size:15px" x-text="channelLabel(detailChannel)"></div>
+                <div class="muted" style="font-size:12px" x-text="detail.device_id + ' · ' + detailChannel"></div>
+              </div>
+              <div class="report-row">
+                <button class="btn btn-sm" :style="detailChartPeriod==='hour'?
+                    'background:var(--accent);color:#fff':'background:var(--bg3);border:1px solid var(--line);color:var(--txt2)'"
+                  @click="detailChartPeriod='hour';detailChartFrom='';detailChartTo='';loadDetailChart()">Час</button>
+                <button class="btn btn-sm" :style="detailChartPeriod==='today'?
+                    'background:var(--accent);color:#fff':'background:var(--bg3);border:1px solid var(--line);color:var(--txt2)'"
+                  @click="detailChartPeriod='today';detailChartFrom='';detailChartTo='';loadDetailChart()">Сутки</button>
+                <button class="btn btn-sm" :style="detailChartPeriod==='last_7d'?
+                    'background:var(--accent);color:#fff':'background:var(--bg3);border:1px solid var(--line);color:var(--txt2)'"
+                  @click="detailChartPeriod='last_7d';detailChartFrom='';detailChartTo='';loadDetailChart()">Неделя</button>
+                <button class="btn btn-sm" :style="detailChartPeriod==='this_month'?
+                    'background:var(--accent);color:#fff':'background:var(--bg3);border:1px solid var(--line);color:var(--txt2)'"
+                  @click="detailChartPeriod='this_month';detailChartFrom='';detailChartTo='';loadDetailChart()">Месяц</button>
+                <input type="date" x-model="detailChartFrom"
+                  style="background:var(--bg2);border:1px solid var(--line);color:var(--txt);
+                         padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit">
+                <span class="muted">—</span>
+                <input type="date" x-model="detailChartTo"
+                  style="background:var(--bg2);border:1px solid var(--line);color:var(--txt);
+                         padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit">
+                <button class="btn btn-sm btn-secondary" @click="detailChartPeriod='';loadDetailChart()">Применить</button>
+                <div class="spacer"></div>
+                <button class="dl-btn" @click="downloadDetailChart()" :disabled="!detailChartData||!detailChartData.points_count">⬇ CSV</button>
+              </div>
+
+              <template x-if="detailChartLoading">
+                <div class="empty"><span class="spin"></span> загрузка…</div>
+              </template>
+              <template x-if="!detailChartLoading && detailChartError">
+                <div class="empty" style="color:var(--err)" x-text="detailChartError"></div>
+              </template>
+              <template x-if="!detailChartLoading && !detailChartError && detailChartData && detailChartData.points_count===0">
+                <div class="empty">Нет данных за период</div>
+              </template>
+              <template x-if="!detailChartLoading && !detailChartError && detailChartData && detailChartData.points_count>0">
+                <div>
+                  <div class="profile-meta">
+                    <div class="pm"><div class="pk">Мин</div><div class="pv mono" x-text="fmt(detailChartData.min,3)"></div></div>
+                    <div class="pm"><div class="pk">Макс</div><div class="pv mono" x-text="fmt(detailChartData.max,3)"></div></div>
+                    <div class="pm"><div class="pk">Среднее</div><div class="pv mono" x-text="fmt(detailChartData.avg,3)"></div></div>
+                    <div class="pm"><div class="pk">Последнее</div><div class="pv mono" x-text="fmt(detailChartData.last,3)"></div></div>
+                  </div>
+                  <div class="profile-wrap"><div x-html="detailChartSvg"></div></div>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- CONFIRM MERGE ZONES (A3/A5) -->
+  <template x-if="mergeConfirm">
+    <div class="confirm-overlay">
+      <div class="confirm-box">
+        <h3>Зона с таким именем уже есть</h3>
+        <p>
+          Зона «<b x-text="mergeConfirm.name"></b>» уже существует.<br><br>
+          Объединить зоны? Все счётчики текущей зоны перейдут в
+          существующую «<b x-text="mergeConfirm.name"></b>», зона-дубль
+          будет удалена. Это действие нельзя отменить.
+        </p>
+        <div class="actions">
+          <button class="btn btn-secondary" @click="mergeConfirm=null">Отмена</button>
+          <button class="btn btn-primary" @click="confirmMergeZones()">Объединить зоны</button>
         </div>
       </div>
     </div>
@@ -1300,18 +1481,29 @@ function app(){ return {
   chartBars:[], chartSvg:'', chartMeterName:'',
   // settings
   settingsLoading:false, regMeters:[], unregistered:[], allGroups:[],
+  // массовое назначение зоны (§3.6 ТЗ)
+  selectedMeters:[], bulkGroup:'',
   // zones
   zones:[], zoneEditId:null, zoneEditName:'', zoneNewName:'', confirmZone:null,
+  mergeConfirm:null,
   scanLoading:false,
-  editingId:null, editName:'', editGroup:'', editNotes:'', editRole:'consumer',
-  addingId:null, addName:'', addGroup:'', addNotes:'',
+  editingId:null, editName:'', editGroup:'', editGroupNew:'', editNotes:'', editRole:'consumer',
+  addingId:null, addName:'', addGroup:'', addGroupNew:'', addNotes:'',
   confirmTarget:null,
+  // словарь каналов (§5 ТЗ)
+  channelCategories:[],
+  // детали счётчика: график истории параметра (задача 2, §4 ТЗ)
+  detailChannel:null, detailChartLoading:false, detailChartError:'',
+  detailChartData:null, detailChartSvg:'',
+  detailChartPeriod:'today', detailChartFrom:'', detailChartTo:'',
+  detailCatsOpen:lsGetJSON('wbem.detailCats',{}),
+  _detailChartSeq:0, _detailChartLastCall:0,
   // reports
   rMode:'vedomost', rLoading:false,
   rPeriod:'this_month', rFrom:'', rTo:'',
   vedomostRows:[], rTotal:0, rPeriodLabel:'',
   profileMeterId:'', profilePeriod:'last_7d', profileFrom:'', profileTo:'',
-  profileHours:[], profileTotal:0, profilePeak:{v:0,label:''},
+  profileHours:[], profileTotal:0, profilePeak:{v:0,label:'',item:null},
   profileSvg:'', profileLoading:false,
   profilePresets:[
     {id:'today',label:'Сегодня'},{id:'yesterday',label:'Вчера'},
@@ -1327,7 +1519,16 @@ function app(){ return {
 
   init(){
     this.refresh();
+    this.loadChannelDictionary();
+    this.reloadGroups();
     this._timer=setInterval(()=>{ if(this.tab=='dash') this.loadStatus(); },5000);
+  },
+  async loadChannelDictionary(){
+    try{
+      const r=await fetch('/api/channels/dictionary');
+      const d=await r.json();
+      this.channelCategories=d.categories||[];
+    }catch(e){ console.error(e); }
   },
   toggleTheme(){ this.theme=this.theme=='dark'?'light':'dark';
     try{localStorage.setItem('theme',this.theme)}catch(e){} },
@@ -1359,7 +1560,17 @@ function app(){ return {
     const order = [...named, '— Без зоны —'].filter(k=>groups[k]);
     return order.map(k=>groups[k]);
   },
-  zoneColor(name){
+  zoneColor(zone){
+    // Принимает либо имя зоны строкой, либо объект зоны {name,color}
+    // (§3.7 ТЗ). Приоритет — цвет из БД, иначе детерминированный хеш
+    // от имени (фолбэк для старых зон без цвета — ничего не ломается).
+    const name = typeof zone==='string' ? zone : ((zone&&zone.name)||'');
+    let color = (zone && typeof zone==='object') ? zone.color : null;
+    if(!color){
+      const z=(this.zones||[]).find(zz=>zz.name===name);
+      if(z) color=z.color;
+    }
+    if(color) return color;
     if(name==='— Без зоны —') return 'var(--txt3)';
     // Детерминированный цвет из имени зоны
     let h=0;
@@ -1433,9 +1644,152 @@ function app(){ return {
     return Number(v).toFixed(d);
   },
   async openDetail(devId){
+    this.detailChannel=null; this.detailChartData=null; this.detailChartError='';
     try{ const r=await fetch('/api/meters/'+encodeURIComponent(devId));
       this.detail=await r.json(); }catch(e){ console.error(e); }
     if(this.tab=='consumption') this.loadHourly(devId);
+  },
+  closeDetail(){
+    this.detail=null; this.detailChannel=null;
+    this.detailChartData=null; this.detailChartError=''; this.detailChartSvg='';
+  },
+
+  // ---- Детали счётчика: категории параметров (§5 ТЗ) ----
+  get detailMainControls(){
+    if(!this.detail || !this.detail.controls) return [];
+    return Object.entries(this.detail.controls)
+      .filter(([name,c])=>c.main)
+      .map(([name,c])=>({name,...c}));
+  },
+  get detailOtherCategories(){
+    if(!this.detail || !this.detail.controls) return [];
+    const byCat={};
+    Object.entries(this.detail.controls).forEach(([name,c])=>{
+      if(c.main) return;
+      const cat=c.category||'other';
+      if(!byCat[cat]) byCat[cat]=[];
+      byCat[cat].push({name,...c});
+    });
+    const meta=(this.channelCategories&&this.channelCategories.length)?
+      this.channelCategories:FALLBACK_CATEGORIES;
+    return meta.filter(cc=>cc.id!=='main')
+      .map(cc=>({id:cc.id,label:cc.label,open:cc.open,items:byCat[cc.id]||[]}))
+      .filter(cc=>cc.items.length>0);
+  },
+  _catDefaultOpen(id){
+    const meta=(this.channelCategories&&this.channelCategories.length)?
+      this.channelCategories:FALLBACK_CATEGORIES;
+    const c=meta.find(cc=>cc.id===id);
+    return c?!!c.open:false;
+  },
+  isDetailCatOpen(id){
+    const cur=this.detailCatsOpen[id];
+    return cur===undefined?this._catDefaultOpen(id):cur;
+  },
+  toggleDetailCat(id){
+    const isOpen=this.isDetailCatOpen(id);
+    this.detailCatsOpen={...this.detailCatsOpen,[id]:!isOpen};
+    try{ localStorage.setItem('wbem.detailCats',JSON.stringify(this.detailCatsOpen)); }catch(e){}
+  },
+  channelLabel(name){
+    const c=this.detail&&this.detail.controls&&this.detail.controls[name];
+    const label=(c&&c.label)?c.label:name;
+    const units=(c&&c.units)?(' ('+c.units+')'):'';
+    return label+units;
+  },
+
+  // ---- График истории параметра (задача 2, §4 ТЗ) ----
+  openChannelChart(name){
+    this.detailChannel=name;
+    this.detailChartPeriod='today'; this.detailChartFrom=''; this.detailChartTo='';
+    this.detailChartData=null; this.detailChartError=''; this.detailChartSvg='';
+    this.loadDetailChart();
+  },
+  closeChannelChart(){
+    this.detailChannel=null;
+    this.detailChartData=null; this.detailChartError=''; this.detailChartSvg='';
+  },
+  detailChartQuery(){
+    if(this.detailChartPeriod==='hour'){
+      const to=new Date(), from=new Date(to.getTime()-3600*1000);
+      return 'from='+dtLocal(from)+'&to='+dtLocal(to);
+    }
+    return this._rPeriodQuery(this.detailChartPeriod, this.detailChartFrom, this.detailChartTo);
+  },
+  async loadDetailChart(){
+    if(!this.detail || !this.detailChannel) return;
+    const myReq=++this._detailChartSeq;
+    // Троттлинг ~300мс между запросами (известное ограничение — см.
+    // CHANGELOG: wb_db_client.WbDbClient открывает новое MQTT-соединение
+    // на каждый RPC-вызов, частые клики по параметрам иначе дают шквал
+    // подключений к брокеру).
+    const wait=Math.max(0,300-(Date.now()-this._detailChartLastCall));
+    if(wait>0) await new Promise(res=>setTimeout(res,wait));
+    if(myReq!==this._detailChartSeq) return;
+    this._detailChartLastCall=Date.now();
+    this.detailChartLoading=true; this.detailChartError='';
+    this.detailChartData=null; this.detailChartSvg='';
+    const q=this.detailChartQuery();
+    try{
+      const r=await fetch('/api/meters/'+encodeURIComponent(this.detail.device_id)+
+        '/channel-history?control='+encodeURIComponent(this.detailChannel)+'&'+q);
+      if(myReq!==this._detailChartSeq) return;
+      if(!r.ok){
+        let e={}; try{ e=await r.json(); }catch(_){}
+        this.detailChartError=e.detail||e.error||'История недоступна: wb-mqtt-db не отвечает';
+        this.detailChartLoading=false; return;
+      }
+      const d=await r.json();
+      if(myReq!==this._detailChartSeq) return;
+      this.detailChartData=d;
+      this.renderDetailChartSvg();
+    }catch(e){
+      if(myReq===this._detailChartSeq)
+        this.detailChartError='История недоступна: wb-mqtt-db не отвечает';
+    }
+    if(myReq===this._detailChartSeq) this.detailChartLoading=false;
+  },
+  renderDetailChartSvg(){
+    const d=this.detailChartData;
+    if(!d||!d.items||!d.items.length){ this.detailChartSvg=''; return; }
+    const pts=d.items;
+    const W=Math.max(700,Math.min(pts.length*4,1400)), H=220,
+      padL=52, padR=14, padT=16, padB=28;
+    const ts=pts.map(p=>p.t), vs=pts.map(p=>p.v);
+    const tMin=Math.min(...ts), tMax=Math.max(...ts);
+    const vMin=Math.min(...vs), vMax=Math.max(...vs);
+    const vSpan=(vMax-vMin)||1, tSpan=(tMax-tMin)||1;
+    const X=t=>padL+((t-tMin)/tSpan)*(W-padL-padR);
+    const Y=v=>H-padB-((v-vMin)/vSpan)*(H-padT-padB);
+    let svg=`<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px">`;
+    for(let i=0;i<=4;i++){
+      const y=padT+(H-padT-padB)*i/4;
+      const val=vMax-(vSpan*i/4);
+      svg+=`<line x1="${padL}" y1="${y}" x2="${W-padR}" y2="${y}" stroke="var(--line)" stroke-dasharray="3,3"/>`;
+      svg+=`<text x="${padL-4}" y="${y+4}" fill="var(--txt3)" font-size="10" text-anchor="end">${val.toFixed(2)}</text>`;
+    }
+    svg+=`<line x1="${padL}" y1="${H-padB}" x2="${W-padR}" y2="${H-padB}" stroke="var(--line)"/>`;
+    const path=pts.map((p,i)=>(i===0?'M':'L')+X(p.t).toFixed(1)+','+Y(p.v).toFixed(1)).join(' ');
+    svg+=`<path d="${path}" fill="none" stroke="var(--accent)" stroke-width="1.6"/>`;
+    [0, Math.floor(pts.length/2), pts.length-1].forEach(i=>{
+      const p=pts[i]; if(!p) return;
+      svg+=`<text x="${X(p.t)}" y="${H-padB+14}" fill="var(--txt3)" font-size="9" text-anchor="middle">${fmtHour(p.t)}</text>`;
+    });
+    svg+=`</svg>`;
+    this.detailChartSvg=svg;
+  },
+  downloadDetailChart(){
+    const d=this.detailChartData;
+    if(!d||!d.items||!d.items.length) return;
+    const lines=['﻿',
+      `wb-energy-meter — История ${d.label||d.control} (${d.device_id})`,'',
+      'Время;Значение'+(d.units?(' ('+d.units+')'):'')];
+    d.items.forEach(p=>{ lines.push([this.csvCell(fmtHour(p.t)),p.v].join(';')); });
+    const blob=new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=(`channel_${d.device_id}_${d.control}.csv`).replace(/[^\w.\-]+/g,'_');
+    a.click();
   },
 
   // ---- Consumption ----
@@ -1518,19 +1872,41 @@ function app(){ return {
     }catch(e){this.showToast('Ошибка: '+e,false);}
   },
   startZoneEdit(z){this.zoneEditId=z.id;this.zoneEditName=z.name;},
-  async saveZoneEdit(id){
+  async saveZoneEdit(id, merge){
     const name=this.zoneEditName.trim();
     if(!name){this.zoneEditId=null;return;}
     try{
+      const body={name}; if(merge) body.merge=true;
       const r=await fetch('/api/registry/groups/'+id,
         {method:'PATCH',headers:{'Content-Type':'application/json'},
-         body:JSON.stringify({name})});
+         body:JSON.stringify(body)});
+      if(r.status===409){
+        // Зона с таким именем уже есть — предлагаем объединить (A3/A5)
+        const e=await r.json();
+        this.mergeConfirm={groupId:id, name, existingId:e.existing_id};
+        return;
+      }
       if(!r.ok){const e=await r.json();this.showToast(e.error||'Ошибка',false);return;}
-      this.zoneEditId=null;
-      this.showToast('Зона переименована');
+      this.zoneEditId=null; this.mergeConfirm=null;
+      this.showToast(merge?'Зоны объединены':'Зона переименована');
       await this.reloadGroups();
       await this.loadSettings();
       await this.loadStatus();
+    }catch(e){this.showToast('Ошибка: '+e,false);}
+  },
+  async confirmMergeZones(){
+    if(!this.mergeConfirm) return;
+    const groupId=this.mergeConfirm.groupId;
+    this.mergeConfirm=null;
+    await this.saveZoneEdit(groupId, true);
+  },
+  async changeZoneColor(z, color){
+    try{
+      const r=await fetch('/api/registry/groups/'+z.id,
+        {method:'PATCH',headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({color})});
+      if(!r.ok){const e=await r.json();this.showToast(e.error||'Ошибка',false);return;}
+      await this.reloadGroups();
     }catch(e){this.showToast('Ошибка: '+e,false);}
   },
   askDeleteZone(z){this.confirmZone=z;},
@@ -1559,11 +1935,17 @@ function app(){ return {
     this.editingId=m.device_id;
     this.editName=m.display_name;
     this.editGroup=m.group_name||'';
+    this.editGroupNew='';
     this.editNotes=m.notes||'';
     this.editRole=m.role||'consumer';
   },
   async saveEdit(deviceId){
-    const body={display_name:this.editName.trim(),group:this.editGroup.trim(),notes:this.editNotes.trim()};
+    let group=this.editGroup;
+    if(group==='__new__'){
+      group=(this.editGroupNew||'').trim();
+      if(!group){ this.showToast('Введите название новой зоны', false); return; }
+    }
+    const body={display_name:this.editName.trim(),group,notes:this.editNotes.trim()};
     // Роль сохраняем отдельным запросом если изменилась
     const origRole=(this.regMeters.find(m=>m.device_id===deviceId)||{}).role||'consumer';
     const roleChanged=this.editRole!==origRole;
@@ -1578,22 +1960,51 @@ function app(){ return {
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
 
+  // ---- Массовое назначение зоны (§3.6 ТЗ) ----
+  get allSelected(){
+    return this.regMeters.length>0 && this.selectedMeters.length===this.regMeters.length;
+  },
+  toggleSelectAll(ev){
+    this.selectedMeters = ev.target.checked ? this.regMeters.map(m=>m.device_id) : [];
+  },
+  async applyBulkGroup(){
+    const ids=[...this.selectedMeters];
+    if(!ids.length) return;
+    const group=this.bulkGroup;
+    let ok=0;
+    for(const id of ids){
+      try{
+        const r=await fetch('/api/registry/meters/'+encodeURIComponent(id),
+          {method:'PATCH',headers:{'Content-Type':'application/json'},
+           body:JSON.stringify({group})});
+        if(r.ok) ok++;
+      }catch(e){ /* пропускаем, считаем ниже по ok */ }
+    }
+    this.selectedMeters=[];
+    const zoneLabel=group?('«'+group+'»'):'«Без зоны»';
+    this.showToast(`Перемещено ${ok} из ${ids.length} счётчиков в зону ${zoneLabel}`, ok===ids.length);
+    await this.loadSettings();
+    await this.loadStatus();
+  },
+
   startAdd(u){
     this.addingId=u.device_id;
     this.addName=u.mqtt_name||u.device_id;
-    this.addGroup='';
+    this.addGroup=''; this.addGroupNew='';
   },
   async confirmAdd(deviceId){
     const name=this.addName.trim()||deviceId;
+    let group=this.addGroup;
+    if(group==='__new__') group=(this.addGroupNew||'').trim();
     const body={device_id:deviceId, display_name:name,
-                group:this.addGroup.trim()||null,
+                group:group||null,
                 notes:this.addNotes.trim()||null};
     try{
       const r=await fetch('/api/registry/meters',
         {method:'POST',headers:{'Content-Type':'application/json'},
          body:JSON.stringify(body)});
       if(!r.ok){ const e=await r.json(); this.showToast(e.error||'Ошибка',false); return; }
-      this.addingId=null; this.addNotes='';
+      this.addingId=null; this.addNotes=''; this.addGroup=''; this.addGroupNew='';
       this.showToast('Счётчик добавлен');
       await this.loadSettings();
       await this.loadStatus();
@@ -1615,8 +2026,11 @@ function app(){ return {
   },
 
   // ---- Reports ----
-  initReports(){
-    if(!this.regMeters.length) this.loadSettings();
+  async initReports(){
+    // B2: было loadSettings() без await — loadVedomost() тут же читал
+    // this.regMeters для колонки «Комментарий», на первом рендере она
+    // была пустой.
+    if(!this.regMeters.length) await this.loadSettings();
     if(this.rMode==='vedomost') this.loadVedomost();
     else if(this.rMode==='avail') this.loadAvail();
     else if(this.rMode==='balance') this.loadBalance();
@@ -1627,6 +2041,13 @@ function app(){ return {
     if(preset) return 'period='+preset;
     if(from_&&to_) return 'from='+from_+'&to='+to_;
     return 'period=this_month';
+  },
+  // B3: общая функция экранирования CSV-полей — используется во всех
+  // выгрузках, чтобы `;`, кавычка или перевод строки в имени/комментарии
+  // не ломали колонки.
+  csvCell(v){
+    const s=(v==null?'':String(v));
+    return /[";\r\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
   },
   async loadVedomost(){
     this.rLoading=true;
@@ -1673,8 +2094,8 @@ function app(){ return {
     this.vedomostRows.forEach(r=>{
       if(r._zone_sep){ curZone=r._zone_sep; return; }
       const v=r.consumption_kwh!=null?r.consumption_kwh.toFixed(3):'';
-      lines.push([curZone,r.display_name,r.device_id,
-        r.notes||'',v,r.quality||''].join(';'));
+      lines.push([this.csvCell(curZone),this.csvCell(r.display_name),this.csvCell(r.device_id),
+        this.csvCell(r.notes||''),v,this.csvCell(r.quality||'')].join(';'));
     });
     lines.push('');
     lines.push(`;;ИТОГО;;${this.rTotal.toFixed(3)};`);
@@ -1700,9 +2121,12 @@ function app(){ return {
       this.profileTotal=vals.reduce((a,b)=>a+b,0);
       if(vals.length>0){
         const maxV=Math.max(...vals);
+        // B5: ищем пик по объекту (единственная ссылка), а не по
+        // значению — иначе при равных значениях подсвечивались бы все
+        // совпавшие бары.
         const peak=this.profileHours.find(h=>h.v===maxV);
-        this.profilePeak={v:maxV,label:peak?fmtHour(peak.t):''};
-      } else { this.profilePeak={v:0,label:''}; }
+        this.profilePeak={v:maxV,label:peak?fmtHour(peak.t):'',item:peak||null};
+      } else { this.profilePeak={v:0,label:'',item:null}; }
       this.renderProfileSvg();
     }catch(e){ console.error(e); }
     this.profileLoading=false;
@@ -1726,7 +2150,7 @@ function app(){ return {
     bars.forEach((b,i)=>{
       const h=(b.v/max)*(H-padT-padB);
       const x=padL+i*bw, y=H-padB-h;
-      const color=b.v===this.profilePeak.v?'var(--warn)':'var(--accent2)';
+      const color=(b===this.profilePeak.item)?'var(--warn)':'var(--accent2)';
       svg+=`<rect class="bar" x="${x+1}" y="${y}" width="${Math.max(1,bw-2)}" height="${h}" `+
         `fill="${color}" rx="1"><title>${fmtHour(b.t)}: ${b.v.toFixed(3)} кВт·ч</title></rect>`;
       // Метки оси X каждые 24 часа (или каждые 4 для коротких периодов)
@@ -1753,7 +2177,7 @@ function app(){ return {
     const lines=['\uFEFF','wb-energy-meter — Профиль нагрузки','',
       'Дата-час;Расход кВт·ч;Качество'];
     this.profileHours.forEach(h=>{
-      lines.push([fmtHour(h.t),h.v!=null?h.v.toFixed(4):'',h.q||''].join(';'));
+      lines.push([this.csvCell(fmtHour(h.t)),h.v!=null?h.v.toFixed(4):'',this.csvCell(h.q||'')].join(';'));
     });
     lines.push('');
     lines.push(`;ИТОГО;${this.profileTotal.toFixed(3)}`);
@@ -1798,7 +2222,7 @@ function app(){ return {
     const lines=['\uFEFF','wb-energy-meter — Сравнение периодов','',
       `Счётчик;Зона;${this.cmpLabelA} кВт·ч;${this.cmpLabelB} кВт·ч;Δ кВт·ч;Δ %`];
     this.cmpRows.forEach(r=>{
-      lines.push([r.display_name,r.group||'',
+      lines.push([this.csvCell(r.display_name),this.csvCell(r.group||''),
         r.a!=null?r.a.toFixed(3):'',
         r.b!=null?r.b.toFixed(3):'',
         r.delta!=null?r.delta.toFixed(3):'',
@@ -1837,18 +2261,18 @@ function app(){ return {
       'Счётчик;device_id;Зона;Расход кВт·ч;Качество',
     ];
     (d.input.meters||[]).forEach(m=>{
-      lines.push([m.display_name,m.device_id,m.group||'',
+      lines.push([this.csvCell(m.display_name),this.csvCell(m.device_id),this.csvCell(m.group||''),
         m.consumption_kwh!=null?m.consumption_kwh.toFixed(3):'',
-        m.quality||''].join(';'));
+        this.csvCell(m.quality||'')].join(';'));
     });
     lines.push([';ИТОГО ВВОД;;;'+d.input.total_kwh.toFixed(3)].join(''));
     lines.push('');
     lines.push('=== ПОТРЕБИТЕЛИ ===');
     lines.push('Счётчик;device_id;Зона;Расход кВт·ч;Качество');
     (d.consumer.meters||[]).forEach(m=>{
-      lines.push([m.display_name,m.device_id,m.group||'',
+      lines.push([this.csvCell(m.display_name),this.csvCell(m.device_id),this.csvCell(m.group||''),
         m.consumption_kwh!=null?m.consumption_kwh.toFixed(3):'',
-        m.quality||''].join(';'));
+        this.csvCell(m.quality||'')].join(';'));
     });
     lines.push([';ИТОГО ПОТРЕБИТЕЛИ;;;'+d.consumer.total_kwh.toFixed(3)].join(''));
     lines.push('');
@@ -1890,8 +2314,8 @@ function app(){ return {
     const lines=['\uFEFF','wb-energy-meter — Доступность','',
       'Счётчик;device_id;Зона;Роль;Доступность %;Недоступность с;Инцидентов'];
     this.availItems.forEach(r=>{
-      lines.push([r.display_name,r.device_id,r.group||'',
-        this.roleLabel(r.role),
+      lines.push([this.csvCell(r.display_name),this.csvCell(r.device_id),this.csvCell(r.group||''),
+        this.csvCell(this.roleLabel(r.role)),
         r.availability_pct.toFixed(2)+'%',
         r.unavailable_s||0,
         r.incidents||0].join(';'));
@@ -1925,6 +2349,24 @@ function app(){ return {
 }; }
 
 function lsGet(k,def){ try{ return localStorage.getItem(k)||def; }catch(e){ return def; } }
+function lsGetJSON(k,def){
+  try{ const v=localStorage.getItem(k); return v?JSON.parse(v):def; }catch(e){ return def; }
+}
+// Фолбэк-список категорий каналов на случай, если /api/channels/dictionary
+// ещё не успел загрузиться (модалка деталей не должна из-за этого падать).
+const FALLBACK_CATEGORIES=[
+  {id:'voltage',label:'Напряжение',open:false},
+  {id:'current',label:'Ток',open:false},
+  {id:'power',label:'Мощность',open:false},
+  {id:'energy',label:'Энергия',open:false},
+  {id:'quality',label:'Качество сети',open:false},
+  {id:'service',label:'Служебные',open:false},
+  {id:'other',label:'Прочее',open:false},
+];
+function dtLocal(d){
+  const p=n=>String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
 function fmtTime(ts){
   return new Date(ts*1000).toLocaleString('ru-RU',
     {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
