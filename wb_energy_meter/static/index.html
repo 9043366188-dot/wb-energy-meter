@@ -202,6 +202,18 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 .unrg-item .unrg-info{flex:1}
 .unrg-item .unrg-id{font-family:monospace;font-size:13px;font-weight:600}
 .unrg-item .unrg-sub{font-size:11px;color:var(--txt3);margin-top:2px}
+/* канал Uptime и конфиг драйвера (ТЗ v0.10.0) */
+.wbs-banner{background:rgba(230,170,20,.12);border:1px solid var(--warn);
+  border-radius:8px;padding:14px 18px;margin-bottom:20px;font-size:13px;
+  line-height:1.5;display:flex;gap:16px;align-items:center;
+  justify-content:space-between;flex-wrap:wrap}
+.wbs-intro{font-size:13px;color:var(--txt2);line-height:1.55;max-width:760px}
+.wbs-manual{margin-top:10px;font-size:12.5px;color:var(--txt2);
+  background:var(--bg3);border-left:3px solid var(--accent);
+  border-radius:0 6px 6px 0;padding:10px 14px;line-height:1.5}
+.wbs-note{margin-top:10px;font-size:12px;color:var(--txt3);line-height:1.5}
+.wbs-detail{margin-top:6px;font-size:11.5px;color:var(--txt2);
+  line-height:1.45;max-width:260px}
 /* confirm dialog */
 .confirm-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);
   display:flex;align-items:center;justify-content:center;z-index:100}
@@ -449,6 +461,20 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   <!-- SETTINGS -->
   <template x-if="tab=='settings'">
     <div>
+      <!-- Плашка о неприменённых изменениях конфига драйвера (ТЗ v0.10.0) -->
+      <template x-if="uptimePending.length>0">
+        <div class="wbs-banner">
+          <div>
+            <b>Конфиг опроса изменён для <span x-text="uptimePending.length"></span>
+              счётчиков, но драйвер не перезапущен.</b><br>
+            Изменения вступят в силу после перезапуска.
+            <span class="mono" style="font-size:11px" x-text="uptimePending.join(', ')"></span>
+          </div>
+          <button class="btn btn-primary" @click="uptimeRestartConfirm=true"
+                  :disabled="uptimeBusy">Перезапустить опрос</button>
+        </div>
+      </template>
+
       <!-- Обновление (самообновление из GitHub, ТЗ v0.9.0) -->
       <div class="settings-section">
         <h2>Обновление</h2>
@@ -644,7 +670,8 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <input type="checkbox" :checked="allSelected" @change="toggleSelectAll($event)">
                 </th>
                 <th>Имя</th><th>Группа</th><th>Комментарий</th><th>Роль</th><th>device_id</th>
-                <th>Serial</th><th style="width:160px">Действия</th>
+                <th>Serial</th><th style="width:120px">Uptime</th>
+                <th style="width:160px">Действия</th>
               </tr></thead>
               <tbody>
                 <template x-for="m in regMeters" :key="m.device_id">
@@ -729,6 +756,20 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 
                     <td class="muted mono" style="font-size:12px" x-text="m.device_id"></td>
                     <td class="muted mono" style="font-size:12px" x-text="m.serial_number||'—'"></td>
+
+                    <!-- Uptime: бейдж состояния канала (ТЗ v0.10.0).
+                         Клик раскрывает пояснение из detail. -->
+                    <td>
+                      <span class="badge" style="cursor:pointer"
+                            :style="uptimeBadgeStyle(uptimeStateOf(m.device_id))"
+                            :title="uptimeDetailOf(m.device_id)"
+                            @click="uptimeOpenId = (uptimeOpenId===m.device_id ? null : m.device_id)"
+                            x-text="uptimeLabel(uptimeStateOf(m.device_id))"></span>
+                      <template x-if="uptimeOpenId===m.device_id">
+                        <div class="wbs-detail" x-text="uptimeDetailOf(m.device_id)"></div>
+                      </template>
+                    </td>
+
                     <td>
                       <template x-if="editingId !== m.device_id">
                         <div style="display:flex;gap:6px">
@@ -750,7 +791,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   </tr>
                 </template>
                 <template x-if="regMeters.length===0">
-                  <tr><td colspan="8" style="text-align:center;color:var(--txt3);padding:20px">
+                  <tr><td colspan="9" style="text-align:center;color:var(--txt3);padding:20px">
                     Реестр пуст. Добавьте счётчики через кнопку «Сканировать».
                   </td></tr>
                 </template>
@@ -758,6 +799,82 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             </table>
           </div>
         </template>
+      </div>
+
+      <!-- Опрос канала Uptime (ТЗ v0.10.0) -->
+      <div class="settings-section">
+        <h2>Опрос канала Uptime</h2>
+        <div class="wbs-intro">
+          WB-MAP3E отдаёт данные только когда меняется нагрузка, поэтому
+          молчащий счётчик неотличим от оборванной линии. Канал
+          <b>Uptime</b> растёт каждые 2 секунды и служит пульсом связи.
+          Ниже — счётчики, у которых он не включён.
+        </div>
+
+        <div class="wbs-manual">
+          <b>Как включить вручную</b> (работает всегда, независимо от
+          кнопок ниже): Device Manager → устройство → HW Info → Uptime →
+          «in queue order», затем сохранить конфигурацию.
+        </div>
+
+        <template x-if="uptimeConfigError">
+          <div class="upd-banner upd-banner-warn" style="margin-top:12px">
+            Проверить конфиг драйвера не удалось:
+            <span x-text="uptimeConfigError"></span>
+          </div>
+        </template>
+
+        <template x-if="!uptimeAllowEdit">
+          <div class="wbs-note">
+            Автоматическая правка выключена в конфиге сервиса
+            (<code>wb_serial.allow_edit</code>). Включите канал вручную:
+            Device Manager → устройство → HW Info → Uptime → in queue order.
+          </div>
+        </template>
+        <template x-if="uptimeAllowEdit">
+          <div class="wbs-note">
+            Кнопка «Включить» правит <code>/etc/wb-mqtt-serial.conf</code> —
+            файл, который отвечает за опрос <b>всех</b> устройств
+            контроллера. Перед записью делается бэкап, отступы в файле
+            будут нормализованы (4 пробела).
+          </div>
+        </template>
+
+        <table class="reg-table" style="margin-top:12px">
+          <thead><tr>
+            <th>Счётчик</th><th style="width:130px">Состояние</th>
+            <th>Пояснение</th><th style="width:140px">Действие</th>
+          </tr></thead>
+          <tbody>
+            <template x-for="u in uptimeProblems" :key="u.device_id">
+              <tr>
+                <td>
+                  <span x-text="u.display_name||u.device_id"></span><br>
+                  <span class="muted mono" style="font-size:11px" x-text="u.device_id"></span>
+                </td>
+                <td>
+                  <span class="badge" :style="uptimeBadgeStyle(u.state)"
+                        x-text="uptimeLabel(u.state)"></span>
+                </td>
+                <td class="muted" style="font-size:12px" x-text="u.detail"></td>
+                <td>
+                  <template x-if="u.can_enable">
+                    <button class="btn btn-sm btn-primary" :disabled="uptimeBusy"
+                            @click="enableUptime(u.device_id)">Включить</button>
+                  </template>
+                  <template x-if="!u.can_enable">
+                    <span class="muted" style="font-size:12px">вручную</span>
+                  </template>
+                </td>
+              </tr>
+            </template>
+            <template x-if="uptimeProblems.length===0">
+              <tr><td colspan="4" style="text-align:center;color:var(--txt3);padding:16px">
+                Счётчиков с невключённым каналом Uptime нет.
+              </td></tr>
+            </template>
+          </tbody>
+        </table>
       </div>
 
       <!-- Незарегистрированные счётчики -->
@@ -1597,6 +1714,24 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     </div>
   </template>
 
+  <!-- CONFIRM RESTART DRIVER (ТЗ v0.10.0) -->
+  <template x-if="uptimeRestartConfirm">
+    <div class="confirm-overlay">
+      <div class="confirm-box">
+        <h3>Перезапустить опрос?</h3>
+        <p>
+          Будет перезапущен драйвер <code>wb-mqtt-serial</code>. На
+          несколько секунд прервётся опрос <b>всех</b> устройств
+          контроллера — не только счётчиков. Продолжить?
+        </p>
+        <div class="actions">
+          <button class="btn btn-secondary" @click="uptimeRestartConfirm=false">Отмена</button>
+          <button class="btn btn-primary" @click="restartDriverNow()">Перезапустить</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
   <!-- TOAST -->
   <template x-if="toast">
     <div class="toast" :class="toast.ok?'toast-ok':'toast-err'" x-text="toast.msg"></div>
@@ -1623,6 +1758,10 @@ function app(){ return {
   updAvailable:false, updCheckedAt:null, updCheckError:'', updAllowFromUi:true,
   updConfirmOpen:false, updStatus:{state:'idle'}, updResultHidden:false,
   _updPollFailStartedAt:null, _updPollTimer:null,
+  // канал Uptime и конфиг wb-mqtt-serial (ТЗ v0.10.0)
+  uptimeItems:[], uptimeAllowEdit:false, uptimePending:[], uptimeSha:null,
+  uptimeConfigError:'', uptimeBusy:false, uptimeOpenId:null,
+  uptimeRestartConfirm:false,
   // settings
   settingsLoading:false, regMeters:[], unregistered:[], allGroups:[],
   // массовое назначение зоны (§3.6 ТЗ)
@@ -1756,6 +1895,85 @@ function app(){ return {
   },
   _stopUpdatePolling(){
     if(this._updPollTimer){ clearInterval(this._updPollTimer); this._updPollTimer=null; }
+  },
+
+  // ---- Канал Uptime и конфиг wb-mqtt-serial (ТЗ v0.10.0) ----
+  async loadUptimeSummary(){
+    try{
+      const r=await fetch('/api/uptime-channel/summary');
+      const d=await r.json();
+      this.uptimeItems=d.items||[];
+      this.uptimeAllowEdit=!!d.allow_edit;
+      this.uptimePending=d.pending||[];
+      this.uptimeSha=d.sha256||null;
+      this.uptimeConfigError=d.config_error||'';
+    }catch(e){ console.error(e); }
+  },
+  uptimeRow(devId){
+    return (this.uptimeItems||[]).find(u=>u.device_id===devId)||null;
+  },
+  uptimeStateOf(devId){
+    const u=this.uptimeRow(devId); return u? u.state : 'unknown';
+  },
+  uptimeDetailOf(devId){
+    const u=this.uptimeRow(devId);
+    return u? (u.detail||'') : 'Состояние канала Uptime ещё не проверено.';
+  },
+  uptimeLabel(st){ return {
+    ok:'опрашивается', disabled:'не включён', not_in_config:'не включён',
+    stale:'нет данных', device_not_found:'не в конфиге',
+    unknown:'не проверено'}[st]||'не проверено';
+  },
+  uptimeColor(st){ return {
+    ok:'var(--ok)', disabled:'var(--warn)', not_in_config:'var(--warn)',
+    stale:'var(--err)', device_not_found:'var(--txt3)',
+    unknown:'var(--txt3)'}[st]||'var(--txt3)';
+  },
+  uptimeBadgeStyle(st){
+    const c=this.uptimeColor(st);
+    return `background:${c}22;color:${c};border:1px solid ${c}55`;
+  },
+  get uptimeProblems(){
+    return (this.uptimeItems||[]).filter(u=>u.state!=='ok');
+  },
+  async enableUptime(devId){
+    if(this.uptimeBusy) return;
+    this.uptimeBusy=true;
+    try{
+      const r=await fetch('/api/wb-config/enable-uptime',
+        {method:'POST', headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({device_id:devId, sha256:this.uptimeSha})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){
+        this.showToast(d.error||'Не удалось включить канал Uptime',false);
+      }else{
+        this.uptimePending=d.pending||this.uptimePending;
+        if(d.sha256) this.uptimeSha=d.sha256;
+        this.showToast(d.already_enabled
+          ? 'Канал Uptime уже включён в конфиге'
+          : 'Канал Uptime включён, перезапустите опрос', true);
+      }
+    }catch(e){ this.showToast('Ошибка: '+e,false); }
+    this.uptimeBusy=false;
+    await this.loadUptimeSummary();
+  },
+  async restartDriverNow(){
+    this.uptimeRestartConfirm=false;
+    if(this.uptimeBusy) return;
+    this.uptimeBusy=true;
+    try{
+      const r=await fetch('/api/wb-config/restart-driver',{method:'POST'});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){
+        this.showToast((d.error||'Драйвер не перезапустился')+
+          (d.rollback?(' · '+d.rollback):''), false);
+      }else{
+        this.uptimePending=[];
+        this.showToast('Драйвер wb-mqtt-serial перезапущен',true);
+      }
+    }catch(e){ this.showToast('Ошибка: '+e,false); }
+    this.uptimeBusy=false;
+    await this.loadUptimeSummary();
   },
 
   async loadStatus(){
@@ -2069,6 +2287,7 @@ function app(){ return {
       this.allGroups=(gr.groups||[]).map(g=>g.name);
     }catch(e){ console.error(e); }
     this.settingsLoading=false;
+    this.loadUptimeSummary();
     this.scanUnregistered();
   },
   async reloadGroups(){
