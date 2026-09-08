@@ -6,7 +6,7 @@ WB-MAP3E (и совместимыми). Подключается к штатны
 дополнительного железа.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.7.0-blue)
+![Version](https://img.shields.io/badge/version-0.8.0-blue)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Wiren%20Board%20%7C%20Linux-lightgrey)
 
@@ -86,7 +86,10 @@ Wiren Board даёт «сырые» данные счётчиков через M
 расхода, почасовой SVG-график.
 
 **Настройки** — управление счётчиками (добавить/переименовать/удалить/
-назначить роль/зону/комментарий) и зонами без CLI и SSH.
+назначить роль/зону/комментарий) и зонами без CLI и SSH. Зона
+назначается выбором из списка (не свободным текстом), доступно массовое
+назначение зоны сразу нескольким счётчикам чекбоксами. У каждой зоны —
+свой цвет, который можно сменить.
 
 **Отчёты** — пять видов:
 
@@ -99,6 +102,12 @@ Wiren Board даёт «сырые» данные счётчиков через M
 | Баланс | Ввод минус потребители = небаланс в кВт·ч и % |
 
 Все отчёты выгружаются в CSV (открывается в Excel, BOM для кириллицы).
+
+**Карточка счётчика** — параметры переведены на русский, разбиты по
+категориям (Основные / Напряжение / Ток / Мощность / Энергия /
+Качество сети / Служебные / Прочее), при наведении — подсказка. Клик по
+числовому параметру открывает график истории значений с выбором
+периода (Час / Сутки / Неделя / Месяц) и выгрузкой CSV.
 
 ### API и интеграции
 
@@ -228,22 +237,28 @@ wb-energy-meter-cli aggregates catchup --days 90   # пересчитать ис
 | GET | `/api/meters/<id>/consumption?period=today` | Расход за период |
 | GET | `/api/meters/<id>/hourly?period=last_7d` | Почасовые агрегаты |
 | GET | `/api/meters/<id>/history-info` | Каналы в `wb-mqtt-db` |
+| GET | `/api/meters/<id>/channel-history?control=...&period=...` | История значений одного параметра (для графика) |
 | GET | `/api/meters/<id>/availability?period=last_30d` | Доступность |
 | GET | `/api/summary/consumption?period=this_month` | Расход по всем |
 | GET | `/api/availability/summary?period=last_30d` | Доступность по всем |
 | GET | `/api/reports/balance?period=this_month` | Баланс (ввод − потребители) |
 | GET | `/api/aggregates/status` | Статистика агрегатов |
+| GET | `/api/channels/dictionary` | Словарь каналов: русские названия, единицы, подсказки, категории |
 | POST | `/api/registry/meters` | Добавить счётчик |
-| PATCH | `/api/registry/meters/<id>` | Переименовать / сменить зону / комментарий |
+| PATCH | `/api/registry/meters/<id>` | Переименовать / сменить зону (`group:""` или `null` — снять) / комментарий |
 | PATCH | `/api/registry/meters/<id>/role` | Изменить роль |
 | DELETE | `/api/registry/meters/<id>` | Удалить счётчик |
-| GET | `/api/registry/groups` | Список зон |
-| POST | `/api/registry/groups` | Создать зону |
-| PATCH | `/api/registry/groups/<id>` | Переименовать зону |
+| GET | `/api/registry/groups` | Список зон (с цветом) |
+| POST | `/api/registry/groups` | Создать зону (`name`, необязательно `color`) |
+| PATCH | `/api/registry/groups/<id>` | Переименовать и/или сменить цвет зоны. Конфликт имени (без `merge:true`) → 409 |
 | DELETE | `/api/registry/groups/<id>` | Удалить зону |
 
 **Периоды:** `today`, `yesterday`, `this_month`, `last_month`,
 `last_24h`, `last_7d`, `last_30d` или `?from=YYYY-MM-DD&to=YYYY-MM-DD`.
+Для графика истории параметра на фронте дополнительно используется
+клиентский пресет «Час» — как произвольный диапазон `from`/`to` за
+последний час (в списке пресетов API его нет, чтобы не расширять
+`periods.py`).
 
 ---
 
@@ -370,7 +385,9 @@ python tests/test_step3_consumption.py   # юнит
 python tests/test_step3_e2e.py           # e2e (нужен mosquitto)
 python tests/test_step4_aggregator.py    # юнит агрегаторов
 python tests/test_step5_flask_api.py     # юнит Flask API
-python tests/test_step6_webui.py         # юнит веб-UI
+python tests/test_step6_webui.py         # юнит веб-UI + баланс HTML-тегов
+python tests/test_step8_groups.py        # юнит групп/зон (A1-A5)
+python tests/test_step8_channels.py      # юнит словаря каналов
 ```
 
 CI запускается на GitHub Actions (Python 3.9–3.12).
@@ -386,6 +403,7 @@ wb-energy-meter/
 │   ├── aggregator.py          # почасовые агрегаты
 │   ├── api.py                 # HTTP API (Flask)
 │   ├── background.py          # фоновые задачи
+│   ├── channels.py            # словарь каналов: label/units/hint/category
 │   ├── cli.py                 # CLI
 │   ├── config.py              # YAML-конфиг
 │   ├── consumption.py         # расчёт расхода
@@ -394,7 +412,8 @@ wb-energy-meter/
 │   ├── main.py                # точка входа
 │   ├── migrations/            # .sql миграции
 │   │   ├── 001_initial_schema.sql
-│   │   └── 002_aggregator_indexes.sql
+│   │   ├── 002_aggregator_indexes.sql
+│   │   └── 003_group_name_normalized.sql
 │   ├── model.py               # доменные модели
 │   ├── mqtt_client.py         # MQTT + WB Conventions
 │   ├── periods.py             # стандартные периоды
@@ -431,10 +450,11 @@ wb-energy-meter/
 | 5 | 0.5.0 | Переход на Flask | ✅ |
 | 6 | 0.6.0 | Веб-интерфейс (Alpine.js SPA) | ✅ |
 | 7 | 0.7.0 | Настройки в UI, зоны, роли, отчёты, история доступности | ✅ |
-| 8 | 0.8.0 | Двух-тарифный учёт (день/ночь) | ⏳ |
-| 9 | 0.9.0 | Алерты + SMTP уведомления | ⏳ |
-| 10 | 0.10.0 | Excel-отчёты + автоматическая рассылка | ⏳ |
-| 11 | 1.0.0 | .deb-пакет, финальная документация | ⏳ |
+| 8 | 0.8.0 | Починка групп, график истории параметра, русификация карточки счётчика | ✅ |
+| 9 | 0.9.0 | Двух-тарифный учёт (день/ночь) | ⏳ |
+| 10 | 0.10.0 | Алерты + SMTP уведомления | ⏳ |
+| 11 | 0.11.0 | Excel-отчёты + автоматическая рассылка | ⏳ |
+| 12 | 1.0.0 | .deb-пакет, финальная документация | ⏳ |
 
 ---
 
