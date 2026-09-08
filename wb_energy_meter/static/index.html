@@ -160,6 +160,21 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 .settings-section{margin-bottom:28px}
 .settings-section h2{font-size:15px;font-weight:700;margin-bottom:14px;
   padding-bottom:8px;border-bottom:1px solid var(--line)}
+/* update panel (самообновление, ТЗ v0.9.0) */
+.upd-card{background:var(--bg2);border:1px solid var(--line);border-radius:10px;
+  padding:14px 18px}
+.upd-card.upd-avail{border-color:var(--accent)}
+.upd-row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:space-between}
+.upd-meta{color:var(--txt);font-size:13px}
+.upd-msg{font-size:12px;color:var(--txt3);margin-top:5px}
+.upd-progress{display:flex;align-items:center;gap:10px}
+.upd-step{font-size:13px;font-weight:500}
+.upd-banner{border-radius:8px;padding:14px 18px;font-size:13px}
+.upd-banner-ok{background:rgba(63,185,80,.12);border:1px solid var(--ok)}
+.upd-banner-warn{background:rgba(210,153,34,.12);border:1px solid var(--warn)}
+.upd-banner-err{background:rgba(248,81,73,.12);border:1px solid var(--err)}
+.upd-log{background:var(--bg3);border-radius:6px;padding:10px 12px;margin-top:8px;
+  font-family:monospace;font-size:11px;white-space:pre-wrap;max-height:220px;overflow:auto}
 .reg-table{width:100%;border-collapse:collapse;background:var(--bg2);
   border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .reg-table th,.reg-table td{text-align:left;padding:10px 14px;
@@ -268,7 +283,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   <nav>
     <button :class="{active:tab=='dash'}" @click="tab='dash'">Дашборд</button>
     <button :class="{active:tab=='consumption'}" @click="tab='consumption';loadConsumption()">Расход</button>
-    <button :class="{active:tab=='settings'}" @click="tab='settings';loadSettings()">Настройки</button>
+    <button :class="{active:tab=='settings'}" @click="tab='settings';loadSettings();initUpdatePanel()">Настройки</button>
     <button :class="{active:tab=='reports'}" @click="tab='reports';initReports()">Отчёты</button>
   </nav>
   <div class="spacer"></div>
@@ -434,6 +449,112 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   <!-- SETTINGS -->
   <template x-if="tab=='settings'">
     <div>
+      <!-- Обновление (самообновление из GitHub, ТЗ v0.9.0) -->
+      <div class="settings-section">
+        <h2>Обновление</h2>
+
+        <!-- 6. Идёт обновление -->
+        <template x-if="updIsActive">
+          <div class="upd-card">
+            <div class="upd-progress">
+              <span class="spin"></span>
+              <span class="upd-step" x-text="updStatus.step_label || updStateLabel(updStatus.state)"></span>
+            </div>
+            <div class="upd-msg">
+              Сервис может на короткое время перестать отвечать — это
+              нормальная часть перезапуска, страница продолжает опрашивать
+              статус автоматически.
+            </div>
+          </div>
+        </template>
+
+        <!-- Сервис не отвечает 120 c подряд во время опроса -->
+        <template x-if="updStatus && updStatus.state=='unreachable'">
+          <div class="upd-banner upd-banner-err">
+            Не удалось связаться с сервисом. Обновите страницу через минуту
+            или проверьте по SSH:
+            <code>journalctl -u wb-energy-meter -n 50</code>
+          </div>
+        </template>
+
+        <!-- 7/8/9. Терминальные состояния: успех / откат / провал -->
+        <template x-if="updIsTerminal && !updResultHidden">
+          <div class="upd-banner"
+               :class="updStatus.state=='success' ? 'upd-banner-ok'
+                       : (updStatus.state=='rolled_back' ? 'upd-banner-warn' : 'upd-banner-err')">
+            <div class="upd-row">
+              <b x-text="updStatus.state=='success'
+                    ? ('Обновлено до ' + (updStatus.to_version || ''))
+                    : (updStatus.state=='rolled_back'
+                        ? ('Обновление не встало, вернулись на ' + (updStatus.from_version || 'предыдущую версию'))
+                        : 'Обновление не удалось')"></b>
+              <button class="btn btn-sm btn-secondary" @click="updResultHidden=true">Скрыть</button>
+            </div>
+            <div class="upd-msg" x-show="updStatus.error" x-text="updStatus.error"></div>
+            <template x-if="updStatus.state=='success'">
+              <button class="btn btn-sm btn-primary" style="margin-top:10px"
+                      @click="location.reload()">Перезагрузить страницу</button>
+            </template>
+            <template x-if="(updStatus.log_tail||[]).length">
+              <details style="margin-top:10px">
+                <summary style="cursor:pointer;color:var(--txt2);font-size:12px">Журнал обновления</summary>
+                <div class="upd-log" x-text="(updStatus.log_tail||[]).join('\n')"></div>
+              </details>
+            </template>
+          </div>
+        </template>
+
+        <!-- 1-4. Покой / проверка / нет обновлений / есть обновление -->
+        <template x-if="!updIsActive && (!updStatus || updStatus.state!='unreachable') && !(updIsTerminal && !updResultHidden)">
+          <div class="upd-card" :class="{'upd-avail': updChecked && updAvailable}">
+            <div class="upd-row">
+              <div>
+                <template x-if="!updChecked">
+                  <div class="upd-meta">Текущая версия: <b x-text="'v'+(version||'—')"></b></div>
+                </template>
+                <template x-if="updChecked && !updAvailable">
+                  <div class="upd-meta">
+                    У вас последняя версия
+                    <span class="muted" x-show="updCheckedAt">
+                      · проверено <span x-text="fmtTime(updCheckedAt)"></span></span>
+                  </div>
+                </template>
+                <template x-if="updChecked && updAvailable">
+                  <div>
+                    <div class="upd-meta">
+                      Доступно обновление: <b x-text="updRemote.version"></b>
+                      <span class="mono muted" x-text="' · '+updShortSha(updRemote.commit)"></span>
+                    </div>
+                    <div class="upd-msg" x-show="updRemote.message" x-text="updRemote.message"></div>
+                    <div class="upd-msg" x-show="updRemote.date"
+                         x-text="updRemote.date ? fmtTime(new Date(updRemote.date).getTime()/1000) : ''"></div>
+                  </div>
+                </template>
+                <template x-if="updCheckError">
+                  <div class="upd-msg" style="color:var(--err)" x-text="updCheckError"></div>
+                </template>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <button class="btn btn-sm btn-secondary" @click="checkUpdate()" :disabled="updChecking">
+                  <span x-show="updChecking"><span class="spin"></span> Проверка…</span>
+                  <span x-show="!updChecking">Проверить обновления</span>
+                </button>
+                <template x-if="updChecked && updAvailable && updAllowFromUi">
+                  <button class="btn btn-sm btn-primary" @click="updConfirmOpen=true">Обновить сейчас</button>
+                </template>
+              </div>
+            </div>
+            <template x-if="updChecked && updAvailable && !updAllowFromUi">
+              <div class="upd-msg" style="color:var(--warn)">
+                Обновление через веб-интерфейс запрещено администратором
+                (update.allow_from_ui: false в конфиге). Обновите вручную по
+                SSH: scripts/install-from-github.sh
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+
       <!-- Управление зонами -->
       <div class="settings-section">
         <h2>Зоны</h2>
@@ -1458,6 +1579,24 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     </div>
   </template>
 
+  <!-- CONFIRM UPDATE (ТЗ v0.9.0) -->
+  <template x-if="updConfirmOpen">
+    <div class="confirm-overlay">
+      <div class="confirm-box">
+        <h3>Обновить сервис?</h3>
+        <p>
+          Сервис будет остановлен и перезапущен. Сбор данных прервётся
+          примерно на минуту. База данных будет сохранена, при неудаче
+          произойдёт автоматический откат на текущую версию.
+        </p>
+        <div class="actions">
+          <button class="btn btn-secondary" @click="updConfirmOpen=false">Отмена</button>
+          <button class="btn btn-primary" @click="startUpdateNow()">Обновить</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
   <!-- TOAST -->
   <template x-if="toast">
     <div class="toast" :class="toast.ok?'toast-ok':'toast-err'" x-text="toast.msg"></div>
@@ -1479,6 +1618,11 @@ function app(){ return {
     {id:'last_7d',label:'7 дней'},{id:'last_30d',label:'30 дней'},
   ],
   chartBars:[], chartSvg:'', chartMeterName:'',
+  // самообновление (ТЗ v0.9.0)
+  updChecking:false, updChecked:false, updCurrent:null, updRemote:null,
+  updAvailable:false, updCheckedAt:null, updCheckError:'', updAllowFromUi:true,
+  updConfirmOpen:false, updStatus:{state:'idle'}, updResultHidden:false,
+  _updPollFailStartedAt:null, _updPollTimer:null,
   // settings
   settingsLoading:false, regMeters:[], unregistered:[], allGroups:[],
   // массовое назначение зоны (§3.6 ТЗ)
@@ -1535,7 +1679,83 @@ function app(){ return {
   refresh(){
     this.loadStatus();
     if(this.tab=='consumption') this.loadConsumption();
-    if(this.tab=='settings') this.loadSettings();
+    if(this.tab=='settings'){ this.loadSettings(); this.initUpdatePanel(); }
+  },
+
+  // ---- Update (самообновление, ТЗ v0.9.0) ----
+  get updIsActive(){
+    return !!(this.updStatus && UPD_ACTIVE_STATES.includes(this.updStatus.state));
+  },
+  get updIsTerminal(){
+    return !!(this.updStatus && ['success','rolled_back','failed'].includes(this.updStatus.state));
+  },
+  updStateLabel(s){
+    return {starting:'Запуск обновления…', downloading:'Скачивание…',
+            installing:'Установка…', verifying:'Проверка после установки…',
+            rolling_back:'Откат на предыдущую версию…'}[s] || (s||'');
+  },
+  updShortSha(sha){ return sha ? String(sha).slice(0,7) : '—'; },
+
+  async initUpdatePanel(){
+    // Опрос статуса — при каждом открытии «Настроек»: если обновление
+    // шло, когда пользователь закрыл вкладку, он должен увидеть
+    // результат. Это ЛОКАЛЬНЫЙ опрос (файл статуса), не GitHub —
+    // "автопроверки нет" (§1 ТЗ) касается только checkUpdate().
+    await this.pollUpdateStatusOnce();
+  },
+  async checkUpdate(){
+    this.updChecking=true; this.updCheckError='';
+    try{
+      const r=await fetch('/api/update/check');
+      const d=await r.json();
+      if(!r.ok){ this.updCheckError=d.error||'Ошибка проверки обновлений'; this.updChecking=false; return; }
+      this.updCurrent=d.current; this.updRemote=d.remote;
+      this.updAvailable=!!d.update_available; this.updAllowFromUi=!!d.allow_from_ui;
+      this.updChecked=true; this.updCheckedAt=Date.now()/1000;
+    }catch(e){ this.updCheckError='Не удалось связаться с сервисом: '+e; }
+    this.updChecking=false;
+  },
+  async startUpdateNow(){
+    this.updConfirmOpen=false;
+    try{
+      const r=await fetch('/api/update/start',
+        {method:'POST', headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({commit:this.updRemote&&this.updRemote.commit})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){ this.showToast(d.error||'Не удалось запустить обновление',false); return; }
+      this.updResultHidden=false; this.updStatus=d;
+      this._updPollFailStartedAt=null;
+      this._ensureUpdatePolling();
+    }catch(e){ this.showToast('Ошибка: '+e,false); }
+  },
+  async pollUpdateStatusOnce(){
+    try{
+      const r=await fetch('/api/update/status');
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      const d=await r.json();
+      this._updPollFailStartedAt=null;
+      const prevState=this.updStatus&&this.updStatus.state;
+      this.updStatus=d;
+      if(prevState!==d.state) this.updResultHidden=false;
+      if(UPD_ACTIVE_STATES.includes(d.state)){ this._ensureUpdatePolling(); }
+      else { this._stopUpdatePolling(); }
+    }catch(e){
+      // Сервис перезапускается — нормальная часть обновления, не ошибка.
+      // Сдаёмся только после 120 секунд подряд неудачных попыток (§4.6 п.6).
+      if(!this._updPollFailStartedAt) this._updPollFailStartedAt=Date.now();
+      this._ensureUpdatePolling();
+      if(Date.now()-this._updPollFailStartedAt>120000){
+        this._stopUpdatePolling();
+        this.updStatus={state:'unreachable'};
+      }
+    }
+  },
+  _ensureUpdatePolling(){
+    if(this._updPollTimer) return;
+    this._updPollTimer=setInterval(()=>this.pollUpdateStatusOnce(),2000);
+  },
+  _stopUpdatePolling(){
+    if(this._updPollTimer){ clearInterval(this._updPollTimer); this._updPollTimer=null; }
   },
 
   async loadStatus(){
@@ -2352,6 +2572,9 @@ function lsGet(k,def){ try{ return localStorage.getItem(k)||def; }catch(e){ retu
 function lsGetJSON(k,def){
   try{ const v=localStorage.getItem(k); return v?JSON.parse(v):def; }catch(e){ return def; }
 }
+// Промежуточные (не терминальные) состояния самообновления — совпадают
+// с ACTIVE_STATES в wb_energy_meter/updater.py (ТЗ v0.9.0).
+const UPD_ACTIVE_STATES=['starting','downloading','installing','verifying','rolling_back'];
 // Фолбэк-список категорий каналов на случай, если /api/channels/dictionary
 // ещё не успел загрузиться (модалка деталей не должна из-за этого падать).
 const FALLBACK_CATEGORIES=[
