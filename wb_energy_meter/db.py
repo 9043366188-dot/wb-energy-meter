@@ -20,6 +20,16 @@ _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _MIGRATION_RE = re.compile(r"^(\d+)_([a-zA-Z0-9_]+)\.sql$")
 
 
+def _py_casefold(s):
+    """SQL-функция py_casefold(x) — правильная казефолд-нормализация строк,
+    в отличие от SQLite COLLATE NOCASE (только ASCII A-Z) корректно
+    сворачивает регистр и для кириллицы. Используется в миграциях для
+    построения уникального индекса по нормализованному имени зоны."""
+    if s is None:
+        return None
+    return str(s).strip().casefold()
+
+
 class Database:
     def __init__(self, path=DEFAULT_DB_PATH):
         self._path = path
@@ -42,6 +52,9 @@ class Database:
             self._conn.execute("PRAGMA foreign_keys = ON")
             self._conn.execute("PRAGMA temp_store = MEMORY")
             self._conn.execute("PRAGMA busy_timeout = 5000")
+            # py_casefold() — доступна миграциям и запросам для нормализации
+            # имён зон с учётом кириллицы (SQLite COLLATE NOCASE её не берёт).
+            self._conn.create_function("py_casefold", 1, _py_casefold)
             self._apply_migrations()
             try:
                 size = os.path.getsize(self._path)

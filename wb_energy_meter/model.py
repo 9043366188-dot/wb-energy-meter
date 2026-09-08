@@ -201,5 +201,14 @@ class MeterRegistry:
                 m.display_name = entry.get("display_name")
                 m.group = entry.get("group")
 
+    def set_group(self, device_id: str, group: Optional[str]) -> None:
+        """Точечно обновить группу счётчика в памяти (push-синхронизация
+        из БД после PATCH/POST в API — без этого /api/status отдаёт
+        старую группу до перезапуска демона)."""
+        with self._lock:
+            m = self._meters.get(device_id)
+            if m is not None:
+                m.group = group
+
     def lock(self) -> threading.RLock:
         return self._lock

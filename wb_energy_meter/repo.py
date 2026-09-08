@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -18,6 +19,29 @@ NAME_FORBIDDEN_RE = re.compile(r"[\x00-\x1f\x7f]")
 NAME_MAX_LEN = 200
 DEVICE_ID_MAX_LEN = 100
 VALID_ROLES = ("input", "consumer", "other")
+
+# Фиксированная палитра цветов зон — назначается по кругу при создании,
+# пользователь может сменить в UI (§3.7 ТЗ v0.8.0).
+GROUP_COLOR_PALETTE = (
+    "#2f9e8f", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6",
+    "#14b8a6", "#ec4899", "#84cc16", "#06b6d4", "#f97316",
+)
+
+
+def _norm_name(name: str) -> str:
+    """Казефолд-нормализация имени зоны — корректно работает и с
+    кириллицей, в отличие от SQL COLLATE NOCASE (A4 в ТЗ v0.8.0)."""
+    return (name or "").strip().casefold()
+
+
+class GroupNameConflict(ValueError):
+    """Переименование/создание зоны конфликтует с уже существующей
+    (регистронезависимое сравнение через casefold)."""
+
+    def __init__(self, existing_id, name):
+        self.existing_id = existing_id
+        self.name = name
+        super().__init__(f"Зона с именем {name!r} уже есть (id={existing_id})")
 
 
 def validate_device_id(s):
@@ -53,11 +77,14 @@ class Group:
     name: str
     parent_id: Optional[int]
     created_at: int
+    color: Optional[str] = None
 
     @classmethod
     def from_row(cls, row):
+        keys = row.keys()
         return cls(id=row["id"], name=row["name"],
-                   parent_id=row["parent_id"], created_at=row["created_at"])
+                   parent_id=row["parent_id"], created_at=row["created_at"],
+                   color=row["color"] if "color" in keys else None)
 
 
 @dataclass
@@ -100,10 +127,12 @@ class GroupRepo:
     def __init__(self, db): self._db = db
 
     def get_by_name(self, name):
+        norm = _norm_name(name)
+        if not norm: return None
         with self._db.read() as c:
             row = c.execute(
-                "SELECT * FROM meter_groups WHERE name = ? COLLATE NOCASE",
-                (name,)).fetchone()
+                "SELECT * FROM meter_groups WHERE name_norm = ?",
+                (norm,)).fetchone()
             return Group.from_row(row) if row else None
 
     def get_by_id(self, gid):
@@ -119,24 +148,70 @@ class GroupRepo:
             ).fetchall()
             return [Group.from_row(r) for r in rows]
 
-    def create(self, name):
+    def _next_color(self, c) -> str:
+        row = c.execute("SELECT COUNT(*) AS n FROM meter_groups").fetchone()
+        idx = int(row["n"]) % len(GROUP_COLOR_PALETTE)
+        return GROUP_COLOR_PALETTE[idx]
+
+    def create(self, name, color=None):
         name = validate_name(name)
+        norm = _norm_name(name)
         now = int(time.time())
         with self._db.transaction() as c:
+            existing = c.execute(
+                "SELECT id FROM meter_groups WHERE name_norm = ?",
+                (norm,)).fetchone()
+            if existing:
+                raise GroupNameConflict(existing["id"], name)
+            if not color:
+                color = self._next_color(c)
             try:
                 cur = c.execute(
-                    "INSERT INTO meter_groups (name, parent_id, created_at) "
-                    "VALUES (?, NULL, ?)", (name, now))
-            except Exception as e:
+                    "INSERT INTO meter_groups "
+                    "(name, name_norm, parent_id, color, created_at) "
+                    "VALUES (?, ?, NULL, ?, ?)", (name, norm, color, now))
+            except sqlite3.IntegrityError as e:
                 raise ValueError(f"Не удалось создать группу: {e}")
             gid = cur.lastrowid
         log.info("Создана группа: %s (id=%d)", name, gid)
-        return Group(id=gid, name=name, parent_id=None, created_at=now)
+        return Group(id=gid, name=name, parent_id=None, created_at=now,
+                     color=color)
 
     def get_or_create(self, name):
         existing = self.get_by_name(name)
         if existing: return existing
         return self.create(name)
+
+    def rename(self, gid, new_name):
+        """Честное переименование: id и created_at сохраняются (A3).
+        При конфликте имени с другой зоной — GroupNameConflict (A5)."""
+        new_name = validate_name(new_name)
+        norm = _norm_name(new_name)
+        with self._db.transaction() as c:
+            conflict = c.execute(
+                "SELECT id FROM meter_groups WHERE name_norm = ? AND id != ?",
+                (norm, gid)).fetchone()
+            if conflict:
+                raise GroupNameConflict(conflict["id"], new_name)
+            try:
+                cur = c.execute(
+                    "UPDATE meter_groups SET name = ?, name_norm = ? "
+                    "WHERE id = ?", (new_name, norm, gid))
+            except sqlite3.IntegrityError as e:
+                raise ValueError(f"Не удалось переименовать зону: {e}")
+            if cur.rowcount == 0:
+                raise ValueError(f"Зона id={gid} не найдена")
+        log.info("Переименована зона id=%d -> %r", gid, new_name)
+        return self.get_by_id(gid)
+
+    def set_color(self, gid, color):
+        color = (color or "").strip() or None
+        with self._db.transaction() as c:
+            cur = c.execute("UPDATE meter_groups SET color = ? WHERE id = ?",
+                            (color, gid))
+            if cur.rowcount == 0:
+                raise ValueError(f"Зона id={gid} не найдена")
+        return self.get_by_id(gid)
 
     def delete(self, gid):
         with self._db.transaction() as c:
