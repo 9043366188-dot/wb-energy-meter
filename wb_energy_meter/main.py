@@ -152,6 +152,14 @@ def main(argv=None):
              cfg.update.enabled, cfg.update.allow_from_ui,
              cfg.update.repo_owner, cfg.update.repo_name, cfg.update.ref)
 
+    # Канал Uptime (ТЗ v0.10.0). Диагностика работает всегда и только на
+    # чтение; allow_edit по умолчанию False — правка чужого
+    # /etc/wb-mqtt-serial.conf включается осознанно.
+    log.info("Конфиг драйвера: %s (правка: %s, юнит: %s)",
+             cfg.wb_serial.config_path,
+             "разрешена" if cfg.wb_serial.allow_edit else "запрещена",
+             cfg.wb_serial.service_name)
+
     api = ApiServer(
         host=cfg.http.host, port=cfg.http.port,
         registry=registry, meters_repo=meters_repo,
@@ -167,6 +175,8 @@ def main(argv=None):
         update_config=cfg.update,
         status_path=status_path,
         install_dir=install_dir,
+        wb_serial_config=cfg.wb_serial,
+        kv_repo=kv_repo,
     )
     try:
         api.start()

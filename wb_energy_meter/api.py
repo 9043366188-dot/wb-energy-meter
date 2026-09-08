@@ -17,7 +17,24 @@ from .periods import PERIOD_PRESETS, build_period, parse_user_datetime
 from .repo import GroupNameConflict
 from .wb_db_client import RpcError
 
+from . import wb_serial_config as _wb_serial_module
+
 log = logging.getLogger(__name__)
+
+# Ключ в таблице kv: список device_id, для которых конфиг драйвера уже
+# поправлен, но wb-mqtt-serial ещё не перезапущен. Именно в kv, а не в
+# памяти — список обязан пережить перезапуск НАШЕГО сервиса (§4.2 ТЗ).
+PENDING_RESTART_KEY = "wb_serial_pending_restart"
+
+
+class _WbSerialDefaults:
+    """Значения по умолчанию, если состояние собрано без секции
+    wb_serial (старые вызовы create_app в тестах)."""
+    config_path = _wb_serial_module.DEFAULT_CONFIG_PATH
+    templates_dirs = list(_wb_serial_module.DEFAULT_TEMPLATES_DIRS)
+    allow_edit = False
+    backup_dir = _wb_serial_module.DEFAULT_BACKUP_DIR
+    service_name = _wb_serial_module.DEFAULT_SERVICE_NAME
 
 
 class _AppState:
@@ -27,7 +44,9 @@ class _AppState:
                  aggregates_repo=None, aggregator=None,
                  groups_repo=None, alert_repo=None,
                  update_config=None, updater=None,
-                 status_path=None, install_dir=None, http_port=None):
+                 status_path=None, install_dir=None, http_port=None,
+                 wb_serial_config=None, kv_repo=None,
+                 wb_serial=None, service_restarter=None):
         self.registry = registry
         self.meters_repo = meters_repo
         self.groups_repo = groups_repo
@@ -48,6 +67,16 @@ class _AppState:
         self.status_path = status_path
         self.install_dir = install_dir
         self.http_port = http_port
+        # Канал Uptime и конфиг wb-mqtt-serial (ТЗ v0.10.0).
+        # `wb_serial` — модуль (подменяется в тестах), `kv_repo` хранит
+        # список счётчиков с неприменёнными изменениями,
+        # `service_restarter` — точка подмены systemctl в тестах.
+        self.wb_serial_config = (wb_serial_config if wb_serial_config
+                                 is not None else _WbSerialDefaults())
+        self.kv_repo = kv_repo
+        self.wb_serial = (wb_serial if wb_serial is not None
+                          else _wb_serial_module)
+        self.service_restarter = service_restarter
 
 
 def _build_status(state):
@@ -911,6 +940,253 @@ def create_app(state):
                  uc.repo_owner + "/" + uc.repo_name, remote.get("commit"))
         return json_response(status, 202)
 
+    # ---- канал Uptime и конфиг wb-mqtt-serial (ТЗ v0.10.0) ----
+
+    def _ws_cfg():
+        return state.wb_serial_config
+
+    def _pending_get():
+        """Список счётчиков с неприменёнными изменениями конфига.
+        Хранится в kv (переживает перезапуск сервиса); без kv_repo —
+        деградируем до памяти процесса, чтобы API оставался рабочим."""
+        if state.kv_repo is not None:
+            try:
+                val = state.kv_repo.get(PENDING_RESTART_KEY, [])
+            except Exception:
+                log.exception("Не удалось прочитать %s из kv",
+                              PENDING_RESTART_KEY)
+                val = []
+        else:
+            val = getattr(state, "_pending_memory", [])
+        if not isinstance(val, list):
+            return []
+        return [str(v) for v in val]
+
+    def _pending_set(items):
+        items = sorted(set(str(i) for i in items))
+        if state.kv_repo is not None:
+            try:
+                state.kv_repo.set(PENDING_RESTART_KEY, items)
+                return items
+            except Exception:
+                log.exception("Не удалось записать %s в kv",
+                              PENDING_RESTART_KEY)
+        state._pending_memory = items
+        return items
+
+    def _read_wb_config():
+        """(data, sha, error_text). Ошибка чтения — НЕ 500: файла может
+        не быть на машине разработчика, в тестах, в контейнере (§3.2)."""
+        ws = state.wb_serial
+        try:
+            data, sha = ws.load_config(_ws_cfg().config_path)
+            return data, sha, None
+        except ws.WbSerialConfigError as e:
+            return None, None, str(e)
+
+    @app.route("/api/meters/<device_id>/uptime-channel")
+    def api_meter_uptime_channel(device_id):
+        """Вердикт по каналу Uptime одного счётчика (§3.5 ТЗ v0.10.0).
+
+        device_id используется ТОЛЬКО для поиска по уже разобранному
+        JSON — ни в пути, ни в командах он не участвует."""
+        ws = state.wb_serial
+        cfg = _ws_cfg()
+        data, sha, err = _read_wb_config()
+        id_map = (ws.build_template_id_map(cfg.templates_dirs)
+                  if data is not None else {})
+        meter = state.registry.get(device_id)
+        out = ws.describe_meter(
+            meter, device_id, data, id_map, config_error=err,
+            allow_edit=bool(cfg.allow_edit))
+        out["sha256"] = sha
+        out["config_path"] = cfg.config_path
+        out["pending"] = device_id in _pending_get()
+        return json_response(out)
+
+    @app.route("/api/uptime-channel/summary")
+    def api_uptime_channel_summary():
+        """То же по всем счётчикам реестра. Конфиг читается ОДИН раз на
+        весь ответ, а не по разу на счётчик."""
+        ws = state.wb_serial
+        cfg = _ws_cfg()
+        data, sha, err = _read_wb_config()
+        id_map = (ws.build_template_id_map(cfg.templates_dirs)
+                  if data is not None else {})
+        pending = _pending_get()
+        items = []
+        for m in state.registry.all():
+            row = ws.describe_meter(
+                m, m.device_id, data, id_map, config_error=err,
+                allow_edit=bool(cfg.allow_edit))
+            row["display_name"] = m.effective_name
+            row["pending"] = m.device_id in pending
+            items.append(row)
+        counts = {}
+        for row in items:
+            counts[row["state"]] = counts.get(row["state"], 0) + 1
+        return json_response({
+            "allow_edit": bool(cfg.allow_edit),
+            "config_path": cfg.config_path,
+            "config_error": err,
+            "sha256": sha,
+            "count": len(items),
+            "by_state": counts,
+            "pending": pending,
+            "needs_restart": bool(pending),
+            "items": items,
+        })
+
+    @app.route("/api/wb-config/pending")
+    def api_wb_config_pending():
+        pending = _pending_get()
+        return json_response({
+            "pending": pending,
+            "needs_restart": bool(pending),
+            "allow_edit": bool(_ws_cfg().allow_edit),
+            "service_name": _ws_cfg().service_name,
+        })
+
+    @app.route("/api/wb-config/enable-uptime", methods=["POST"])
+    def api_wb_config_enable_uptime():
+        """Включить канал Uptime у одного устройства.
+        Body: {"device_id": "...", "sha256": "..."}
+
+        Всё, что может пойти не так, заканчивается отказом БЕЗ записи:
+        правка запрещена (403), файл не JSON / устройство не найдено /
+        хеш не совпал (409). См. §5 ТЗ — это главное в задаче."""
+        ws = state.wb_serial
+        cfg = _ws_cfg()
+        if not cfg.allow_edit:
+            return json_response({
+                "error": "Автоматическая правка конфига драйвера выключена "
+                         "(wb_serial.allow_edit: false в "
+                         "/etc/wb-energy-meter.conf). Включите канал вручную: "
+                         "Device Manager → устройство → HW Info → Uptime → "
+                         "in queue order, либо разрешите правку в конфиге "
+                         "сервиса и перезапустите wb-energy-meter.",
+            }, 403)
+
+        body = request.get_json(silent=True) or {}
+        device_id = str(body.get("device_id") or "").strip()
+        expected_sha = str(body.get("sha256") or "").strip()
+        if not device_id:
+            return json_response({"error": "device_id обязателен"}, 400)
+        if not expected_sha:
+            return json_response(
+                {"error": "sha256 обязателен — возьмите его из "
+                          "/api/uptime-channel/summary"}, 400)
+
+        try:
+            data, sha = ws.load_config(cfg.config_path)
+        except ws.WbSerialConfigError as e:
+            return json_response({"error": str(e)}, 409)
+
+        if sha != expected_sha:
+            return json_response({
+                "error": "Конфиг изменился, обновите страницу",
+                "sha256": sha,
+            }, 409)
+
+        id_map = ws.build_template_id_map(cfg.templates_dirs)
+        found = ws.find_device(data, device_id, id_map)
+        if found is None:
+            return json_response({
+                "error": "Устройство %s не найдено в %s (или найдено больше "
+                         "одного подходящего) — правка отменена" %
+                         (device_id, cfg.config_path),
+            }, 409)
+        port_idx, dev_idx, device = found
+
+        if ws.uptime_channel_state(device) == "enabled":
+            return json_response({
+                "ok": True, "already_enabled": True, "device_id": device_id,
+                "sha256": sha, "pending": _pending_get(),
+                "needs_restart": bool(_pending_get()),
+            })
+
+        new_data = ws.set_uptime_enabled(data, port_idx, dev_idx)
+
+        def _verify(written):
+            f = ws.find_device(written, device_id, id_map)
+            return f is not None and ws.uptime_channel_state(f[2]) == "enabled"
+
+        try:
+            result = ws.save_config(
+                cfg.config_path, new_data, expected_sha=expected_sha,
+                backup_dir=cfg.backup_dir, verify=_verify)
+        except ws.WbSerialConflict as e:
+            return json_response({"error": str(e)}, 409)
+        except ws.WbSerialConfigError as e:
+            return json_response({"error": str(e)}, 500)
+
+        pending = _pending_set(_pending_get() + [device_id])
+        log.info("Канал Uptime включён в конфиге драйвера для %s "
+                 "(бэкап %s)", device_id, result.get("backup_path"))
+        return json_response({
+            "ok": True,
+            "device_id": device_id,
+            "sha256": result["sha256"],
+            "backup_path": result["backup_path"],
+            "pending": pending,
+            "needs_restart": True,
+        })
+
+    @app.route("/api/wb-config/restart-driver", methods=["POST"])
+    def api_wb_config_restart_driver():
+        """Перезапустить wb-mqtt-serial. Только по явной кнопке: на
+        несколько секунд прерывается опрос ВСЕХ устройств контроллера.
+
+        Если драйвер не поднялся — откатываем конфиг из последнего
+        бэкапа и пробуем ещё раз (§4.2, §5.7)."""
+        ws = state.wb_serial
+        cfg = _ws_cfg()
+        if not cfg.allow_edit:
+            return json_response({
+                "error": "Перезапуск драйвера из веб-интерфейса выключен "
+                         "(wb_serial.allow_edit: false в конфиге сервиса). "
+                         "Перезапустите вручную: "
+                         "systemctl restart wb-mqtt-serial",
+            }, 403)
+
+        restarter = state.service_restarter or ws.restart_service
+        ok, detail = restarter(cfg.service_name)
+        if ok:
+            _pending_set([])
+            log.info("Драйвер %s перезапущен, pending очищен",
+                     cfg.service_name)
+            return json_response({
+                "ok": True, "pending": [], "needs_restart": False,
+                "detail": "Драйвер %s перезапущен" % cfg.service_name,
+            })
+
+        backup = ws.latest_backup(cfg.config_path, cfg.backup_dir)
+        rollback_detail = "бэкапов не найдено, конфиг не откатывался"
+        second_ok = False
+        if backup:
+            try:
+                ws.restore_backup(backup, cfg.config_path)
+                rollback_detail = "конфиг восстановлен из %s" % backup
+                second_ok, second_detail = restarter(cfg.service_name)
+                rollback_detail += (
+                    "; повторный запуск: %s" %
+                    ("успешно" if second_ok else second_detail))
+            except OSError as e:
+                rollback_detail = ("ОТКАТ НЕ УДАЛСЯ (%s), бэкап лежит "
+                                   "здесь: %s" % (e, backup))
+        log.error("Драйвер %s не поднялся: %s (%s)",
+                  cfg.service_name, detail, rollback_detail)
+        return json_response({
+            "error": "Драйвер %s не поднялся после перезапуска: %s" %
+                     (cfg.service_name, detail),
+            "rollback": rollback_detail,
+            "backup_path": backup,
+            "restored": bool(backup),
+            "driver_active_after_rollback": second_ok,
+            "pending": _pending_get(),
+            "needs_restart": bool(_pending_get()),
+        }, 500)
+
     # ---- pages ----
 
     @app.route("/")
@@ -943,7 +1219,8 @@ class ApiServer:
                  aggregates_repo=None, aggregator=None,
                  groups_repo=None, alert_repo=None,
                  update_config=None, updater=None,
-                 status_path=None, install_dir=None):
+                 status_path=None, install_dir=None,
+                 wb_serial_config=None, kv_repo=None):
         self._host = host
         self._port = port
         self._app_state = _AppState(
@@ -959,6 +1236,7 @@ class ApiServer:
             update_config=update_config, updater=updater,
             status_path=status_path, install_dir=install_dir,
             http_port=port,
+            wb_serial_config=wb_serial_config, kv_repo=kv_repo,
             started_at=time.time())
         self._app = create_app(self._app_state)
         self._server = None
@@ -1051,4 +1329,19 @@ code{background:#f6f8fa;padding:2px 6px;border-radius:3px}
 <div class="ep"><span class="method post">POST</span>
 <span class="path">/api/update/start</span>
 <p>Запустить обновление. Body: <code>{"commit":"&lt;sha из /api/update/check&gt;"}</code>. 403 если update.allow_from_ui: false, 409 если уже идёт или sha устарел.</p></div>
+<div class="ep"><span class="method get">GET</span>
+<span class="path">/api/meters/&lt;id&gt;/uptime-channel</span>
+<p>Состояние канала Uptime у счётчика: ok / disabled / not_in_config / stale / device_not_found / unknown.</p></div>
+<div class="ep"><span class="method get">GET</span>
+<span class="path">/api/uptime-channel/summary</span>
+<p>То же по всем счётчикам одним запросом (конфиг драйвера читается один раз).</p></div>
+<div class="ep"><span class="method post">POST</span>
+<span class="path">/api/wb-config/enable-uptime</span>
+<p>Включить канал Uptime в /etc/wb-mqtt-serial.conf. Body: <code>{"device_id":"wb-map3e_21","sha256":"&lt;из summary&gt;"}</code>. 403 если wb_serial.allow_edit: false, 409 если конфиг не JSON, устройство не найдено или sha256 разошёлся.</p></div>
+<div class="ep"><span class="method get">GET</span>
+<span class="path">/api/wb-config/pending</span>
+<p>Счётчики с неприменёнными изменениями конфига драйвера.</p></div>
+<div class="ep"><span class="method post">POST</span>
+<span class="path">/api/wb-config/restart-driver</span>
+<p>Перезапустить wb-mqtt-serial (прерывает опрос ВСЕХ устройств контроллера). При неудаче — откат конфига из бэкапа.</p></div>
 </body></html>"""
