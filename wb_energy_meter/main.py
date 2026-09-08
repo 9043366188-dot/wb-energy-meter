@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import threading
+from pathlib import Path
 
 from . import __version__
 from .api import ApiServer
@@ -136,6 +138,20 @@ def main(argv=None):
     )
     log.info("Расчёт расхода: гибридный (агрегаты + RPC)")
 
+    # Самообновление (ТЗ v0.9.0). install_dir — каталог на уровень выше
+    # пакета wb_energy_meter (в проде это /opt/wb-energy-meter, куда
+    # install.sh кладёт и wb_energy_meter/, и scripts/). status_path —
+    # рядом с БД на /mnt/data, а не в /run: должен пережить перезапуск
+    # сервиса и сам процесс обновления, иначе UI не увидит результат
+    # обновления, случившегося до перезапуска.
+    install_dir = str(Path(__file__).resolve().parent.parent)
+    status_path = os.path.join(
+        os.path.dirname(os.path.abspath(args.db_path)),
+        "update-status.json")
+    log.info("Самообновление: enabled=%s allow_from_ui=%s repo=%s/%s ref=%s",
+             cfg.update.enabled, cfg.update.allow_from_ui,
+             cfg.update.repo_owner, cfg.update.repo_name, cfg.update.ref)
+
     api = ApiServer(
         host=cfg.http.host, port=cfg.http.port,
         registry=registry, meters_repo=meters_repo,
@@ -148,6 +164,9 @@ def main(argv=None):
         consumption_service=consumption_service,
         aggregates_repo=aggregates_repo,
         aggregator=aggregator,
+        update_config=cfg.update,
+        status_path=status_path,
+        install_dir=install_dir,
     )
     try:
         api.start()

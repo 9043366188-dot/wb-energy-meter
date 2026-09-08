@@ -9,6 +9,7 @@ import time
 from flask import Flask, Response, request
 
 from . import __version__
+from . import updater as _updater_module
 from .aggregates_repo import align_hour_down
 from .channels import (CATEGORIES, CHANNEL_INFO, get_channel_info,
                        localize_units)
@@ -24,7 +25,9 @@ class _AppState:
                  mqtt_message_count, mqtt_error_count,
                  wb_db_client, consumption_service, started_at,
                  aggregates_repo=None, aggregator=None,
-                 groups_repo=None, alert_repo=None):
+                 groups_repo=None, alert_repo=None,
+                 update_config=None, updater=None,
+                 status_path=None, install_dir=None, http_port=None):
         self.registry = registry
         self.meters_repo = meters_repo
         self.groups_repo = groups_repo
@@ -37,6 +40,14 @@ class _AppState:
         self.aggregates_repo = aggregates_repo
         self.aggregator = aggregator
         self.started_at = started_at
+        # Самообновление (ТЗ v0.9.0). `updater` — модуль (или подмена в
+        # тестах) с функциями check_remote/read_status/start_update/...;
+        # по умолчанию — настоящий wb_energy_meter.updater.
+        self.update_config = update_config
+        self.updater = updater if updater is not None else _updater_module
+        self.status_path = status_path
+        self.install_dir = install_dir
+        self.http_port = http_port
 
 
 def _build_status(state):
@@ -814,6 +825,92 @@ def create_app(state):
         log.info("Удалена зона через API: %r (id=%d)", name, group_id)
         return json_response({"ok": True, "id": group_id, "name": name})
 
+    # ---- update (самообновление из GitHub, ТЗ v0.9.0) ----
+
+    @app.route("/api/update/check")
+    def api_update_check():
+        uc = state.update_config
+        if uc is None or not uc.enabled:
+            return json_response(
+                {"error": "Самообновление отключено в конфиге "
+                          "(update.enabled: false)"}, 503)
+        installed = state.updater.get_installed_info(state.install_dir)
+        try:
+            remote = state.updater.check_remote(
+                uc.repo_owner, uc.repo_name, uc.ref,
+                timeout=uc.check_timeout_s)
+        except state.updater.UpdateCheckError as e:
+            return json_response({"error": str(e)}, 502)
+        available = state.updater.is_update_available(installed, remote)
+        return json_response({
+            "current": installed,
+            "remote": remote,
+            "update_available": available,
+            "allow_from_ui": bool(uc.allow_from_ui),
+        })
+
+    @app.route("/api/update/status")
+    def api_update_status():
+        # Никогда не 500: нет файла -> {"state": "idle"} — это гарантирует
+        # сам updater.read_status().
+        if state.status_path is None:
+            return json_response({"state": "idle"})
+        return json_response(state.updater.read_status(state.status_path))
+
+    @app.route("/api/update/start", methods=["POST"])
+    def api_update_start():
+        uc = state.update_config
+        if uc is None or not uc.enabled:
+            return json_response(
+                {"error": "Самообновление отключено в конфиге "
+                          "(update.enabled: false)"}, 503)
+        if not uc.allow_from_ui:
+            return json_response(
+                {"error": "Обновление через веб-интерфейс запрещено "
+                          "администратором (update.allow_from_ui: "
+                          "false в конфиге). Обновите вручную по SSH: "
+                          "scripts/install-from-github.sh"}, 403)
+
+        current_status = state.updater.read_status(state.status_path)
+        if current_status.get("state") in state.updater.ACTIVE_STATES:
+            return json_response(
+                {"error": "Обновление уже идёт", "status": current_status},
+                409)
+
+        body = request.get_json(silent=True) or {}
+        commit = str(body.get("commit") or "").strip()
+        if not commit:
+            return json_response(
+                {"error": "Не указан commit (тело запроса "
+                          '{"commit": "<sha из /api/update/check>"})'}, 400)
+
+        try:
+            remote = state.updater.check_remote(
+                uc.repo_owner, uc.repo_name, uc.ref,
+                timeout=uc.check_timeout_s)
+        except state.updater.UpdateCheckError as e:
+            return json_response({"error": str(e)}, 502)
+
+        if remote.get("commit") != commit:
+            return json_response({
+                "error": "Версия на GitHub изменилась, проверьте ещё раз",
+                "remote": remote,
+            }, 409)
+
+        try:
+            status = state.updater.start_update(
+                install_dir=state.install_dir,
+                status_path=state.status_path,
+                repo_owner=uc.repo_owner, repo_name=uc.repo_name,
+                ref=uc.ref, expected_sha=remote["commit"],
+                http_port=state.http_port)
+        except state.updater.UpdateInProgressError:
+            return json_response({"error": "Обновление уже идёт"}, 409)
+
+        log.info("Запущено самообновление: %s -> %s",
+                 uc.repo_owner + "/" + uc.repo_name, remote.get("commit"))
+        return json_response(status, 202)
+
     # ---- pages ----
 
     @app.route("/")
@@ -844,7 +941,9 @@ class ApiServer:
                  is_mqtt_connected, mqtt_message_count, mqtt_error_count,
                  wb_db_client=None, consumption_service=None,
                  aggregates_repo=None, aggregator=None,
-                 groups_repo=None, alert_repo=None):
+                 groups_repo=None, alert_repo=None,
+                 update_config=None, updater=None,
+                 status_path=None, install_dir=None):
         self._host = host
         self._port = port
         self._app_state = _AppState(
@@ -857,6 +956,9 @@ class ApiServer:
             consumption_service=consumption_service,
             aggregates_repo=aggregates_repo,
             aggregator=aggregator,
+            update_config=update_config, updater=updater,
+            status_path=status_path, install_dir=install_dir,
+            http_port=port,
             started_at=time.time())
         self._app = create_app(self._app_state)
         self._server = None
@@ -940,4 +1042,13 @@ code{background:#f6f8fa;padding:2px 6px;border-radius:3px}
 <div class="ep"><span class="method get">GET</span>
 <span class="path">/api/channels/dictionary</span>
 <p>Словарь каналов: русские названия, единицы, подсказки, категории.</p></div>
+<div class="ep"><span class="method get">GET</span>
+<span class="path">/api/update/check</span>
+<p>Сверить установленную версию с веткой main на GitHub. 503 если update.enabled: false.</p></div>
+<div class="ep"><span class="method get">GET</span>
+<span class="path">/api/update/status</span>
+<p>Статус текущего/последнего обновления. Без файла статуса — {"state":"idle"}.</p></div>
+<div class="ep"><span class="method post">POST</span>
+<span class="path">/api/update/start</span>
+<p>Запустить обновление. Body: <code>{"commit":"&lt;sha из /api/update/check&gt;"}</code>. 403 если update.allow_from_ui: false, 409 если уже идёт или sha устарел.</p></div>
 </body></html>"""

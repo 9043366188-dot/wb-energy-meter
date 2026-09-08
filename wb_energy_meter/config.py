@@ -82,11 +82,29 @@ class AggregatorConfigYaml:
 
 
 @dataclass
+class UpdateConfig:
+    """Самообновление из GitHub по кнопке (ТЗ v0.9.0). Значения по
+    умолчанию заданы здесь же, чтобы старые конфиги без секции
+    `update:` продолжали работать без изменений."""
+    enabled: bool = True
+    # Кнопка обновления доступна всем в локальной сети (у сервиса нет
+    # аутентификации, см. README "Обновление" и AGENTS.md) — если
+    # контроллер в недоверенной сети, выставьте False или http.host:
+    # 127.0.0.1.
+    allow_from_ui: bool = True
+    repo_owner: str = "9043366188-dot"
+    repo_name: str = "wb-energy-meter"
+    ref: str = "main"
+    check_timeout_s: int = 10
+
+
+@dataclass
 class AppConfig:
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     http: HttpConfig = field(default_factory=HttpConfig)
     status: StatusConfig = field(default_factory=StatusConfig)
     aggregator: AggregatorConfigYaml = field(default_factory=AggregatorConfigYaml)
+    update: UpdateConfig = field(default_factory=UpdateConfig)
     meters: list[MeterEntry] = field(default_factory=list)
     device_prefix: str = "wb-map3e_"
     log_file: str | None = "/var/log/wb-energy-meter/wb-energy-meter.log"
@@ -142,6 +160,15 @@ def load_config(path: str) -> AppConfig:
             cur_type = type(getattr(ag, f_name))
             setattr(ag, f_name, cur_type(aggr_raw[f_name]))
     cfg.aggregator = ag
+
+    update_raw = raw.get("update") or {}
+    uc = UpdateConfig()
+    for f_name in ("enabled", "allow_from_ui", "repo_owner", "repo_name",
+                   "ref", "check_timeout_s"):
+        if f_name in update_raw:
+            cur_type = type(getattr(uc, f_name))
+            setattr(uc, f_name, cur_type(update_raw[f_name]))
+    cfg.update = uc
 
     meters_raw = raw.get("meters") or []
     cfg.meters = [MeterEntry.from_dict(m) for m in meters_raw]
