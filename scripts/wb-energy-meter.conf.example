@@ -33,6 +33,21 @@ aggregator:
   rpc_timeout_s: 15.0
   rpc_max_retries: 3
 
+# Самообновление из GitHub по кнопке в веб-интерфейсе (v0.9.0+).
+# Источник — ветка main, не теги: что в main, то и установится.
+# ВНИМАНИЕ: у сервиса нет аутентификации (см. README, раздел
+# "Обновление"). Если http.host: 0.0.0.0 и контроллер в недоверенной
+# сети — ЛЮБОЙ в этой сети может нажать кнопку и перезапустить сервис.
+# Поставьте allow_from_ui: false либо http.host: 127.0.0.1 (доступ
+# только через SSH-туннель), если это неприемлемо.
+update:
+  enabled: true
+  allow_from_ui: true
+  repo_owner: 9043366188-dot
+  repo_name: wb-energy-meter
+  ref: main
+  check_timeout_s: 10
+
 log_file: /var/log/wb-energy-meter/wb-energy-meter.log
 
 meters:

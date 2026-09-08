@@ -10,7 +10,7 @@
 складывает в SQLite, считает расход и агрегаты, отдаёт веб-интерфейс и REST API.
 
 - Язык: Python (`>=3.9`), пакет `wb_energy_meter`
-- Текущая версия: **0.8.0** (`wb_energy_meter/__init__.py` + `pyproject.toml`)
+- Текущая версия: **0.9.0** (`wb_energy_meter/__init__.py` + `pyproject.toml`)
 - Репозиторий: https://github.com/9043366188-dot/wb-energy-meter
 - Целевое железо: Wiren Board 8.x, WB-MAP3E
 - Тестовый контроллер: `192.168.10.212`
@@ -34,8 +34,11 @@ wb_energy_meter/
   model.py, logger.py
   migrations/*.sql   схема БД (применяются по порядку)
   static/index.html  весь веб-интерфейс: один файл, Alpine.js с CDN
+  updater.py         самообновление из GitHub (v0.9.0): проверка версии,
+                      статус, запуск self-update.sh через systemd-run
 tests/               автономные скрипты, запускаются как `python tests/<file>.py`
-scripts/             install.sh, install-from-github.sh, uninstall.sh, пример конфига
+scripts/             install.sh, install-from-github.sh, uninstall.sh,
+                      self-update.sh, пример конфига
 ```
 
 Веб-интерфейс — **один файл** `wb_energy_meter/static/index.html` на Alpine.js
@@ -52,6 +55,8 @@ python tests/test_step5_flask_api.py
 python tests/test_step6_webui.py             # включает проверку баланса HTML-тегов
 python tests/test_step8_groups.py            # группы/зоны, регрессия A1-A5
 python tests/test_step8_channels.py          # словарь каналов
+python tests/test_step9_updater.py           # самообновление (updater.py + API)
+bash -n scripts/install.sh scripts/uninstall.sh scripts/self-update.sh
 ```
 
 Тесты — не pytest, а самостоятельные скрипты; часть e2e-тестов требует локального
@@ -97,6 +102,57 @@ CI (`.github/workflows/ci.yml`) гоняет матрицу Python 3.9–3.12 н
   - PowerShell 5.1 не знает `Join-String`;
   - у старых сборок `plink` нет `-hostkey "*"` — сначала кэшировать ключ через
     `echo y | plink`.
+- **Самообновление и `systemd-run`/cgroup** (v0.9.0, `scripts/self-update.sh`,
+  `wb_energy_meter/updater.py`): апдейтер **нельзя** запускать обычным
+  `subprocess.Popen` из процесса сервиса. У `wb-energy-meter.service`
+  `KillMode=mixed` и `MemoryMax=256M` — дочерний процесс попадает в ту же
+  cgroup, и `systemctl stop` (который `install.sh` вызывает в начале
+  установки) убивает systemd **всю** cgroup целиком, включая сам
+  апдейтер, посреди обновления. Результат — полускопированное дерево в
+  `/opt` и незапускающийся сервис. Правильно: `updater.start_update()`
+  запускает `scripts/self-update.sh` через
+  `systemd-run --unit=wb-energy-meter-update --collect ...` — это выносит
+  апдейтер из cgroup сервиса, он переживает `systemctl stop`. Фолбэк
+  (`setsid nohup`) — только если `systemd-run` недоступен, с
+  предупреждением в лог.
+- **Самомодифицирующийся bash-скрипт**: `install.sh` теперь копирует
+  `scripts/` целиком в `/opt/wb-energy-meter/scripts/`, а значит
+  `self-update.sh` переписывает сам себя на диске, пока выполняется (шаг
+  "installing" внутри самого себя). Классическая грабля: `cp` в
+  install.sh открывает существующий файл с truncate, и если bash в этот
+  момент дочитывает СВОЙ ЖЕ скрипт с диска дальше текущей позиции —
+  получится "syntax error" на пустом месте. Мы уже наступали на похожее
+  с незакрытым `<template>` в HTML — здесь аналог для bash. Митигация:
+  всё тело `self-update.sh` обёрнуто в функцию `main()`, вызываемую
+  последней строкой файла — bash обязан полностью разобрать (прочитать
+  с диска) тело функции ДО начала её исполнения, поэтому к моменту
+  запуска `main` файл уже читать не нужно. Не выносите код за пределы
+  функций, определённых до финального `main "$@"`.
+- **`set -e` + `trap ... ERR` + `set +e` внутри трапа**: в `on_error()` в
+  `self-update.sh` мы специально вызываем `set +e` (чтобы шаги
+  восстановления не падали друг на друга), но `set +e`/`set -e` —
+  ГЛОБАЛЬНАЯ опция шелла, не локальная для функции. Без явного `exit`
+  в конце `on_error()` shell после `set +e` решает, что `errexit`
+  выключен, и **продолжает выполнять `main()` дальше**, как будто
+  ошибки не было — обновление реально продолжало долбиться в
+  `install.sh`/`verify_after_install` после уже случившегося отказа на
+  предыдущем шаге. Нашли прогоном сценария "битый архив" в песочнице:
+  скрипт не падал сразу, а зависал на 90-секундном опросе `/health`
+  несуществующего сервиса. Фикс: `on_error()` обязан явно завершать
+  процесс (`exit "$rc"`) в конце, не полагаясь на то, что `-e`
+  подхватится сам после возврата из трапа.
+- **CRLF в `.sh`-файлах ломает `bash -n` без единого намёка на причину**
+  (нашли при сдаче v0.9.0): `scripts/install.sh` и
+  `scripts/install-from-github.sh` были на диске с CRLF-окончаниями строк
+  (рабочее дерево на Windows-примонтированном диске, `.gitattributes` с
+  `text=auto` нормализует блобы в git, но не переводит уже вытянутые
+  на диск файлы обратно). Любой `if ... then\r\n ... fi\r\n` в bash
+  ломается: `\r` приклеивается к слову-ключевому слову (`then\r`,
+  `fi\r`, `do\r`), bash его не распознаёт, и падает
+  `syntax error: unexpected end of file` — причём номер строки в
+  ошибке почти всегда не имеет отношения к реальной причине. Чинится
+  `sed -i 's/\r$//' file.sh`. Проверяйте `file scripts/*.sh` перед
+  сдачей — вывод должен быть без "with CRLF line terminators".
 - Версию бампать **в двух местах**: `wb_energy_meter/__init__.py` и `pyproject.toml`.
   Изменения фиксировать в `CHANGELOG.md`.
 
@@ -109,6 +165,10 @@ CI (`.github/workflows/ci.yml`) гоняет матрицу Python 3.9–3.12 н
   по-прежнему отсутствуют — README на них ссылается, но файлов нет ни в
   рабочем каталоге, ни где-либо ещё в дереве. Не выдумывать их содержимое,
   добавить, когда появятся у пользователя.
+- Самообновление (v0.9.0) реализовано и покрыто тестами, но реальный
+  прогон через `systemd-run` не проверялся живьём на WB-контроллере —
+  в CI/песочнице нет systemd. Перед боевым использованием проверить
+  вручную хотя бы раз на тестовом контроллере `192.168.10.212`.
 - Следующий шаг по дорожной карте — двух-тарифный учёт (день/ночь) на основе
   часовых агрегатов (см. `CHANGELOG.md` → Unreleased → Запланировано).
 
