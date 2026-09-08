@@ -3,11 +3,107 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from wb_energy_meter.api import create_app, _AppState, _load_static
+
+
+# ---- Проверка баланса HTML-тегов (см. AGENTS.md: незакрытый <template>
+# уже приводил к белому экрану без единой ошибки в консоли — самая
+# дорогая ошибка в истории проекта). Снимаем <script>/<style>/комментарии,
+# затем вручную сканируем строку посимвольно с учётом кавычек в атрибутах
+# (naive-регексп по "<[^>]*>" ломается на Alpine-выражениях вида
+# `:class="r.delta>0?'a':'b'"`, где внутри значения атрибута встречаются
+# буквальные '<'/'>').
+
+_VOID_ELEMENTS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+}
+
+
+def _strip_scripts_styles_comments(html):
+    html = re.sub(r"<!--.*?-->", "", html, flags=re.DOTALL)
+    html = re.sub(r"<script\b[^>]*>.*?</script>", "", html,
+                  flags=re.DOTALL | re.IGNORECASE)
+    html = re.sub(r"<style\b[^>]*>.*?</style>", "", html,
+                  flags=re.DOTALL | re.IGNORECASE)
+    return html
+
+
+def check_tag_balance(html):
+    """Вернуть список ошибок баланса тегов (пустой список = ОК).
+
+    Учитывает void-элементы (br, img, input, ...) и самозакрывающиеся
+    теги (<foo ... />), пропускает их без требования закрывающего тега.
+    Кавычки в значениях атрибутов (одинарные/двойные) корректно
+    экранируют '<'/'>' внутри себя от интерпретации как границ тега.
+    """
+    cleaned = _strip_scripts_styles_comments(html)
+    n = len(cleaned)
+    i = 0
+    stack = []
+    errors = []
+    while i < n:
+        if cleaned[i] != '<':
+            i += 1
+            continue
+        j = i + 1
+        if j < n and cleaned[j] == '!':
+            k = cleaned.find('>', j)
+            i = (k + 1) if k != -1 else n
+            continue
+        closing = False
+        if j < n and cleaned[j] == '/':
+            closing = True
+            j += 1
+        name_start = j
+        while j < n and (cleaned[j].isalnum() or cleaned[j] in '-_'):
+            j += 1
+        name = cleaned[name_start:j].lower()
+        if not name:
+            i += 1
+            continue
+        in_quote = None
+        while j < n:
+            c2 = cleaned[j]
+            if in_quote:
+                if c2 == in_quote:
+                    in_quote = None
+            else:
+                if c2 in ('"', "'"):
+                    in_quote = c2
+                elif c2 == '>':
+                    break
+            j += 1
+        tag_end = j
+        self_closing = False
+        k = tag_end - 1
+        while k > name_start and cleaned[k] in ' \t\r\n':
+            k -= 1
+        if k >= 0 and cleaned[k] == '/':
+            self_closing = True
+        if name not in _VOID_ELEMENTS and not self_closing:
+            if not closing:
+                stack.append((name, i))
+            else:
+                if not stack:
+                    errors.append(
+                        f"pos {i}: лишний закрывающий </{name}> без открытия")
+                else:
+                    top, top_pos = stack.pop()
+                    if top != name:
+                        errors.append(
+                            f"pos {i}: несовпадение — открыт <{top}> "
+                            f"(pos {top_pos}), закрыт </{name}>")
+        i = tag_end + 1
+    if stack:
+        errors.append("незакрытые теги: " +
+                      ", ".join(f"<{t}> (pos {p})" for t, p in stack))
+    return errors
 
 
 class FakeReg:
@@ -76,10 +172,21 @@ def test_ui_has_dashboard_and_consumption():
     print("[OK] UI contains dashboard + consumption + detail")
 
 
+def test_index_html_tag_balance():
+    """Регрессия на незакрытый <template> (см. AGENTS.md) — самая дорогая
+    ошибка в истории проекта: белый экран без единой ошибки в консоли."""
+    content = _load_static("index.html")
+    errors = check_tag_balance(content)
+    assert not errors, (
+        "Баланс тегов index.html нарушен:\n" + "\n".join(errors))
+    print("[OK] баланс HTML-тегов index.html — 0 ошибок")
+
+
 if __name__ == "__main__":
     test_root_serves_ui()
     test_static_loader_reads_index()
     test_static_loader_fallback()
     test_docs_still_works()
     test_ui_has_dashboard_and_consumption()
+    test_index_html_tag_balance()
     print("\nВсе тесты Шага 6 (web UI) пройдены.")

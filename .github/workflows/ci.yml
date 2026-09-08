@@ -60,6 +60,18 @@ jobs:
       - name: Run unit tests (aggregator)
         run: python tests/test_step4_aggregator.py
 
+      - name: Run unit tests (Flask API)
+        run: python tests/test_step5_flask_api.py
+
+      - name: Run unit tests (web UI)
+        run: python tests/test_step6_webui.py
+
+      - name: Run unit tests (группы/зоны)
+        run: python tests/test_step8_groups.py
+
+      - name: Run unit tests (словарь каналов)
+        run: python tests/test_step8_channels.py
+
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
 
