@@ -72,6 +72,9 @@ jobs:
       - name: Run unit tests (словарь каналов)
         run: python tests/test_step8_channels.py
 
+      - name: Run unit tests (самообновление)
+        run: python tests/test_step9_updater.py
+
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
 
@@ -105,3 +108,6 @@ jobs:
 
       - name: Verify uninstall.sh syntax
         run: bash -n scripts/uninstall.sh
+
+      - name: Verify self-update.sh syntax
+        run: bash -n scripts/self-update.sh
