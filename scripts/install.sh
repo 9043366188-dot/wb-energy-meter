@@ -22,23 +22,60 @@ echo ">>> Проверка Python..."
 PY_VER="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 echo "    python3 $PY_VER"
 
-# SKIP_APT=1 — для self-update.sh (ТЗ v0.9.0): зависимости уже стоят,
-# а apt-get update на объекте без прямого интернета (через прокси)
-# может висеть минутами. Если пакетов на самом деле нет — ставим их
-# несмотря на флаг, иначе получим "рабочий" сервис, который не стартует.
-if [[ "${SKIP_APT:-0}" == "1" ]]; then
-  echo ">>> SKIP_APT=1 — проверяю, что зависимости уже установлены..."
-  if python3 -c "import paho.mqtt, yaml, flask" 2>/dev/null; then
-    echo "    OK: paho-mqtt, yaml, flask уже на месте, apt-get пропущен"
-  else
-    echo "    [!] зависимости не найдены несмотря на SKIP_APT=1 — ставлю через apt-get"
-    apt-get update -qq
-    apt-get install -y --no-install-recommends python3-paho-mqtt python3-yaml python3-flask
+# Зависимости. Главный принцип: apt нужен ТОЛЬКО если пакетов реально
+# нет. Раньше `apt-get update` вызывался безусловно, а из-за
+# `set -euo pipefail` любая его ошибка убивала установку — при том что
+# зависимости уже стояли и apt был не нужен вовсе.
+#
+# Реальный случай (09.09.2026): у зеркала Wiren Board протух
+# Release-файл ("Release file ... is expired"), apt вернул 100, и
+# обновление рабочего контроллера сорвалось на пустом месте.
+# Протухший индекс на зеркале — проблема на стороне сервера, она не
+# должна мешать обновить наш код.
+#
+# SKIP_APT=1 (self-update.sh, ТЗ v0.9.0) остаётся: он просто запрещает
+# трогать apt даже когда пакетов нет.
+DEPS_PY="import paho.mqtt, yaml, flask"
+APT_PACKAGES=(python3-paho-mqtt python3-yaml python3-flask)
+
+install_deps_via_apt() {
+  echo ">>> Установка системных зависимостей через apt-get..."
+  # Check-Valid-Until=false — обход именно протухшего Release-файла.
+  # `|| true`: неудачный update не фатален, вдруг пакеты и так в кэше.
+  if ! apt-get update -o Acquire::Check-Valid-Until=false; then
+    echo "    [!] apt-get update завершился с ошибкой (недоступное или"
+    echo "        протухшее зеркало). Пробую поставить пакеты из кэша."
   fi
+  # Тоже не фатально: решение принимает финальная проверка импортом
+  # ниже — она заодно печатает человеку, что делать дальше. Без этого
+  # `set -e` убил бы скрипт прямо здесь, с голым кодом 100 и без
+  # единого намёка на причину.
+  if ! apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"; then
+    echo "    [!] apt-get install не смог поставить пакеты."
+  fi
+}
+
+echo ">>> Проверка зависимостей..."
+if python3 -c "$DEPS_PY" 2>/dev/null; then
+  echo "    OK: paho-mqtt, yaml, flask уже установлены — apt не нужен"
+elif [[ "${SKIP_APT:-0}" == "1" ]]; then
+  echo "    [!] SKIP_APT=1, но зависимостей нет — ставлю всё равно," \
+       "иначе сервис не стартует"
+  install_deps_via_apt
 else
-  echo ">>> Установка системных зависимостей..."
-  apt-get update -qq
-  apt-get install -y --no-install-recommends python3-paho-mqtt python3-yaml python3-flask
+  install_deps_via_apt
+fi
+
+# Финальная проверка: без зависимостей сервис не поднимется, поэтому
+# здесь останавливаемся ДО того, как что-либо трогать на контроллере.
+if ! python3 -c "$DEPS_PY" 2>/dev/null; then
+  echo "ОШИБКА: не удалось обеспечить зависимости python3-paho-mqtt," >&2
+  echo "        python3-yaml, python3-flask." >&2
+  echo "        Ничего не изменено, работающий сервис не тронут." >&2
+  echo "        Установите их вручную и запустите установку снова:" >&2
+  echo "          apt-get update -o Acquire::Check-Valid-Until=false" >&2
+  echo "          apt-get install -y ${APT_PACKAGES[*]}" >&2
+  exit 5
 fi
 
 if [[ -f "$DB_PATH" ]]; then

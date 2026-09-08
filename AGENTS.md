@@ -105,6 +105,19 @@ CI (`.github/workflows/ci.yml`) гоняет матрицу Python 3.9–3.12 н
   - PowerShell 5.1 не знает `Join-String`;
   - у старых сборок `plink` нет `-hostkey "*"` — сначала кэшировать ключ через
     `echo y | plink`.
+- **`apt` в `install.sh` не должен быть фатальным** (09.09.2026): у зеркала
+  `debian-mirror.wirenboard.com` протух `Release`-файл («Release file ... is
+  expired»), `apt-get update` вернул 100, и из-за `set -euo pipefail`
+  обновление рабочего контроллера сорвалось на первом же шаге — при том
+  что зависимости давно стояли и apt был не нужен вовсе. Правильная
+  логика: сначала проверить импортом (`python3 -c "import paho.mqtt, yaml,
+  flask"`), лезть в apt **только** если пакетов реально нет, ошибки
+  `apt-get update`/`install` не считать фатальными, а решение принимать по
+  финальной проверке импортом — она же печатает человеку, что делать.
+  Для протухших индексов помогает `-o Acquire::Check-Valid-Until=false`.
+  Обходной путь на объекте: `SKIP_APT=1 bash scripts/install.sh`.
+  Общий принцип: чужая инфраструктура (зеркала, сеть, прокси) обязана
+  уметь ломаться, не мешая обновить наш код.
 - **Самообновление и `systemd-run`/cgroup** (v0.9.0, `scripts/self-update.sh`,
   `wb_energy_meter/updater.py`): апдейтер **нельзя** запускать обычным
   `subprocess.Popen` из процесса сервиса. У `wb-energy-meter.service`
