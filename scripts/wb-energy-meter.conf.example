@@ -48,6 +48,25 @@ update:
   ref: main
   check_timeout_s: 10
 
+# Канал Uptime и конфиг драйвера wb-mqtt-serial (v0.10.0).
+# Диагностика состояния канала работает ВСЕГДА и только на чтение —
+# секция нужна лишь чтобы переопределить пути или разрешить правку.
+#
+# ВНИМАНИЕ: /etc/wb-mqtt-serial.conf — чужой файл, в нём описаны ВСЕ
+# устройства контроллера (реле, датчики, приводы). allow_edit: true даёт
+# сервису право записи в него, а кнопка «Перезапустить опрос» на
+# несколько секунд прерывает опрос всех устройств объекта. Поэтому по
+# умолчанию правка ВЫКЛЮЧЕНА, а канал включается вручную:
+# Device Manager -> устройство -> HW Info -> Uptime -> in queue order.
+wb_serial:
+  config_path: /etc/wb-mqtt-serial.conf
+  templates_dirs:
+    - /usr/share/wb-mqtt-serial/templates
+    - /etc/wb-mqtt-serial.conf.d/templates
+  allow_edit: false
+  backup_dir: /mnt/data/var/lib/wb-energy-meter/wb-serial-backups
+  service_name: wb-mqtt-serial
+
 log_file: /var/log/wb-energy-meter/wb-energy-meter.log
 
 meters:

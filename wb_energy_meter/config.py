@@ -99,12 +99,35 @@ class UpdateConfig:
 
 
 @dataclass
+class WbSerialConfigYaml:
+    """Доступ к конфигу драйвера wb-mqtt-serial (ТЗ v0.10.0).
+
+    Диагностика канала Uptime работает всегда и только на чтение.
+    `allow_edit` ПО УМОЛЧАНИЮ ВЫКЛЮЧЕН — осознанное решение: файл
+    /etc/wb-mqtt-serial.conf описывает ВСЕ устройства контроллера, а не
+    только счётчики, и право записи в него — это право уронить весь
+    ввод-вывод объекта.
+
+    Значения по умолчанию заданы здесь же, чтобы старые конфиги без
+    секции `wb_serial:` продолжали работать без изменений."""
+    config_path: str = "/etc/wb-mqtt-serial.conf"
+    templates_dirs: list[str] = field(default_factory=lambda: [
+        "/usr/share/wb-mqtt-serial/templates",
+        "/etc/wb-mqtt-serial.conf.d/templates",
+    ])
+    allow_edit: bool = False
+    backup_dir: str = "/mnt/data/var/lib/wb-energy-meter/wb-serial-backups"
+    service_name: str = "wb-mqtt-serial"
+
+
+@dataclass
 class AppConfig:
     mqtt: MqttConfig = field(default_factory=MqttConfig)
     http: HttpConfig = field(default_factory=HttpConfig)
     status: StatusConfig = field(default_factory=StatusConfig)
     aggregator: AggregatorConfigYaml = field(default_factory=AggregatorConfigYaml)
     update: UpdateConfig = field(default_factory=UpdateConfig)
+    wb_serial: WbSerialConfigYaml = field(default_factory=WbSerialConfigYaml)
     meters: list[MeterEntry] = field(default_factory=list)
     device_prefix: str = "wb-map3e_"
     log_file: str | None = "/var/log/wb-energy-meter/wb-energy-meter.log"
@@ -169,6 +192,21 @@ def load_config(path: str) -> AppConfig:
             cur_type = type(getattr(uc, f_name))
             setattr(uc, f_name, cur_type(update_raw[f_name]))
     cfg.update = uc
+
+    # Секции wb_serial: может не быть вовсе — тогда работают значения по
+    # умолчанию из WbSerialConfigYaml (в частности allow_edit=False).
+    ws_raw = raw.get("wb_serial") or {}
+    ws = WbSerialConfigYaml()
+    for f_name in ("config_path", "allow_edit", "backup_dir", "service_name"):
+        if f_name in ws_raw:
+            cur_type = type(getattr(ws, f_name))
+            setattr(ws, f_name, cur_type(ws_raw[f_name]))
+    if ws_raw.get("templates_dirs"):
+        dirs = ws_raw["templates_dirs"]
+        if isinstance(dirs, str):
+            dirs = [dirs]
+        ws.templates_dirs = [str(d) for d in dirs]
+    cfg.wb_serial = ws
 
     meters_raw = raw.get("meters") or []
     cfg.meters = [MeterEntry.from_dict(m) for m in meters_raw]
