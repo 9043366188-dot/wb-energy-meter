@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from wb_energy_meter.api import _AppState, create_app
 from wb_energy_meter.updater import (
@@ -385,6 +389,80 @@ def test_start_update_raises_when_already_active():
               "обновление уже идёт, и ничего не запускает")
 
 
+# ---------------------------------------------------------------------
+# Регрессия: self-update.sh обязан писать статус, даже когда
+# установленного пакета wb_energy_meter не существует
+# ---------------------------------------------------------------------
+
+def test_self_update_writes_status_without_installed_package():
+    """install.sh делает `rm -rf $INSTALL_DIR/wb_energy_meter` и только
+    потом копирует новый код. Если установка упадёт в этом промежутке,
+    пакета нет — и если запись статуса зависит от него, статус навсегда
+    останется "installing", а веб-интерфейс вечно покажет «идёт
+    обновление». Писать статус нужно уметь именно тогда, когда всё
+    сломалось, поэтому self-update.sh пишет его встроенным кодом на
+    голой стандартной библиотеке, без импорта обновляемого пакета.
+    """
+    script = os.path.join(REPO_ROOT, "scripts", "self-update.sh")
+    if not shutil.which("bash") or not shutil.which("tar"):
+        print("[SKIP] нет bash/tar — тест пропущен (не Linux)")
+        return
+
+    work = tempfile.mkdtemp(prefix="wbem-selfupdate-test-")
+    try:
+        bin_dir = os.path.join(work, "bin")
+        # INSTALL_DIR СОЗНАТЕЛЬНО пуст: пакета wb_energy_meter в нём нет
+        install_dir = os.path.join(work, "install")
+        src_dir = os.path.join(work, "src", "wb-energy-meter-main")
+        for d in (bin_dir, install_dir, src_dir):
+            os.makedirs(d, exist_ok=True)
+
+        # Архив без wb_energy_meter/main.py — упадёт на verify_archive
+        with open(os.path.join(src_dir, "README.md"), "w") as f:
+            f.write("пусто\n")
+        archive = os.path.join(work, "bad.tar.gz")
+        subprocess.run(
+            ["tar", "-czf", archive, "-C", os.path.dirname(src_dir),
+             "wb-energy-meter-main"], check=True)
+
+        # Подменяем curl: вместо скачивания кладём подготовленный архив
+        curl = os.path.join(bin_dir, "curl")
+        with open(curl, "w") as f:
+            f.write(
+                '#!/bin/bash\nout=""\n'
+                'while [[ $# -gt 0 ]]; do case "$1" in\n'
+                '  -o) out="$2"; shift 2;; *) shift;; esac; done\n'
+                '[[ -n "$out" ]] && cp %s "$out"\nexit 0\n' % archive)
+        os.chmod(curl, 0o755)
+
+        status_file = os.path.join(work, "update-status.json")
+        env = dict(os.environ)
+        env.update({
+            "PATH": bin_dir + os.pathsep + env.get("PATH", ""),
+            "REPO_OWNER": "9043366188-dot",
+            "REPO_NAME": "wb-energy-meter",
+            "REF": "main", "EXPECTED_SHA": "deadbeef",
+            "STATUS_FILE": status_file, "INSTALL_DIR": install_dir,
+            "LOCK_DIR": os.path.join(work, "lock"),
+            "LOG_DIR": os.path.join(work, "log"),
+            "HTTP_PORT": "8080",
+        })
+        subprocess.run(["bash", script], env=env, timeout=120,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        assert os.path.exists(status_file), (
+            "self-update.sh не записал файл статуса без установленного "
+            "пакета — веб-интерфейс завис бы на «идёт обновление»")
+        with open(status_file, encoding="utf-8") as f:
+            data = json.load(f)
+        assert data.get("state") not in ACTIVE_STATES, (
+            "статус остался незавершённым: %r" % data.get("state"))
+        assert data.get("state") == "failed", data
+        print("[OK] статус пишется даже без установленного пакета")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 if __name__ == "__main__":
     test_is_update_available_same_sha()
     test_is_update_available_different_sha()
@@ -415,5 +493,7 @@ if __name__ == "__main__":
 
     test_start_update_uses_systemd_run_without_launching()
     test_start_update_raises_when_already_active()
+
+    test_self_update_writes_status_without_installed_package()
 
     print("\nВсе тесты Шага 9 (самообновление) пройдены.")

@@ -84,46 +84,88 @@ rotate_log() {
   fi
 }
 
-# Пишет/сливает поля статуса через wb_energy_meter.updater.write_status —
-# та же атомарная запись (tmp + os.replace), что использует и Python-код
-# API, чтобы конкурентный GET /api/update/status никогда не увидел
-# обрезанный файл. PYTHONPATH=$INSTALL_DIR: до шага install_new_code это
-# ещё старый код, после — уже новый, но интерфейс write_status стабилен.
-step_status() {
-  local state="$1"; shift
-  local label="$1"; shift
-  PYTHONPATH="$INSTALL_DIR" python3 -c '
-import sys
-sys.path.insert(0, sys.argv[1])
-from wb_energy_meter.updater import write_status
-args = sys.argv[2:]
-status_file, state, label = args[0], args[1], args[2]
-rest = args[3:]
+# Пишет/сливает поля статуса. Логика та же, что в
+# wb_energy_meter.updater.write_status (слияние полей + атомарная запись
+# tmp + os.replace, чтобы конкурентный GET /api/update/status никогда не
+# увидел обрезанный файл), но реализована здесь ВСТРОЕННО, на голой
+# стандартной библиотеке.
+#
+# ВАЖНО — почему не импортируем wb_energy_meter.updater:
+# install.sh делает `rm -rf $INSTALL_DIR/wb_energy_meter` и только потом
+# копирует новый код. Если установка упадёт в этом промежутке, модуля
+# updater просто не существует, импорт падает — и все последующие
+# step_status молча не срабатывают. Статус навсегда остаётся
+# "installing", а веб-интерфейс вечно показывает «идёт обновление» без
+# возможности что-либо предпринять. Писать статус обязаны уметь именно
+# тогда, когда всё сломалось, поэтому зависимости от обновляемого кода
+# здесь быть не должно.
+_write_status_py() {
+  python3 -c '
+import json, os, sys, tempfile
+
+status_file = sys.argv[1]
+fields = {}
+rest = sys.argv[2:]
 numeric = {"started_at", "finished_at"}
-extra = {}
 for k, v in zip(rest[0::2], rest[1::2]):
+    if k == "log_tail":
+        fields.setdefault("log_tail", []).append(v)
+        continue
     if k in numeric:
         try:
             v = int(v)
         except ValueError:
             pass
-    extra[k] = v
-write_status(status_file, state=state, step_label=label, **extra)
-' "$INSTALL_DIR" "$STATUS_FILE" "$state" "$label" "$@" 2>>"$LOG_FILE" \
+    fields[k] = v
+
+data = {}
+try:
+    with open(status_file, "r", encoding="utf-8") as f:
+        loaded = json.load(f)
+    if isinstance(loaded, dict):
+        data = loaded
+except (OSError, ValueError):
+    data = {}
+data.update(fields)
+
+d = os.path.dirname(os.path.abspath(status_file)) or "."
+os.makedirs(d, exist_ok=True)
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".update-status-", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, status_file)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+' "$@"
+}
+
+step_status() {
+  local state="$1"; shift
+  local label="$1"; shift
+  _write_status_py "$STATUS_FILE" state "$state" step_label "$label" "$@" \
+    2>>"$LOG_FILE" \
     || log_line "[!] не удалось записать статус '$state' в $STATUS_FILE"
 }
 
 attach_log_tail() {
   local -a lines=()
+  local -a args=()
+  local l
   if [[ -f "$LOG_FILE" ]]; then
     mapfile -t lines < <(tail -n 20 "$LOG_FILE" 2>/dev/null || true)
   fi
-  PYTHONPATH="$INSTALL_DIR" python3 -c '
-import sys
-sys.path.insert(0, sys.argv[1])
-from wb_energy_meter.updater import write_status
-write_status(sys.argv[2], log_tail=sys.argv[3:])
-' "$INSTALL_DIR" "$STATUS_FILE" ${lines[@]+"${lines[@]}"} 2>>"$LOG_FILE" || true
+  for l in ${lines[@]+"${lines[@]}"}; do
+    args+=("log_tail" "$l")
+  done
+  _write_status_py "$STATUS_FILE" ${args[@]+"${args[@]}"} \
+    2>>"$LOG_FILE" || true
 }
 
 finish_status() {
