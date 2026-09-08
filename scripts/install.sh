@@ -22,9 +22,24 @@ echo ">>> Проверка Python..."
 PY_VER="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 echo "    python3 $PY_VER"
 
-echo ">>> Установка системных зависимостей..."
-apt-get update -qq
-apt-get install -y --no-install-recommends python3-paho-mqtt python3-yaml python3-flask
+# SKIP_APT=1 — для self-update.sh (ТЗ v0.9.0): зависимости уже стоят,
+# а apt-get update на объекте без прямого интернета (через прокси)
+# может висеть минутами. Если пакетов на самом деле нет — ставим их
+# несмотря на флаг, иначе получим "рабочий" сервис, который не стартует.
+if [[ "${SKIP_APT:-0}" == "1" ]]; then
+  echo ">>> SKIP_APT=1 — проверяю, что зависимости уже установлены..."
+  if python3 -c "import paho.mqtt, yaml, flask" 2>/dev/null; then
+    echo "    OK: paho-mqtt, yaml, flask уже на месте, apt-get пропущен"
+  else
+    echo "    [!] зависимости не найдены несмотря на SKIP_APT=1 — ставлю через apt-get"
+    apt-get update -qq
+    apt-get install -y --no-install-recommends python3-paho-mqtt python3-yaml python3-flask
+  fi
+else
+  echo ">>> Установка системных зависимостей..."
+  apt-get update -qq
+  apt-get install -y --no-install-recommends python3-paho-mqtt python3-yaml python3-flask
+fi
 
 if [[ -f "$DB_PATH" ]]; then
   BACKUP="$DB_PATH.backup-$(date +%Y%m%d-%H%M%S)"
@@ -54,6 +69,29 @@ if [[ ! -f "$INSTALL_DIR/wb_energy_meter/static/index.html" ]]; then
   echo "[!] static/index.html не найден — веб-интерфейс будет недоступен" >&2
   echo "    (сервис и API продолжат работать)" >&2
 fi
+
+echo ">>> Копирование scripts/ (нужно для самообновления, ТЗ v0.9.0)..."
+mkdir -p "$INSTALL_DIR/scripts"
+cp -f "$PROJECT_ROOT/scripts/"*.sh "$INSTALL_DIR/scripts/" 2>/dev/null || true
+if [[ -f "$PROJECT_ROOT/scripts/wb-energy-meter.conf.example" ]]; then
+  cp -f "$PROJECT_ROOT/scripts/wb-energy-meter.conf.example" "$INSTALL_DIR/scripts/" 2>/dev/null || true
+fi
+chmod 0755 "$INSTALL_DIR/scripts/"*.sh 2>/dev/null || true
+
+echo ">>> Запись VERSION.json..."
+NEW_APP_VERSION="$(grep -m1 '__version__' "$INSTALL_DIR/wb_energy_meter/__init__.py" \
+    | sed -E "s/.*__version__[[:space:]]*=[[:space:]]*[\"']([^\"']+)[\"'].*/\1/")"
+[[ -z "$NEW_APP_VERSION" ]] && NEW_APP_VERSION="unknown"
+# SOURCE_SHA/SOURCE_REF передаёт scripts/self-update.sh при самообновлении;
+# при обычной ручной установке их нет — commit пишем как null (§4.2 ТЗ).
+if [[ -n "${SOURCE_SHA:-}" ]]; then
+  COMMIT_JSON="\"$SOURCE_SHA\""
+else
+  COMMIT_JSON="null"
+fi
+cat > "$INSTALL_DIR/VERSION.json" <<EOF
+{"version": "$NEW_APP_VERSION", "commit": $COMMIT_JSON, "ref": "${SOURCE_REF:-main}", "installed_at": $(date +%s)}
+EOF
 
 echo ">>> Установка launcher'ов..."
 cat > "$LAUNCHER" <<EOF
