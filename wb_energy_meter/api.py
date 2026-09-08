@@ -10,7 +10,9 @@ from flask import Flask, Response, request
 
 from . import __version__
 from .aggregates_repo import align_hour_down
+from .channels import CATEGORIES, CHANNEL_INFO, get_channel_info
 from .periods import PERIOD_PRESETS, build_period, parse_user_datetime
+from .repo import GroupNameConflict
 from .wb_db_client import RpcError
 
 log = logging.getLogger(__name__)
@@ -73,6 +75,33 @@ def _build_status(state):
     }
 
 
+def _sync_registry_groups(state) -> None:
+    """Push-синхронизация group/display_name из БД в in-memory реестр.
+
+    Корневая причина A1 (ТЗ v0.8.0): group у счётчика живёт в двух
+    местах — в SQLite и в MeterState.group в памяти, а второе
+    заполнялось только один раз при старте демона (main.py). Из-за
+    этого назначенная в «Настройках» зона не появлялась на дашборде
+    (/api/status берёт данные из памяти) до перезапуска сервиса.
+
+    Вызывается в конце каждого обработчика, меняющего привязку
+    счётчика к зоне: add/update счётчика, rename/delete зоны. Плюс
+    периодическая пересинхронизация в background.py — страховка от
+    рассинхрона по любой другой причине."""
+    if state.meters_repo is None:
+        return
+    try:
+        rows = state.meters_repo.list_all()
+    except Exception:
+        log.exception("Не удалось синхронизировать группы в реестр")
+        return
+    state.registry.apply_registry_config([
+        {"device_id": m.device_id, "display_name": m.display_name,
+         "group": m.group_name}
+        for m in rows
+    ])
+
+
 def _build_meters_list(state):
     meters = state.registry.all()
     return {"count": len(meters), "items": [m.to_api_dict() for m in meters]}
@@ -84,6 +113,8 @@ def _meter_detail(m):
         m.controls.items(),
         key=lambda x: x[1].meta.get("order", 999)
         if isinstance(x[1].meta.get("order"), int) else 999):
+        info = get_channel_info(name)
+        meta_units = c.meta.get("units")
         controls[name] = {
             "value": c.value, "raw_value": c.raw_value,
             "numeric": c.as_float(),
@@ -91,9 +122,17 @@ def _meter_detail(m):
             "precision": c.meta.get("precision"),
             "order": c.meta.get("order"),
             "readonly": c.meta.get("readonly"),
+            # Единицы измерения (C3): приоритет у meta устройства,
+            # иначе — из словаря каналов.
+            "units": meta_units if meta_units else info["units"],
             "error": c.error, "update_count": c.update_count,
             "last_update_ts": c.last_update_ts,
             "last_update_age_s": c.age_seconds,
+            # Русификация и категоризация (§5 ТЗ v0.8.0).
+            "label": info["label"],
+            "hint": info["hint"],
+            "category": info["category"],
+            "main": info["main"],
         }
     return {
         "device_id": m.device_id,
@@ -222,6 +261,67 @@ def create_app(state):
             "items": [{"control": c.control, "items": c.items,
                        "last_ts": c.last_ts} for c in device_chans],
         })
+
+    @app.route("/api/meters/<device_id>/channel-history")
+    def api_meter_channel_history(device_id):
+        """GET /api/meters/<id>/channel-history?control=...&period=...
+        GET /api/meters/<id>/channel-history?control=...&from=...&to=...
+
+        История значений одного параметра (задача 2, §4.1 ТЗ v0.8.0) —
+        клик по плитке параметра в модалке деталей открывает график."""
+        control = (request.args.get("control") or "").strip()
+        if not control:
+            return json_response({"error": "control required"}, 400)
+        if state.wb_db_client is None:
+            return json_response(
+                {"error": "wb-mqtt-db client not available"}, 503)
+        try:
+            period = build_period(**_parse_period_from_request())
+        except ValueError as e:
+            return json_response(
+                {"error": "bad period", "detail": str(e),
+                 "available_presets": list(PERIOD_PRESETS)}, 400)
+
+        ts_from, ts_to = period.ts_from, period.ts_to
+        duration_s = max(1.0, ts_to - ts_from)
+        # Прореживание: не больше ~1500 точек на график + жёсткий limit
+        # страховкой на случай очень длинного периода с частыми точками.
+        min_interval_ms = max(1000, int(duration_s * 1000 / 1500))
+        try:
+            points = state.wb_db_client.get_values(
+                device_id, control, ts_from=ts_from, ts_to=ts_to,
+                limit=5000, min_interval_ms=min_interval_ms)
+        except RpcError as e:
+            return json_response({"error": "RPC error", "detail": str(e)}, 502)
+
+        info = get_channel_info(control)
+        values = [p.value for p in points]
+        avg = (sum(values) / len(values)) if values else None
+        return json_response({
+            "device_id": device_id,
+            "control": control,
+            "label": info["label"],
+            "units": info["units"],
+            "period": period.to_dict(),
+            "points_count": len(points),
+            "min": min(values) if values else None,
+            "max": max(values) if values else None,
+            "avg": round(avg, 6) if avg is not None else None,
+            "last": values[-1] if values else None,
+            "items": [{"t": int(p.timestamp), "v": p.value} for p in points],
+        })
+
+    @app.route("/api/channels/dictionary")
+    def api_channels_dictionary():
+        """Словарь каналов для фронта — русские названия, единицы,
+        подсказки, категории (§5.1 ТЗ v0.8.0). Статичен на время работы
+        процесса, поэтому кэшируется на час."""
+        resp = json_response({
+            "categories": CATEGORIES,
+            "channels": CHANNEL_INFO,
+        })
+        resp.headers["Cache-Control"] = "public, max-age=3600"
+        return resp
 
     @app.route("/api/meters/<device_id>/hourly")
     def api_meter_hourly(device_id):
@@ -352,6 +452,7 @@ def create_app(state):
                 group=group, notes=notes)
         except ValueError as e:
             return json_response({"error": str(e)}, 409)
+        _sync_registry_groups(state)
         log.info("Добавлен счётчик через API: %s -> %r", device_id, display_name)
         return json_response({
             "ok": True, "id": m.id,
@@ -396,7 +497,12 @@ def create_app(state):
             v = (body["display_name"] or "").strip()
             if v: kwargs["display_name"] = v
         if "group" in body:
-            kwargs["group"] = (body["group"] or "").strip() or None
+            # A2: различаем «ключ не передан» (не трогать группу) и
+            # «передана пустая строка / null» (снять группу). Раньше оба
+            # случая схлопывались в None, а MeterRepo.update() пропускает
+            # group=None — PATCH {"group":""} молча ничего не менял.
+            raw = body["group"]
+            kwargs["group"] = "" if raw in (None, "") else str(raw).strip()
         if "notes" in body:
             kwargs["notes"] = (body["notes"] or "").strip() or None
         if not kwargs:
@@ -405,6 +511,7 @@ def create_app(state):
             m = state.meters_repo.update(device_id, **kwargs)
         except ValueError as e:
             return json_response({"error": str(e)}, 404)
+        _sync_registry_groups(state)
         log.info("Обновлён счётчик через API: %s %s", device_id, kwargs)
         return json_response({
             "ok": True, "device_id": m.device_id,
@@ -560,7 +667,7 @@ def create_app(state):
 
     @app.route("/api/registry/groups")
     def api_registry_groups():
-        """Список зон с id, именем и количеством счётчиков."""
+        """Список зон с id, именем, цветом и количеством счётчиков."""
         if state.meters_repo is None:
             return json_response({"error": "meters_repo not available"}, 503)
         # Считаем счётчики по зонам
@@ -575,17 +682,19 @@ def create_app(state):
                 groups.append({
                     "id": g.id,
                     "name": g.name,
+                    "color": g.color,
                     "meter_count": counts.get(g.name, 0),
                 })
         else:
             # Fallback: из имён групп счётчиков
             for name, cnt in sorted(counts.items()):
-                groups.append({"id": None, "name": name, "meter_count": cnt})
+                groups.append({"id": None, "name": name, "color": None,
+                               "meter_count": cnt})
         return json_response({"count": len(groups), "groups": groups})
 
     @app.route("/api/registry/groups", methods=["POST"])
     def api_registry_group_create():
-        """Создать зону. Body: {name}"""
+        """Создать зону. Body: {name, color?}"""
         if state.groups_repo is None:
             return json_response({"error": "groups_repo not available"}, 503)
         import json as _json
@@ -594,18 +703,31 @@ def create_app(state):
         except Exception:
             return json_response({"error": "invalid JSON body"}, 400)
         name = (body.get("name") or "").strip()
+        color = (body.get("color") or "").strip() or None
         if not name:
             return json_response({"error": "name required"}, 400)
         try:
-            g = state.groups_repo.create(name)
+            g = state.groups_repo.create(name, color=color)
+        except GroupNameConflict as e:
+            return json_response({
+                "error": "Зона с таким именем уже есть",
+                "existing_id": e.existing_id,
+            }, 409)
         except ValueError as e:
             return json_response({"error": str(e)}, 409)
         log.info("Создана зона через API: %r (id=%d)", name, g.id)
-        return json_response({"ok": True, "id": g.id, "name": g.name}, 201)
+        return json_response({"ok": True, "id": g.id, "name": g.name,
+                              "color": g.color}, 201)
 
     @app.route("/api/registry/groups/<int:group_id>", methods=["PATCH"])
     def api_registry_group_rename(group_id):
-        """Переименовать зону. Body: {name}"""
+        """Переименовать и/или сменить цвет зоны.
+        Body: {name?, color?, merge?}
+
+        Переименование в занятое (по casefold-сравнению) имя без флага
+        merge=true возвращает 409 (A5 — раньше это молча сливало зоны).
+        С merge:true — явное слияние: счётчики перепривязываются на уже
+        существующую зону, дубль удаляется."""
         if state.groups_repo is None:
             return json_response({"error": "groups_repo not available"}, 503)
         import json as _json
@@ -613,29 +735,62 @@ def create_app(state):
             body = _json.loads(request.data.decode("utf-8"))
         except Exception:
             return json_response({"error": "invalid JSON body"}, 400)
-        new_name = (body.get("name") or "").strip()
-        if not new_name:
-            return json_response({"error": "name required"}, 400)
         g = state.groups_repo.get_by_id(group_id)
         if g is None:
             return json_response({"error": "group not found", "id": group_id}, 404)
+
+        # Смена только цвета — не требует имени.
+        if "color" in body and not (body.get("name") or "").strip():
+            try:
+                new_g = state.groups_repo.set_color(group_id, body.get("color"))
+            except ValueError as e:
+                return json_response({"error": str(e)}, 404)
+            return json_response({"ok": True, "id": new_g.id, "name": new_g.name,
+                                  "color": new_g.color})
+
+        new_name = (body.get("name") or "").strip()
+        merge = bool(body.get("merge"))
+        if not new_name:
+            return json_response({"error": "name required"}, 400)
         old_name = g.name
-        # Переименовываем группу: обновляем все счётчики с этим именем
-        # и пересоздаём группу (GroupRepo не имеет update, создадим новую и перепривяжем)
+
         try:
-            new_g = state.groups_repo.get_or_create(new_name)
-            # Перепривязать счётчики со старой группы к новой
-            if state.meters_repo is not None:
+            new_g = state.groups_repo.rename(group_id, new_name)
+        except GroupNameConflict as e:
+            if not merge:
+                return json_response({
+                    "error": "Зона с таким именем уже есть",
+                    "existing_id": e.existing_id,
+                }, 409)
+            # Явное слияние: перепривязываем счётчики старой зоны на
+            # уже существующую и удаляем зону-дубль (A5).
+            existing = state.groups_repo.get_by_id(e.existing_id)
+            if state.meters_repo is not None and existing is not None:
                 for m in state.meters_repo.list_all():
-                    if m.group_name == old_name:
-                        state.meters_repo.update(m.device_id, group=new_name)
-            # Удалить старую группу если она пуста
+                    if m.group_id == group_id:
+                        state.meters_repo.update(m.device_id, group=existing.name)
             state.groups_repo.delete(group_id)
-        except Exception as e:
-            return json_response({"error": str(e)}, 500)
+            _sync_registry_groups(state)
+            log.info("Слияние зон через API: %r -> %r (id=%d)",
+                     old_name, existing.name if existing else new_name,
+                     e.existing_id)
+            return json_response({
+                "ok": True, "id": e.existing_id,
+                "name": existing.name if existing else new_name,
+                "old_name": old_name, "merged": True,
+            })
+        except ValueError as e:
+            return json_response({"error": str(e)}, 404)
+
+        if "color" in body:
+            try: state.groups_repo.set_color(new_g.id, body.get("color"))
+            except ValueError: pass
+            new_g = state.groups_repo.get_by_id(new_g.id)
+
+        _sync_registry_groups(state)
         log.info("Переименована зона через API: %r -> %r", old_name, new_name)
         return json_response({"ok": True, "id": new_g.id, "name": new_g.name,
-                              "old_name": old_name})
+                              "old_name": old_name, "color": new_g.color})
 
     @app.route("/api/registry/groups/<int:group_id>", methods=["DELETE"])
     def api_registry_group_delete(group_id):
@@ -652,6 +807,7 @@ def create_app(state):
                 if m.group_name == name:
                     state.meters_repo.update(m.device_id, group="")
         state.groups_repo.delete(group_id)
+        _sync_registry_groups(state)
         log.info("Удалена зона через API: %r (id=%d)", name, group_id)
         return json_response({"ok": True, "id": group_id, "name": name})
 
@@ -775,4 +931,10 @@ code{background:#f6f8fa;padding:2px 6px;border-radius:3px}
 <div class="ep"><span class="method get">GET</span>
 <span class="path">/api/registry/groups</span>
 <p>Список всех групп.</p></div>
+<div class="ep"><span class="method get">GET</span>
+<span class="path">/api/meters/&lt;id&gt;/channel-history?control=...&amp;period=...</span>
+<p>История значений одного параметра (для графика в карточке счётчика).</p></div>
+<div class="ep"><span class="method get">GET</span>
+<span class="path">/api/channels/dictionary</span>
+<p>Словарь каналов: русские названия, единицы, подсказки, категории.</p></div>
 </body></html>"""
