@@ -171,7 +171,16 @@ class WbDbClient:
                 "id": request_id, "params": params,
             }).encode("utf-8")
             info = client.publish(request_topic, payload_bytes, qos=1)
-            info.wait_for_publish(timeout=5.0)
+            # Не используем wait_for_publish(timeout=...): параметр timeout
+            # появился в paho-mqtt 1.5.1, а на контроллере пакет ставится из
+            # apt (python3-paho-mqtt) и может быть старее — тогда падает
+            # "wait_for_publish() got an unexpected keyword argument 'timeout'".
+            # is_published() есть во всех версиях, опрашиваем вручную с дедлайном.
+            publish_deadline = time.time() + 5.0
+            while not info.is_published():
+                if time.time() >= publish_deadline:
+                    raise RpcError("Таймаут публикации запроса в MQTT")
+                time.sleep(0.02)
 
             deadline = time.time() + timeout
             remaining = deadline - time.time()

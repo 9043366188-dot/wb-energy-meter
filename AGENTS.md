@@ -71,6 +71,16 @@ CI (`.github/workflows/ci.yml`) гоняет матрицу Python 3.9–3.12 н
 
 - **paho-mqtt 2.x**: при QoS=1 `wait_for_publish()` виснет навсегда без `loop_start()`.
   В тестовых публикаторах всегда вызывайте `pub.loop_start()` сразу после `pub.connect()`.
+- **`wait_for_publish(timeout=...)` ломается на старом paho-mqtt с контроллера**
+  (09.09.2026): параметр `timeout` появился только в paho-mqtt 1.5.1, а на
+  Wiren Board пакет ставится из apt (`python3-paho-mqtt`) и может быть старее —
+  падает `TypeError: wait_for_publish() got an unexpected keyword argument
+  'timeout'`. Ловилось при открытии графика по параметру счётчика (веб-интерфейс
+  → `WbDbClient._call()` в `wb_db_client.py`). `pyproject.toml` требует
+  `paho-mqtt>=1.6`, но это не гарантирует версию реально установленного apt-пакета
+  на объекте. Исправлено: вместо `info.wait_for_publish(timeout=...)` — ручной
+  опрос `info.is_published()` в цикле со своим дедлайном (метод есть во всех
+  версиях paho-mqtt).
 - **CI и зависимости**: рантайм-зависимости (в частности `flask`) должны быть явно
   перечислены в шаге `pip install` в `ci.yml`, наличия в `pyproject.toml` недостаточно.
 - **HTML `<template>`**: незакрытый `<template>` заставляет Chrome считать весь
