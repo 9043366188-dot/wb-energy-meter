@@ -33,7 +33,7 @@ wb_energy_meter/
   config.py          чтение /etc/wb-energy-meter.conf
   model.py, logger.py
   migrations/*.sql   схема БД (применяются по порядку)
-  static/index.html  весь веб-интерфейс: один файл, Alpine.js с CDN
+  static/index.html  весь веб-интерфейс: один файл, Alpine.js локально
   updater.py         самообновление из GitHub (v0.9.0): проверка версии,
                       статус, запуск self-update.sh через systemd-run
   wb_serial_config.py диагностика канала Uptime и точечная правка
@@ -50,8 +50,12 @@ scripts/             install.sh, install-from-github.sh, uninstall.sh,
                       self-update.sh, пример конфига
 ```
 
-Веб-интерфейс — **один файл** `wb_energy_meter/static/index.html` на Alpine.js
-(подключается с CDN, сборки нет). Вкладки переключаются через `tab=='...'`.
+Веб-интерфейс — **один файл** `wb_energy_meter/static/index.html` на Alpine.js.
+Сборки нет. С v0.11.0 все библиотеки (Alpine, Leaflet, Leaflet-Geoman) лежат
+локально в `static/vendor/` — **не возвращайте ссылки на CDN**: на объекте
+в изолированной сети интернета в браузере нет, и интерфейс просто не откроется.
+Вкладки переключаются через `tab=='...'` (исключение — вкладка «План», см.
+грабли про Leaflet ниже).
 
 ## Команды
 
