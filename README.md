@@ -359,6 +359,7 @@ wb-energy-meter-cli aggregates catchup --days 90   # пересчитать ис
 | PATCH | `/api/plans/<id>/links/<link_id>` | Изменить связь |
 | DELETE | `/api/plans/<id>/links/<link_id>` | Удалить связь |
 | GET | `/api/plans/<id>/live?period=today` | Живые данные: мощность/статус зон, ток и загрузка связей |
+| GET | `/api/selfcheck` | Самопроверка интерфейса (с 0.11.1): все файлы, на которые ссылается `index.html`, реально на месте. Код всегда 200 — смотреть поле `ok` |
 
 **Периоды:** `today`, `yesterday`, `this_month`, `last_month`,
 `last_24h`, `last_7d`, `last_30d` или `?from=YYYY-MM-DD&to=YYYY-MM-DD`.
@@ -562,6 +563,7 @@ python tests/test_step8_channels.py      # юнит словаря канало�
 python tests/test_step9_updater.py       # юнит самообновления
 python tests/test_step10_wbserial.py     # юнит канала Uptime / wb-mqtt-serial.conf
 python tests/test_step11_plan.py         # юнит плана объекта: зоны и связи
+python tests/test_step12_selfcheck.py    # юнит самопроверки интерфейса + заглушки
 ```
 
 CI запускается на GitHub Actions (Python 3.9–3.12).
