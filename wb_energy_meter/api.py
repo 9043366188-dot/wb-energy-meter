@@ -241,6 +241,87 @@ def _load_static(filename):
         return _ROOT_HTML_FALLBACK
 
 
+def build_selfcheck_result(static_dir, vendor_dir, version):
+    """Самопроверка интерфейса (ТЗ v0.11.1, §2.1): может ли index.html
+    вообще загрузиться. Достаёт из index.html все ссылки вида
+    src="/static/..." и href="/static/..." (та же регулярка, что и в
+    tests/test_step11_plan.py::test_static_vendor_serves_every_referenced_file)
+    и для каждой проверяет напрямую на диске — без единого HTTP-запроса
+    к самому себе, — что файл существует, читается и непустой.
+
+    Разрешение пути повторяет логику маршрута /static/vendor/<file>
+    (см. static_vendor в create_app): сегменты без "."/".."/абсолютных
+    путей + realpath обязан остаться внутри разрешённого каталога — чтобы
+    проверка совпадала с тем, что реально отдаст сервер, а не жила
+    отдельной жизнью. Вынесена на уровень модуля (а не внутрь create_app),
+    чтобы тесты могли прогнать её на временном каталоге с намеренно
+    битыми/отсутствующими файлами, не трогая настоящий
+    wb_energy_meter/static (см. tests/test_step12_selfcheck.py).
+
+    Никогда не бросает исключения — при любом сбое возвращает ok=False
+    с человекочитаемой причиной; вызывающая сторона (маршрут /api/selfcheck)
+    всегда отвечает 200, читать нужно поле "ok" (§2.1 ТЗ)."""
+    import re
+
+    def resolve(ref):
+        if not ref.startswith("/static/"):
+            return None, "не ссылка на /static/"
+        rel = ref[len("/static/"):]
+        parts = rel.replace("\\", "/").split("/")
+        for part in parts:
+            if part in ("", ".", "..") or os.path.isabs(part):
+                return None, "недопустимый путь"
+        if parts[0] == "vendor" and len(parts) > 1:
+            full = os.path.join(vendor_dir, *parts[1:])
+            root = os.path.realpath(vendor_dir)
+        else:
+            full = os.path.join(static_dir, *parts)
+            root = os.path.realpath(static_dir)
+        real_full = os.path.realpath(full)
+        if real_full != root and not real_full.startswith(root + os.sep):
+            return None, "путь вне каталога static"
+        return real_full, None
+
+    index_path = os.path.join(static_dir, "index.html")
+    try:
+        with open(index_path, "r", encoding="utf-8") as f:
+            html = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        return {
+            "ok": False,
+            "checked": 0,
+            "failed": [{"ref": "index.html",
+                        "reason": "не удалось прочитать index.html: %s" % e}],
+            "version": version,
+        }
+
+    refs = sorted(set(re.findall(r'(?:src|href)="(/static/[^"]+)"', html)))
+    failed = []
+    for ref in refs:
+        path, reason = resolve(ref)
+        if path is None:
+            failed.append({"ref": ref, "reason": reason})
+            continue
+        if not os.path.isfile(path):
+            failed.append({"ref": ref, "reason": "файл не найден"})
+            continue
+        try:
+            if os.path.getsize(path) == 0:
+                failed.append({"ref": ref, "reason": "файл пустой"})
+                continue
+            with open(path, "rb") as f:
+                f.read(1)
+        except OSError as e:
+            failed.append({"ref": ref, "reason": "не читается: %s" % e})
+
+    return {
+        "ok": not failed,
+        "checked": len(refs),
+        "failed": failed,
+        "version": version,
+    }
+
+
 def create_app(state):
     app = Flask("wb_energy_meter")
     app.config["JSON_SORT_KEYS"] = False
@@ -1260,6 +1341,29 @@ def create_app(state):
         resp.headers["Cache-Control"] = "public, max-age=86400"
         resp.headers["X-Content-Type-Options"] = "nosniff"
         return resp
+
+    # ---- самопроверка интерфейса (ТЗ v0.11.1) ----
+    #
+    # 09.09.2026 обновление до v0.11.0 положило контроллер: маршрут
+    # /static/vendor/<file> падал по несовместимости с Werkzeug 1.0.1,
+    # alpine.min.js не грузился, Alpine не стартовал — белый экран без
+    # единой ошибки в логе сервиса. /health при этом отвечал "всё
+    # хорошо": демон был жив, просто отдавал сломанный интерфейс.
+    # Автооткат self-update.sh проверял только is-active + /health и
+    # поломку не увидел. Логика проверки — в build_selfcheck_result()
+    # на уровне модуля (см. ниже), чтобы тесты могли прогнать её на
+    # временном каталоге с намеренно битыми файлами, не трогая реальный
+    # wb_energy_meter/static.
+    _STATIC_DIR = os.path.dirname(_VENDOR_DIR)
+
+    @app.route("/api/selfcheck")
+    def api_selfcheck():
+        """Может ли интерфейс вообще загрузиться (см. докстринг выше).
+
+        HTTP-код ВСЕГДА 200 — это диагностика, а не сама ошибка; читать
+        нужно поле "ok". Исключений наружу не бросает."""
+        return json_response(
+            build_selfcheck_result(_STATIC_DIR, _VENDOR_DIR, __version__))
 
     # ---- план объекта: зоны на схеме и кабельные связи (ТЗ v0.11.0) ----
 
