@@ -182,6 +182,38 @@ def test_index_html_tag_balance():
     print("[OK] баланс HTML-тегов index.html — 0 ошибок")
 
 
+def test_ci_workflow_is_valid_yaml():
+    """CI не должен быть сломан незаметно.
+
+    09.09.2026 в `ci.yml` попал шаг с именем
+    `- name: Run unit tests (план объекта: зоны и связи)` — незакавыченное
+    значение с ": " внутри делает YAML невалидным, и GitHub Actions не
+    запускает workflow ЦЕЛИКОМ. Молча: ни одного прогона, ни одной
+    красной галочки — просто тишина. Проверка живёт здесь, а не в самом
+    CI, потому что при сломанном YAML не запустился бы и CI-шаг проверки.
+    """
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        ".github", "workflows", "ci.yml")
+    if not os.path.exists(path):
+        print("[SKIP] .github/workflows/ci.yml не найден")
+        return
+    try:
+        import yaml
+    except ImportError:
+        print("[SKIP] нет pyyaml — проверка ci.yml пропущена")
+        return
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    assert isinstance(data, dict), "ci.yml разобрался не в словарь"
+    jobs = data.get("jobs")
+    assert isinstance(jobs, dict) and jobs, "в ci.yml нет ни одного job"
+    for job_name, job in jobs.items():
+        assert job.get("steps"), "job %r без шагов" % job_name
+    print("[OK] ci.yml — валидный YAML, jobs: %s"
+          % ", ".join(sorted(jobs)))
+
+
 if __name__ == "__main__":
     test_root_serves_ui()
     test_static_loader_reads_index()
@@ -189,4 +221,5 @@ if __name__ == "__main__":
     test_docs_still_works()
     test_ui_has_dashboard_and_consumption()
     test_index_html_tag_balance()
+    test_ci_workflow_is_valid_yaml()
     print("\nВсе тесты Шага 6 (web UI) пройдены.")

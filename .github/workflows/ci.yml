@@ -78,7 +78,10 @@ jobs:
       - name: Run unit tests (канал Uptime / wb-mqtt-serial.conf)
         run: python tests/test_step10_wbserial.py
 
-      - name: Run unit tests (план объекта: зоны и связи)
+      # Кавычки обязательны: незакавыченное значение с ": " внутри — это
+      # невалидный YAML, и GitHub Actions не запускает workflow ЦЕЛИКОМ,
+      # молча, без единого прогона. Так CI простоял сломанным весь v0.11.0.
+      - name: "Run unit tests (план объекта: зоны и связи)"
         run: python tests/test_step11_plan.py
 
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
@@ -94,6 +97,56 @@ jobs:
         if: always()
         run: |
           pkill -f "mosquitto -c /tmp/mosquitto.conf" || true
+
+  # Версии библиотек ровно те, что стоят на боевом контроллере: Wiren
+  # Board 8.x — это Debian bullseye, где Flask и Werkzeug приходят из
+  # apt (python3-flask, python3-werkzeug), а не из pip. Обычная матрица
+  # выше ставит СВЕЖИЙ Flask и поэтому слепа к несовместимостям со
+  # старым.
+  #
+  # Так уже дважды теряли рабочий контроллер:
+  #   * 09.09.2026 — `from werkzeug.utils import safe_join`: в Werkzeug
+  #     1.0.1 функция лежит в `werkzeug.security`, маршрут статики отдавал
+  #     500, alpine.min.js не грузился, весь интерфейс становился белым
+  #     экраном без единой ошибки в логе;
+  #   * тогда же — `wait_for_publish(timeout=...)` в paho-mqtt старее 1.5.1.
+  #
+  # Если этот job упал, а матрица выше зелёная — вы написали код,
+  # который работает у вас и не работает на объекте.
+  legacy-deps:
+    name: Versions as on the controller (Debian bullseye)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Install pinned old dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "flask==1.1.2" "werkzeug==1.0.1" \
+                      "jinja2<3" "itsdangerous<2" "markupsafe<2" \
+                      "paho-mqtt>=1.6,<3" "pyyaml>=5.4"
+          python -c "import flask, werkzeug; print('flask', flask.__version__, '/ werkzeug', werkzeug.__version__)"
+
+      - name: Syntax check
+        run: python -m compileall -q wb_energy_meter
+
+      - name: Run offline tests on old Flask
+        run: |
+          python tests/test_step3_consumption.py
+          python tests/test_step4_aggregator.py
+          python tests/test_step5_flask_api.py
+          python tests/test_step6_webui.py
+          python tests/test_step8_groups.py
+          python tests/test_step8_channels.py
+          python tests/test_step9_updater.py
+          python tests/test_step10_wbserial.py
+          python tests/test_step11_plan.py
 
   lint:
     name: Basic checks

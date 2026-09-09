@@ -1220,19 +1220,35 @@ def create_app(state):
     def static_vendor(filename):
         """Отдаёт вендоренные leaflet/geoman/alpine (§4 ТЗ).
 
-        Путь СТРОГО через werkzeug.safe_join + повторную проверку
-        realpath — обход каталога (`../`, закодированные варианты)
-        невозможен ни через имя файла, ни как-то ещё. Отдаём только
-        известные типы файлов (белый список расширений): даже если
-        safe_join пропустит что-то неожиданное, MIME-белый-список не даст
-        отдать произвольный файл из каталога."""
-        from werkzeug.utils import safe_join
-        full = safe_join(_VENDOR_DIR, filename)
-        if full is None or not os.path.isfile(full):
+        Обход каталога закрыт тремя независимыми проверками, все на
+        стандартной библиотеке:
+          1. сегменты пути разбираем сами и отвергаем пустые, `.`, `..`,
+             обратные слэши и абсолютные пути;
+          2. после склейки сверяем `realpath` — результат обязан лежать
+             внутри каталога vendor (ловит в том числе симлинки);
+          3. белый список расширений — даже если что-то проскочит,
+             произвольный файл наружу не уйдёт.
+
+        ВАЖНО: намеренно НЕ используем `werkzeug.safe_join`. Она живёт в
+        разных модулях в разных версиях: в Werkzeug 1.0.1 (Debian
+        bullseye, python3-werkzeug на контроллере) — в
+        `werkzeug.security`, а в `werkzeug.utils` появилась только во
+        2.0. Импорт `from werkzeug.utils import safe_join` на боевом
+        контроллере падал с ImportError, обработчик отдавал 500,
+        `alpine.min.js` не загружался — и весь интерфейс превращался в
+        белый экран (см. AGENTS.md). Своя проверка от версий не зависит.
+        """
+        parts = filename.replace("\\", "/").split("/")
+        for part in parts:
+            if part in ("", ".", "..") or os.path.isabs(part):
+                return json_response({"error": "not found"}, 404)
+        full = os.path.join(_VENDOR_DIR, *parts)
+        if not os.path.isfile(full):
             return json_response({"error": "not found"}, 404)
         real_vendor = os.path.realpath(_VENDOR_DIR)
         real_full = os.path.realpath(full)
-        if os.path.commonpath([real_vendor, real_full]) != real_vendor:
+        if real_full != real_vendor and not real_full.startswith(
+                real_vendor + os.sep):
             return json_response({"error": "not found"}, 404)
         ext = os.path.splitext(real_full)[1].lower()
         mime = _VENDOR_MIME.get(ext)

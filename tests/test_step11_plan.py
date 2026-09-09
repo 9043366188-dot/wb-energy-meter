@@ -15,7 +15,8 @@ import sqlite3
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
 
 from wb_energy_meter import image_meta, plan_geo, plan_repo
 from wb_energy_meter.api import _AppState, create_app
@@ -442,6 +443,54 @@ def test_static_vendor_traversal_blocked():
     print("[OK] обход каталога через /static/vendor/... -> 404, файл не отдан")
 
 
+def test_static_vendor_serves_every_referenced_file():
+    """Регрессия 09.09.2026 (белый экран на боевом контроллере).
+
+    Маршрут делал `from werkzeug.utils import safe_join`, но в Werkzeug
+    1.0.1 (Debian bullseye, python3-werkzeug на Wiren Board) эта функция
+    лежит в `werkzeug.security` — в `werkzeug.utils` она появилась только
+    во 2.0. На контроллере импорт падал, обработчик отдавал 500,
+    `alpine.min.js` не грузился, Alpine не стартовал. Итог: вкладки на
+    `<template x-if>` не рендерились вовсе, вкладка «План» на `x-show`
+    висела всегда, а `:data-theme` не проставлялся — страница вообще без
+    стилей. Ни одной ошибки в логе сервиса при этом не видно.
+
+    Почему прошлый тест это не поймал: он проверял только, что попытки
+    обхода каталога дают 404. При сломанном импорте они и давали 404 —
+    просто по другой причине. Что легитимный файл реально отдаётся, не
+    проверял никто.
+
+    Поэтому здесь проверяется ровно обратное: КАЖДЫЙ файл, на который
+    ссылается index.html, отдаётся с кодом 200 и непустым телом. Тест
+    заодно ловит ситуацию «добавили <script src>, а вендорить забыли».
+    """
+    index_path = os.path.join(
+        REPO_ROOT, "wb_energy_meter", "static", "index.html")
+    with open(index_path, encoding="utf-8") as f:
+        html = f.read()
+
+    refs = sorted(set(re.findall(r'(?:src|href)="(/static/[^"]+)"', html)))
+    assert refs, "в index.html не нашлось ни одной ссылки на /static/ — " \
+                 "проверка бессмысленна, поправьте тест"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        app, db, *_rest = _make_app(tmp)[:8]
+        c = app.test_client()
+        for ref in refs:
+            r = c.get(ref)
+            assert r.status_code == 200, (
+                "%s -> %s (на контроллере это белый экран без ошибок "
+                "в логе)" % (ref, r.status_code))
+            assert len(r.data) > 0, ref
+            ctype = r.headers.get("Content-Type", "")
+            if ref.endswith(".js"):
+                assert "javascript" in ctype, (ref, ctype)
+            elif ref.endswith(".css"):
+                assert "css" in ctype, (ref, ctype)
+        db.close()
+    print("[OK] все %d файла из index.html отдаются с кодом 200" % len(refs))
+
+
 # ---------------------------------------------------------------------
 # 11. Миграция 004 на БД с уже существующими данными (v0.10.0)
 # ---------------------------------------------------------------------
@@ -527,5 +576,6 @@ if __name__ == "__main__":
     test_cascade_delete_plan_and_group()
     test_live_no_meters_no_data()
     test_static_vendor_traversal_blocked()
+    test_static_vendor_serves_every_referenced_file()
     test_migration_004_on_existing_db()
     print("\nВсе тесты Шага 11 (план объекта) пройдены.")
