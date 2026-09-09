@@ -78,6 +78,9 @@ jobs:
       - name: Run unit tests (канал Uptime / wb-mqtt-serial.conf)
         run: python tests/test_step10_wbserial.py
 
+      - name: Run unit tests (план объекта: зоны и связи)
+        run: python tests/test_step11_plan.py
+
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
 
