@@ -84,6 +84,9 @@ jobs:
       - name: "Run unit tests (план объекта: зоны и связи)"
         run: python tests/test_step11_plan.py
 
+      - name: Run unit tests (самопроверка интерфейса + заглушка)
+        run: python tests/test_step12_selfcheck.py
+
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
 
@@ -147,6 +150,7 @@ jobs:
           python tests/test_step9_updater.py
           python tests/test_step10_wbserial.py
           python tests/test_step11_plan.py
+          python tests/test_step12_selfcheck.py
 
   lint:
     name: Basic checks
