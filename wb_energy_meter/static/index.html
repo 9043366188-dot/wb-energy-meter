@@ -345,6 +345,85 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 </style>
 </head>
 <body>
+<!-- ЗАГЛУШКА "ИНТЕРФЕЙС НЕ ЗАПУСТИЛСЯ" (ТЗ v0.11.1, §3).
+     ВАЖНО: только голый HTML/CSS/JS, ни одной директивы Alpine
+     (x-show/x-if/x-text/x-data) — она обязана работать именно тогда,
+     когда Alpine НЕ загрузился (белый экран 09.09.2026, см. AGENTS.md:
+     /static/vendor/<file> падал на несовместимости с Werkzeug 1.0.1,
+     alpine.min.js не грузился, Alpine не стартовал вообще). Стили —
+     только инлайном, без CSS-переменных темы (--bg/--txt/... проставляет
+     Alpine через :data-theme на <html>, при сломанном Alpine их не
+     будет — все цвета ниже заданы явно). Показывается не сразу, а через
+     1.5с (см. <script> ниже), чтобы не мигать при нормальной загрузке,
+     и удаляется, как только реально стартовал Alpine-компонент —
+     init() ниже (x-init="init()" на <html>) вызывает
+     window.__wbemBootOk(). -->
+<div id="boot-error" style="display:none;position:fixed;inset:0;z-index:99999;
+  background:#1b1e24;color:#eef0f3;font-family:-apple-system,'Segoe UI',Arial,sans-serif;
+  padding:32px;box-sizing:border-box;overflow:auto">
+  <div style="max-width:640px;margin:40px auto;background:#24282f;
+    border:1px solid #3a3f48;border-radius:10px;padding:28px 32px">
+    <h1 style="margin:0 0 12px 0;font-size:20px;line-height:1.3;color:#ff6b6b">
+      Интерфейс не запустился</h1>
+    <p id="boot-error-missing" style="margin:0 0 16px 0;font-size:14px;
+      line-height:1.5;color:#eef0f3"></p>
+    <p style="margin:0 0 8px 0;font-size:14px;color:#c7cbd3">
+      Проверьте на контроллере:</p>
+    <pre style="margin:0 0 8px 0;padding:10px 12px;background:#14161a;
+      border-radius:6px;font-size:13px;line-height:1.5;color:#9fe3a0;
+      overflow-x:auto"><code id="boot-error-curl">curl -sI http://127.0.0.1:8080/static/vendor/alpine.min.js</code></pre>
+    <pre style="margin:0;padding:10px 12px;background:#14161a;
+      border-radius:6px;font-size:13px;line-height:1.5;color:#9fe3a0;
+      overflow-x:auto"><code>journalctl -u wb-energy-meter -n 50</code></pre>
+  </div>
+</div>
+<script>
+(function(){
+  // Заглушка вместо белого экрана (ТЗ v0.11.1, §3). Работает независимо
+  // от Alpine: собственный таймер показа + перехват ошибок загрузки
+  // ресурсов через window.addEventListener('error', ..., true) — capture
+  // phase, единственный способ поймать ошибку загрузки <script>/<link>
+  // (у обычного bubbling-обработчика event.target для таких ошибок не
+  // виден).
+  var missing = [];
+  var timer = null;
+
+  function render(){
+    var box = document.getElementById('boot-error');
+    var p = document.getElementById('boot-error-missing');
+    var curl = document.getElementById('boot-error-curl');
+    if(!box || !p) return;
+    if(missing.length){
+      p.textContent = 'Не загрузились файлы: ' + missing.join(', ');
+      if(curl) curl.textContent = 'curl -sI http://127.0.0.1:8080' + missing[0];
+    } else {
+      p.textContent = 'Интерфейс не смог стартовать (Alpine.js). Список ' +
+        'конкретных файлов собрать не удалось — см. журнал сервиса ниже.';
+    }
+    box.style.display = 'block';
+  }
+
+  function onResourceError(ev){
+    var t = ev && ev.target;
+    if(!t || t === window) return; // обычная JS-ошибка, не загрузка ресурса
+    var src = (t.getAttribute && (t.getAttribute('src') || t.getAttribute('href'))) || '';
+    if(src && missing.indexOf(src) === -1) missing.push(src);
+    render(); // ресурс не загрузился — не ждём таймер, показываем сразу
+  }
+
+  window.addEventListener('error', onResourceError, true);
+  timer = setTimeout(render, 1500);
+
+  // Вызывается из init() Alpine-компонента ниже: раз init() выполнился —
+  // Alpine жив, заглушка не нужна.
+  window.__wbemBootOk = function(){
+    if(timer){ clearTimeout(timer); timer = null; }
+    window.removeEventListener('error', onResourceError, true);
+    var box = document.getElementById('boot-error');
+    if(box && box.parentNode) box.parentNode.removeChild(box);
+  };
+})();
+</script>
 <header>
   <div class="logo">wb<span>·</span>energy<span>·</span>meter</div>
   <div class="conn">
@@ -2085,6 +2164,9 @@ function app(){ return {
   _timer:null,
 
   init(){
+    // Заглушка "интерфейс не запустился" (ТЗ v0.11.1, §3): раз init()
+    // вообще выполнился — значит Alpine стартовал, заглушка не нужна.
+    if(window.__wbemBootOk) window.__wbemBootOk();
     this.refresh();
     this.loadChannelDictionary();
     this.reloadGroups();
