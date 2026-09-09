@@ -463,6 +463,88 @@ def test_self_update_writes_status_without_installed_package():
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _self_update_source():
+    path = os.path.join(REPO_ROOT, "scripts", "self-update.sh")
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
+
+def test_self_update_survives_being_overwritten_while_running():
+    """Регрессия 09.09.2026: код 127 после успешного обновления.
+
+    install.sh копирует scripts/ целиком — то есть перезаписывает
+    self-update.sh, пока тот выполняется. Обёртка кода в main() спасает
+    только тело функции (оно уже разобрано и в памяти), но ПОСЛЕ возврата
+    из main() bash продолжает читать файл с байтового смещения,
+    запомненного до перезаписи. Файл стал другой длины (20087 -> 25277
+    байт при 0.11.0 -> 0.11.1), смещение попало в середину чужой строки,
+    bash выполнил обрывок: "command not found", код 127. Трап ERR затирал
+    успешный статус аварийным — пользователь видел красный отчёт о
+    неудаче после полностью удачного обновления.
+
+    Лечится тем, что финальный вызов завёрнут в составную команду
+    `{ main "$@"; exit "$?"; }`: она разбирается целиком до выполнения,
+    поэтому exit уже в памяти и к файлу после main() никто не идёт.
+
+    Здесь проверяется и форма записи, и само поведение — на модели,
+    которая буквально перезаписывает себя более длинной версией.
+    """
+    src = _self_update_source()
+    tail = [ln.strip() for ln in src.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")]
+    last = tail[-1] if tail else ""
+    assert last.startswith("{") and "main" in last and "exit" in last, (
+        "последняя исполняемая строка self-update.sh должна быть "
+        '`{ main "$@"; exit "$?"; }` — иначе bash дочитает перезаписанный '
+        "самим же обновлением файл и упадёт с кодом 127 уже после успеха. "
+        "Сейчас: %r" % last)
+
+    if not shutil.which("bash"):
+        print("[SKIP] нет bash — поведенческая часть пропущена")
+        return
+
+    work = tempfile.mkdtemp(prefix="wbem-selfrewrite-")
+    try:
+        longer = os.path.join(work, "longer.sh")
+        with open(longer, "w", encoding="utf-8") as f:
+            f.write("#!/bin/bash\n" + "# наполнитель\n" * 200 + "echo new\n")
+        script = os.path.join(work, "victim.sh")
+        with open(script, "w", encoding="utf-8") as f:
+            f.write(
+                "#!/bin/bash\n"
+                "set -euo pipefail\n"
+                "trap 'exit $?' ERR\n"
+                "main() {\n"
+                '  cp %s "$0"\n'      # перезаписываем себя, как install.sh
+                "}\n"
+                '{ main "$@"; exit "$?"; }\n' % longer)
+        rc = subprocess.run(["bash", script], stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL).returncode
+        assert rc == 0, (
+            "скрипт, перезаписавший сам себя, завершился с кодом %d "
+            "(ожидался 0) — защита от самоперезаписи не работает" % rc)
+        print("[OK] self-update.sh переживает перезапись самого себя")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_on_error_does_not_overwrite_success():
+    """Успешный статус обновления нельзя затирать аварийным.
+
+    Даже если после успеха что-то сломается (как код 127 выше), в
+    интерфейсе не должно появляться сообщение о неудачном обновлении.
+    on_error обязан выйти раньше, если FINISHED=1 или этап уже 'done'.
+    """
+    src = _self_update_source()
+    start = src.find("on_error()")
+    assert start >= 0, "не нашлась функция on_error в self-update.sh"
+    body = src[start:src.find("\n}", start)]
+    assert 'FINISHED" -eq 1' in body and 'STAGE" == "done"' in body, (
+        "on_error не проверяет FINISHED/STAGE — поздняя ошибка затрёт "
+        "успешный статус обновления")
+    print("[OK] on_error не затирает успешный статус")
+
+
 if __name__ == "__main__":
     test_is_update_available_same_sha()
     test_is_update_available_different_sha()
@@ -495,5 +577,7 @@ if __name__ == "__main__":
     test_start_update_raises_when_already_active()
 
     test_self_update_writes_status_without_installed_package()
+    test_self_update_survives_being_overwritten_while_running()
+    test_on_error_does_not_overwrite_success()
 
     print("\nВсе тесты Шага 9 (самообновление) пройдены.")
