@@ -17,6 +17,7 @@ from .db import DEFAULT_DB_PATH, Database
 from .logger import setup_logging
 from .model import MeterRegistry
 from .mqtt_client import MqttService
+from .plan_repo import PlanLinkRepo, PlanZoneRepo, SitePlanRepo, plans_dir
 from .repo import GroupRepo, KvRepo, MeterRepo, import_registry_from_config
 from .status import StatusEngine
 from .wb_db_client import WbDbClient
@@ -65,6 +66,13 @@ def main(argv=None):
     groups_repo = GroupRepo(db)
     meters_repo = MeterRepo(db, groups_repo)
     kv_repo = KvRepo(db)
+
+    # План объекта (ТЗ v0.11.0): каталог с картинками планов — рядом с
+    # БД на /mnt/data, переживает обновление сервиса.
+    plan_repo = SitePlanRepo(db)
+    plan_zone_repo = PlanZoneRepo(db)
+    plan_link_repo = PlanLinkRepo(db)
+    plans_directory = plans_dir(args.db_path)
 
     try:
         added = import_registry_from_config(meters_repo, kv_repo, cfg.meters)
@@ -177,6 +185,8 @@ def main(argv=None):
         install_dir=install_dir,
         wb_serial_config=cfg.wb_serial,
         kv_repo=kv_repo,
+        plan_repo=plan_repo, plan_zone_repo=plan_zone_repo,
+        plan_link_repo=plan_link_repo, plans_dir=plans_directory,
     )
     try:
         api.start()

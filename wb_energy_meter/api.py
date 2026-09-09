@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 
@@ -13,10 +14,14 @@ from . import updater as _updater_module
 from .aggregates_repo import align_hour_down
 from .channels import (CATEGORIES, CHANNEL_INFO, get_channel_info,
                        localize_units)
+from .model import MeterStatus
 from .periods import PERIOD_PRESETS, build_period, parse_user_datetime
 from .repo import GroupNameConflict
 from .wb_db_client import RpcError
 
+from . import image_meta as _image_meta_module
+from . import plan_geo as _plan_geo_module
+from . import plan_repo as _plan_repo_module
 from . import wb_serial_config as _wb_serial_module
 
 log = logging.getLogger(__name__)
@@ -46,7 +51,9 @@ class _AppState:
                  update_config=None, updater=None,
                  status_path=None, install_dir=None, http_port=None,
                  wb_serial_config=None, kv_repo=None,
-                 wb_serial=None, service_restarter=None):
+                 wb_serial=None, service_restarter=None,
+                 plan_repo=None, plan_zone_repo=None, plan_link_repo=None,
+                 plans_dir=None):
         self.registry = registry
         self.meters_repo = meters_repo
         self.groups_repo = groups_repo
@@ -77,6 +84,13 @@ class _AppState:
         self.wb_serial = (wb_serial if wb_serial is not None
                           else _wb_serial_module)
         self.service_restarter = service_restarter
+        # План объекта: зоны на схеме и кабельные связи (ТЗ v0.11.0).
+        # Зона на плане ссылается на существующую meter_groups — вторая
+        # сущность "зона" не заводится.
+        self.plan_repo = plan_repo
+        self.plan_zone_repo = plan_zone_repo
+        self.plan_link_repo = plan_link_repo
+        self.plans_dir = plans_dir
 
 
 def _build_status(state):
@@ -231,6 +245,11 @@ def create_app(state):
     app = Flask("wb_energy_meter")
     app.config["JSON_SORT_KEYS"] = False
     app.config["JSON_AS_ASCII"] = False
+    # Жёсткий предел размера тела запроса (загрузка плана, §6 ТЗ v0.11.0):
+    # Werkzeug обрывает приём, не буферизуя лишнее в память. Небольшой
+    # запас — на служебные поля и границы multipart-формы.
+    app.config["MAX_CONTENT_LENGTH"] = (
+        _plan_repo_module.MAX_UPLOAD_BYTES + 1024 * 1024)
 
     def json_response(body, code=200):
         resp = app.response_class(
@@ -1187,6 +1206,453 @@ def create_app(state):
             "needs_restart": bool(_pending_get()),
         }, 500)
 
+    # ---- статика вендоренных библиотек (ТЗ v0.11.0, §4) ----
+
+    _VENDOR_DIR = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "static", "vendor")
+    _VENDOR_MIME = {
+        ".js": "application/javascript; charset=utf-8",
+        ".css": "text/css; charset=utf-8",
+        ".png": "image/png",
+    }
+
+    @app.route("/static/vendor/<path:filename>")
+    def static_vendor(filename):
+        """Отдаёт вендоренные leaflet/geoman/alpine (§4 ТЗ).
+
+        Путь СТРОГО через werkzeug.safe_join + повторную проверку
+        realpath — обход каталога (`../`, закодированные варианты)
+        невозможен ни через имя файла, ни как-то ещё. Отдаём только
+        известные типы файлов (белый список расширений): даже если
+        safe_join пропустит что-то неожиданное, MIME-белый-список не даст
+        отдать произвольный файл из каталога."""
+        from werkzeug.utils import safe_join
+        full = safe_join(_VENDOR_DIR, filename)
+        if full is None or not os.path.isfile(full):
+            return json_response({"error": "not found"}, 404)
+        real_vendor = os.path.realpath(_VENDOR_DIR)
+        real_full = os.path.realpath(full)
+        if os.path.commonpath([real_vendor, real_full]) != real_vendor:
+            return json_response({"error": "not found"}, 404)
+        ext = os.path.splitext(real_full)[1].lower()
+        mime = _VENDOR_MIME.get(ext)
+        if mime is None:
+            return json_response({"error": "not found"}, 404)
+        with open(real_full, "rb") as f:
+            data = f.read()
+        resp = Response(data, mimetype=mime)
+        resp.headers["Cache-Control"] = "public, max-age=86400"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
+
+    # ---- план объекта: зоны на схеме и кабельные связи (ТЗ v0.11.0) ----
+
+    def _plan_or_404(plan_id):
+        if state.plan_repo is None:
+            return None, json_response({"error": "plan_repo not available"}, 503)
+        plan = state.plan_repo.get_by_id(plan_id)
+        if plan is None:
+            return None, json_response(
+                {"error": "plan not found", "id": plan_id}, 404)
+        return plan, None
+
+    def _plan_zone_dict(zone):
+        d = zone.to_dict()
+        group = (state.groups_repo.get_by_id(zone.group_id)
+                if state.groups_repo else None)
+        d["group_name"] = group.name if group else None
+        d["color"] = group.color if group else None
+        return d
+
+    @app.route("/api/plans")
+    def api_plans_list():
+        if state.plan_repo is None:
+            return json_response({"error": "plan_repo not available"}, 503)
+        plans = state.plan_repo.list_all()
+        return json_response({"count": len(plans),
+                              "items": [p.to_dict() for p in plans]})
+
+    @app.route("/api/plans", methods=["POST"])
+    def api_plans_create():
+        """multipart/form-data: name, file. См. §6 ТЗ — файл принимается
+        только по сигнатуре PNG/JPEG, имя на диске генерируем мы, имя из
+        запроса не используется НИГДЕ (даже в логе)."""
+        if state.plan_repo is None:
+            return json_response({"error": "plan_repo not available"}, 503)
+        if state.plans_dir is None:
+            return json_response({"error": "plans_dir not configured"}, 503)
+
+        max_bytes = _plan_repo_module.MAX_UPLOAD_BYTES
+        # Основная защита — app.config["MAX_CONTENT_LENGTH"] (Werkzeug
+        # обрывает приём тела запроса, не буферизуя его целиком). Эта
+        # проверка — дополнительная, на случай отсутствующего/лживого
+        # Content-Length у клиента.
+        if (request.content_length is not None
+                and request.content_length > max_bytes):
+            return json_response(
+                {"error": "Файл больше 10 МБ — загрузка отклонена"}, 413)
+
+        upload = request.files.get("file")
+        if upload is None:
+            return json_response(
+                {"error": "Файл не передан (поле формы file)"}, 400)
+        name = (request.form.get("name") or "").strip()
+        if not name:
+            return json_response(
+                {"error": "Укажите имя плана (поле формы name)"}, 400)
+
+        data = upload.stream.read(max_bytes + 1)
+        if len(data) > max_bytes:
+            return json_response(
+                {"error": "Файл больше 10 МБ — загрузка отклонена"}, 413)
+        if not data:
+            return json_response({"error": "Пустой файл"}, 400)
+
+        try:
+            img_format, width, height = (
+                _image_meta_module.parse_image_size(data))
+        except _image_meta_module.ImageFormatError as e:
+            return json_response({"error": str(e)}, 400)
+
+        try:
+            plan = state.plan_repo.create(
+                name=name, image_format=img_format, width=width,
+                height=height, image_bytes=data,
+                plans_directory=state.plans_dir)
+        except _plan_repo_module.PlanError as e:
+            return json_response({"error": str(e)}, 400)
+
+        log.info("Загружен план объекта: id=%d, %dx%d, формат=%s",
+                 plan.id, width, height, img_format)
+        return json_response(plan.to_dict(), 201)
+
+    @app.route("/api/plans/<int:plan_id>")
+    def api_plan_detail(plan_id):
+        plan, err = _plan_or_404(plan_id)
+        if err:
+            return err
+        zones = (state.plan_zone_repo.list_by_plan(plan_id)
+                 if state.plan_zone_repo else [])
+        links = (state.plan_link_repo.list_by_plan(plan_id)
+                if state.plan_link_repo else [])
+        out = plan.to_dict()
+        out["zones"] = [_plan_zone_dict(z) for z in zones]
+        out["links"] = [l.to_dict() for l in links]
+        return json_response(out)
+
+    @app.route("/api/plans/<int:plan_id>/image")
+    def api_plan_image(plan_id):
+        """Отдаёт файл картинки плана. Путь строится ИСКЛЮЧИТЕЛЬНО из
+        image_file, прочитанного из БД по числовому id — из запроса в
+        путь ничего не попадает."""
+        plan, err = _plan_or_404(plan_id)
+        if err:
+            return err
+        if state.plans_dir is None:
+            return json_response({"error": "plans_dir not configured"}, 503)
+        data = _plan_repo_module.read_plan_image(
+            state.plans_dir, plan.image_file)
+        if data is None:
+            return json_response({"error": "image file not found"}, 404)
+        ext = os.path.splitext(plan.image_file)[1].lower()
+        mime = "image/png" if ext == ".png" else "image/jpeg"
+        resp = Response(data, mimetype=mime)
+        resp.headers["Cache-Control"] = "private, max-age=3600"
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        return resp
+
+    @app.route("/api/plans/<int:plan_id>", methods=["PATCH"])
+    def api_plan_update(plan_id):
+        """Body: {name?, is_default?}"""
+        plan, err = _plan_or_404(plan_id)
+        if err:
+            return err
+        import json as _json
+        try:
+            body = _json.loads(request.data.decode("utf-8"))
+        except Exception:
+            return json_response({"error": "invalid JSON body"}, 400)
+        kwargs = {}
+        if "name" in body:
+            kwargs["name"] = body["name"]
+        if "is_default" in body:
+            kwargs["is_default"] = bool(body["is_default"])
+        if not kwargs:
+            return json_response({"error": "nothing to update"}, 400)
+        try:
+            new_plan = state.plan_repo.update(plan_id, **kwargs)
+        except _plan_repo_module.PlanError as e:
+            return json_response({"error": str(e)}, 400)
+        return json_response(new_plan.to_dict())
+
+    @app.route("/api/plans/<int:plan_id>", methods=["DELETE"])
+    def api_plan_delete(plan_id):
+        plan, err = _plan_or_404(plan_id)
+        if err:
+            return err
+        state.plan_repo.delete(plan_id, state.plans_dir)
+        log.info("Удалён план объекта id=%d", plan_id)
+        return json_response({"ok": True, "id": plan_id})
+
+    @app.route("/api/plans/<int:plan_id>/zones/<int:group_id>",
+              methods=["PUT"])
+    def api_plan_zone_put(plan_id, group_id):
+        """Body: {shape_type?, geometry, anchor?}"""
+        plan, err = _plan_or_404(plan_id)
+        if err:
+            return err
+        if state.groups_repo is None or state.plan_zone_repo is None:
+            return json_response({"error": "not available"}, 503)
+        group = state.groups_repo.get_by_id(group_id)
+        if group is None:
+            return json_response(
+                {"error": "group not found", "id": group_id}, 404)
+        import json as _json
+        try:
+            body = _json.loads(request.data.decode("utf-8"))
+        except Exception:
+            return json_response({"error": "invalid JSON body"}, 400)
+        shape_type = body.get("shape_type") or "polygon"
+        geometry = body.get("geometry")
+        anchor = body.get("anchor")
+        if geometry is None:
+            return json_response({"error": "geometry обязательна"}, 400)
+        try:
+            zone = state.plan_zone_repo.upsert(
+                plan, group_id, shape_type, geometry, anchor)
+        except (ValueError, _plan_repo_module.PlanError) as e:
+            return json_response({"error": str(e)}, 400)
+        log.info("Зона на плане сохранена: plan_id=%d group_id=%d",
+                 plan_id, group_id)
+        return json_response(_plan_zone_dict(zone))
+
+    @app.route("/api/plans/<int:plan_id>/zones/<int:group_id>",
+              methods=["DELETE"])
+    def api_plan_zone_delete(plan_id, group_id):
+        plan, err = _plan_or_404(plan_id)
+        if err:
+            return err
+        if state.plan_zone_repo is None:
+            return json_response({"error": "not available"}, 503)
+        removed = state.plan_zone_repo.delete(plan_id, group_id)
+        if not removed:
+            return json_response({"error": "zone not found on this plan"}, 404)
+        log.info("Зона убрана с плана: plan_id=%d group_id=%d",
+                 plan_id, group_id)
+        return json_response({"ok": True})
+
+    @app.route("/api/plans/<int:plan_id>/links", methods=["POST"])
+    def api_plan_link_create(plan_id):
+        """Body: {from_zone_id, to_zone_id, source_meter_id?,
+        rated_current_a?, waypoints?, label?}"""
+        plan, err = _plan_or_404(plan_id)
+        if err:
+            return err
+        if state.plan_link_repo is None or state.plan_zone_repo is None:
+            return json_response({"error": "not available"}, 503)
+        import json as _json
+        try:
+            body = _json.loads(request.data.decode("utf-8"))
+        except Exception:
+            return json_response({"error": "invalid JSON body"}, 400)
+        try:
+            from_zone_id = int(body.get("from_zone_id"))
+            to_zone_id = int(body.get("to_zone_id"))
+        except (TypeError, ValueError):
+            return json_response(
+                {"error": "from_zone_id и to_zone_id обязательны"}, 400)
+        try:
+            link = state.plan_link_repo.create(
+                plan_id, from_zone_id, to_zone_id, state.plan_zone_repo,
+                source_meter_id=body.get("source_meter_id"),
+                rated_current_a=body.get("rated_current_a"),
+                waypoints=body.get("waypoints"),
+                label=body.get("label"), plan=plan)
+        except (ValueError, _plan_repo_module.PlanError) as e:
+            return json_response({"error": str(e)}, 400)
+        log.info("Создана связь на плане: id=%d plan_id=%d %d->%d",
+                 link.id, plan_id, from_zone_id, to_zone_id)
+        return json_response(link.to_dict(), 201)
+
+    @app.route("/api/plans/<int:plan_id>/links/<int:link_id>",
+              methods=["PATCH"])
+    def api_plan_link_update(plan_id, link_id):
+        plan, err = _plan_or_404(plan_id)
+        if err:
+            return err
+        if state.plan_link_repo is None or state.plan_zone_repo is None:
+            return json_response({"error": "not available"}, 503)
+        existing = state.plan_link_repo.get_by_id(link_id)
+        if existing is None or existing.plan_id != plan_id:
+            return json_response({"error": "link not found"}, 404)
+        import json as _json
+        try:
+            body = _json.loads(request.data.decode("utf-8"))
+        except Exception:
+            return json_response({"error": "invalid JSON body"}, 400)
+        fields = set(body.keys())
+        kwargs = {}
+        if "from_zone_id" in fields:
+            try: kwargs["from_zone_id"] = int(body["from_zone_id"])
+            except (TypeError, ValueError):
+                return json_response({"error": "from_zone_id должен быть числом"}, 400)
+        if "to_zone_id" in fields:
+            try: kwargs["to_zone_id"] = int(body["to_zone_id"])
+            except (TypeError, ValueError):
+                return json_response({"error": "to_zone_id должен быть числом"}, 400)
+        if "source_meter_id" in fields:
+            kwargs["source_meter_id"] = body["source_meter_id"]
+        if "rated_current_a" in fields:
+            kwargs["rated_current_a"] = body["rated_current_a"]
+        if "waypoints" in fields:
+            kwargs["waypoints"] = body["waypoints"]
+        if "label" in fields:
+            kwargs["label"] = body["label"]
+        try:
+            link = state.plan_link_repo.update(
+                link_id, state.plan_zone_repo, plan=plan, _fields=fields,
+                **kwargs)
+        except (ValueError, _plan_repo_module.PlanError) as e:
+            return json_response({"error": str(e)}, 400)
+        return json_response(link.to_dict())
+
+    @app.route("/api/plans/<int:plan_id>/links/<int:link_id>",
+              methods=["DELETE"])
+    def api_plan_link_delete(plan_id, link_id):
+        plan, err = _plan_or_404(plan_id)
+        if err:
+            return err
+        if state.plan_link_repo is None:
+            return json_response({"error": "not available"}, 503)
+        existing = state.plan_link_repo.get_by_id(link_id)
+        if existing is None or existing.plan_id != plan_id:
+            return json_response({"error": "link not found"}, 404)
+        state.plan_link_repo.delete(link_id)
+        log.info("Удалена связь на плане: id=%d plan_id=%d", link_id, plan_id)
+        return json_response({"ok": True})
+
+    @app.route("/api/plans/<int:plan_id>/live")
+    def api_plan_live(plan_id):
+        """Живые данные для отрисовки: мощность/статус зон, ток связей.
+        Никогда не 500 — план без зон/счётчиков отдаёт 200 с null-ами
+        (§9 п.9 ТЗ)."""
+        plan, err = _plan_or_404(plan_id)
+        if err:
+            return err
+        if state.plan_zone_repo is None or state.plan_link_repo is None:
+            return json_response({"error": "not available"}, 503)
+        try:
+            period = build_period(**_parse_period_from_request())
+        except ValueError as e:
+            return json_response({"error": "bad period", "detail": str(e)}, 400)
+
+        zones = state.plan_zone_repo.list_by_plan(plan_id)
+        groups_by_id = {}
+        if state.groups_repo is not None:
+            for g in state.groups_repo.list_all():
+                groups_by_id[g.id] = g
+        meters_by_group = {}
+        if state.meters_repo is not None:
+            for m in state.meters_repo.list_all():
+                meters_by_group.setdefault(m.group_id, []).append(m)
+
+        zones_out = []
+        for z in zones:
+            group = groups_by_id.get(z.group_id)
+            meter_rows = meters_by_group.get(z.group_id, [])
+            meters_ok = 0
+            worst = None
+            power_kw = 0.0
+            any_power = False
+            for mr in meter_rows:
+                ms = state.registry.get(mr.device_id) if state.registry else None
+                st = ms.status if ms is not None else MeterStatus.UNKNOWN
+                if st == MeterStatus.OK:
+                    meters_ok += 1
+                if worst is None or st.priority > worst.priority:
+                    worst = st
+                p = ms.get_float("Total P") if ms is not None else None
+                if p is not None:
+                    power_kw += p
+                    any_power = True
+            consumption_kwh = None
+            if state.consumption_service is not None and meter_rows:
+                total = 0.0
+                got_any = False
+                for mr in meter_rows:
+                    try:
+                        r = state.consumption_service.calculate(
+                            mr.device_id, period)
+                    except RpcError:
+                        continue
+                    except Exception:
+                        log.exception(
+                            "plan live: ошибка расчёта расхода %s",
+                            mr.device_id)
+                        continue
+                    if r.consumption_kwh is not None:
+                        total += r.consumption_kwh
+                        got_any = True
+                if got_any:
+                    consumption_kwh = round(total, 6)
+            zones_out.append({
+                "group_id": z.group_id,
+                "name": group.name if group else None,
+                "color": group.color if group else None,
+                "meters_total": len(meter_rows),
+                "meters_ok": meters_ok,
+                "worst_status": worst.value if worst is not None else None,
+                "power_kw": round(power_kw, 6) if any_power else None,
+                "consumption_kwh": consumption_kwh,
+            })
+
+        links = state.plan_link_repo.list_by_plan(plan_id)
+        max_metric = 0.0
+        link_metrics = []
+        for l in links:
+            current_a = None
+            power_kw = None
+            if l.source_meter_id and state.meters_repo is not None \
+                    and state.registry is not None:
+                meter_row = state.meters_repo.get_by_id(l.source_meter_id)
+                if meter_row is not None:
+                    ms = state.registry.get(meter_row.device_id)
+                    if ms is not None:
+                        currents = [ms.get_float(f"Irms {ph}")
+                                   for ph in ("L1", "L2", "L3")]
+                        currents = [c for c in currents if c is not None]
+                        if currents:
+                            current_a = max(currents)
+                        power_kw = ms.get_float("Total P")
+            metric = current_a if current_a is not None else (power_kw or 0.0)
+            if metric and metric > max_metric:
+                max_metric = metric
+            link_metrics.append((l, current_a, power_kw, metric))
+
+        links_out = []
+        for l, current_a, power_kw, metric in link_metrics:
+            load_pct = None
+            state_lbl = "neutral"
+            if current_a is not None and l.rated_current_a:
+                load_pct = round(current_a / l.rated_current_a * 100, 1)
+                if load_pct < 70:
+                    state_lbl = "ok"
+                elif load_pct < 90:
+                    state_lbl = "warn"
+                else:
+                    state_lbl = "danger"
+            links_out.append({
+                "id": l.id, "from_zone_id": l.from_zone_id,
+                "to_zone_id": l.to_zone_id, "label": l.label,
+                "rated_current_a": l.rated_current_a,
+                "current_a": current_a, "power_kw": power_kw,
+                "load_pct": load_pct, "state": state_lbl,
+                "weight": (round(metric / max_metric, 4)
+                          if max_metric > 0 else 0.0),
+            })
+
+        return json_response({"zones": zones_out, "links": links_out})
+
     # ---- pages ----
 
     @app.route("/")
@@ -1220,7 +1686,9 @@ class ApiServer:
                  groups_repo=None, alert_repo=None,
                  update_config=None, updater=None,
                  status_path=None, install_dir=None,
-                 wb_serial_config=None, kv_repo=None):
+                 wb_serial_config=None, kv_repo=None,
+                 plan_repo=None, plan_zone_repo=None, plan_link_repo=None,
+                 plans_dir=None):
         self._host = host
         self._port = port
         self._app_state = _AppState(
@@ -1237,6 +1705,8 @@ class ApiServer:
             status_path=status_path, install_dir=install_dir,
             http_port=port,
             wb_serial_config=wb_serial_config, kv_repo=kv_repo,
+            plan_repo=plan_repo, plan_zone_repo=plan_zone_repo,
+            plan_link_repo=plan_link_repo, plans_dir=plans_dir,
             started_at=time.time())
         self._app = create_app(self._app_state)
         self._server = None
