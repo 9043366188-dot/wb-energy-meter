@@ -61,6 +61,11 @@ FINISHED=0
 TMP_DIR=""
 SRC_DIR=""
 NEW_VERSION=""
+# Заполняются run_selfcheck() (ТЗ v0.11.1, §2.2) и читаются из
+# attempt_rollback(), чтобы статус/лог содержали не просто "не прошло",
+# а конкретный список файлов, которые не отдались.
+SELFCHECK_STATE=""
+SELFCHECK_DETAILS=""
 
 # ---------------------------------------------------------------------
 # Утилиты
@@ -287,19 +292,109 @@ wait_for_health() {
   return 1
 }
 
-verify_after_install() {
-  if wait_for_health; then
-    log_line "Проверка после установки прошла успешно (сервис активен, /health отвечает)"
+run_selfcheck() {
+  # ТЗ v0.11.1, §2.2. /health отвечает "всё хорошо" даже когда интерфейс
+  # не грузится (белый экран 09.09.2026, см. AGENTS.md) — демон жив, а
+  # alpine.min.js не отдаётся, и /health этого не видит. /api/selfcheck
+  # проверяет именно это: что все файлы, на которые ссылается index.html,
+  # реально отдаются. Разбираем ответ без jq (на контроллере его может не
+  # быть) — python3 -c с json.load из stdin.
+  #
+  # 404 на этом эндпоинте — НЕ провал (§2.3 ТЗ): значит на этой версии
+  # /api/selfcheck ещё/уже нет (например, откат на v0.11.0) — считаем
+  # проверку недоступной и опираемся на /health, как раньше. Так же
+  # трактуем и обрыв соединения (curl не смог достучаться) — /health уже
+  # подтвердил, что сервис живой и отвечает на этом порту, единичный сбой
+  # именно этого запроса не повод откатывать рабочую версию. А вот любой
+  # ДРУГОЙ код ответа (500 и т.п.) — это уже сама самопроверка сломана,
+  # и это провал.
+  local url="http://127.0.0.1:${HTTP_PORT}/api/selfcheck"
+  local body http_code py_out status_line
+  body="$(mktemp)"
+
+  if ! http_code="$(curl -sS --max-time 5 -o "$body" -w '%{http_code}' "$url" 2>>"$LOG_FILE")"; then
+    log_line "selfcheck: запрос к $url не удался (curl) — считаю недоступной, полагаюсь на /health"
+    rm -f "$body"
+    SELFCHECK_STATE="unavailable"
     return 0
   fi
-  log_line "Сервис не поднялся за 90 секунд после установки"
+
+  if [[ "$http_code" == "404" ]]; then
+    log_line "selfcheck: /api/selfcheck отвечает 404 (версия без этого эндпоинта) — не провал, опираюсь на /health"
+    rm -f "$body"
+    SELFCHECK_STATE="unavailable"
+    return 0
+  fi
+
+  if [[ "$http_code" != "200" ]]; then
+    log_line "selfcheck: неожиданный код ответа $http_code от $url"
+    SELFCHECK_DETAILS="HTTP $http_code от /api/selfcheck"
+    rm -f "$body"
+    SELFCHECK_STATE="failed"
+    return 1
+  fi
+
+  py_out="$(python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception as e:
+    print("PARSE_ERROR")
+    print(str(e))
+    sys.exit(0)
+print("OK" if data.get("ok") else "FAIL")
+for item in (data.get("failed") or []):
+    ref = str(item.get("ref", "?"))
+    reason = str(item.get("reason", "?"))
+    print(ref + ": " + reason)
+' <"$body" 2>>"$LOG_FILE")"
+  rm -f "$body"
+
+  status_line="$(printf '%s\n' "$py_out" | head -n1)"
+  SELFCHECK_DETAILS="$(printf '%s\n' "$py_out" | tail -n +2 | tr '\n' ';' | sed 's/;$//; s/;/; /g')"
+
+  if [[ "$status_line" == "OK" ]]; then
+    log_line "selfcheck: ok=true"
+    SELFCHECK_STATE="ok"
+    return 0
+  fi
+
+  log_line "selfcheck: не прошла ($status_line): ${SELFCHECK_DETAILS:-без подробностей}"
+  SELFCHECK_STATE="failed"
+  return 1
+}
+
+verify_after_install() {
+  if ! wait_for_health; then
+    log_line "Сервис не поднялся за 90 секунд после установки"
+    return 1
+  fi
+  log_line "Проверка после установки: сервис активен, /health отвечает"
+
+  if run_selfcheck; then
+    if [[ "$SELFCHECK_STATE" == "unavailable" ]]; then
+      log_line "Проверка после установки прошла (самопроверка интерфейса недоступна, полагаюсь на /health)"
+    else
+      log_line "Проверка после установки прошла успешно (/health и /api/selfcheck в порядке)"
+    fi
+    return 0
+  fi
+  log_line "Проверка после установки провалена самопроверкой интерфейса"
   return 1
 }
 
 attempt_rollback() {
   local rc="$1"
+  # ТЗ v0.11.1, §2.2: если причина отката — непройденная самопроверка
+  # интерфейса, статус и лог обязаны называть конкретные файлы, а не
+  # просто "не прошло" — иначе пользователь опять останется с "обновление
+  # откатилось" без единой подсказки, что именно сломалось.
+  local reason="Обновление не прошло проверку (код $rc), выполняется откат на предыдущую версию"
+  if [[ -n "$SELFCHECK_DETAILS" ]]; then
+    reason="Самопроверка интерфейса не прошла: ${SELFCHECK_DETAILS}. Выполняется откат на предыдущую версию"
+  fi
   step_status "rolling_back" "Не удалось поднять сервис после обновления, откатываюсь…" \
-    error "Обновление не прошло проверку (код $rc), выполняется откат на предыдущую версию"
+    error "$reason"
   log_line "ОТКАТ: восстанавливаю $INSTALL_DIR/wb_energy_meter из $ROLLBACK_DIR"
 
   systemctl stop wb-energy-meter.service >>"$LOG_FILE" 2>&1 || true
@@ -322,8 +417,12 @@ attempt_rollback() {
   systemctl start wb-energy-meter.service >>"$LOG_FILE" 2>&1 || true
 
   if wait_for_health; then
+    local rolled_back_reason="Установка $EXPECTED_SHA не прошла проверку (код $rc); сервис возвращён к предыдущей версии"
+    if [[ -n "$SELFCHECK_DETAILS" ]]; then
+      rolled_back_reason="Установка $EXPECTED_SHA не прошла самопроверку интерфейса: ${SELFCHECK_DETAILS}. Сервис возвращён к предыдущей версии"
+    fi
     finish_status "rolled_back" "Обновление не встало, откат на предыдущую версию выполнен успешно" \
-      error "Установка $EXPECTED_SHA не прошла проверку (код $rc); сервис возвращён к предыдущей версии"
+      error "$rolled_back_reason"
     log_line "ОТКАТ УСПЕШЕН: сервис снова работает на предыдущей версии"
   else
     finish_status "failed" "Откат не помог — сервис не поднимается ни на новой, ни на старой версии" \
