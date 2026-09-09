@@ -558,14 +558,28 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
        x-show просто скрывает блок через display:none, карта создаётся
        один раз в x-init контейнера и переживает переключения вкладок. -->
   <div x-show="tab=='plan'">
-    <template x-if="!planLoading && planPlans.length===0">
+    <template x-if="!planLoading && planPlans.length===0 && !planEditMode">
       <div class="plan-empty">
         <p style="margin-bottom:14px">Планов объекта пока нет.</p>
-        <button class="btn btn-primary" @click="planEditMode=true">Загрузить план</button>
+        <!-- Именно togglePlanEdit(), а не `planEditMode=true`: он ещё и
+             дёргает invalidateSize(). Контейнер карты в этот момент
+             становится видимым впервые, а Leaflet посчитал свой размер,
+             когда блок был display:none, — без invalidateSize() карта
+             отрисуется мусором (см. AGENTS.md, грабли про Leaflet). -->
+        <button class="btn btn-primary" @click="togglePlanEdit()">Загрузить план</button>
       </div>
     </template>
 
-    <div x-show="planPlans.length>0">
+    <!-- ВАЖНО: условие включает `|| planEditMode`, а не только
+         `planPlans.length>0`. Форма загрузки плана лежит ВНУТРИ этого
+         блока (panel .plan-side ниже), поэтому при условии лишь на
+         количество планов получалась «курица и яйцо»: кнопка «Загрузить
+         план» из пустого состояния ставила planEditMode=true, но сам
+         блок с формой оставался скрыт — ведь планов всё ещё ноль.
+         Пользователь видел неработающую кнопку и ни одного элемента
+         управления, загрузить первый план было физически нечем.
+         Регрессия закрыта тестом test_plan_upload_form_reachable_when_no_plans. -->
+    <div x-show="planPlans.length>0 || planEditMode">
       <div class="plan-toolbar">
         <select x-model.number="planCurrentId" @change="selectPlan(planCurrentId)"
                 style="background:var(--bg2);border:1px solid var(--line);color:var(--txt);

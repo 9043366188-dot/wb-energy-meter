@@ -491,6 +491,48 @@ def test_static_vendor_serves_every_referenced_file():
     print("[OK] все %d файла из index.html отдаются с кодом 200" % len(refs))
 
 
+def test_plan_upload_form_reachable_when_no_plans():
+    """Регрессия 09.09.2026: «курица и яйцо» на пустой вкладке «План».
+
+    Форма загрузки плана лежит внутри блока, который показывался по
+    условию `x-show="planPlans.length>0"`. Кнопка «Загрузить план» из
+    пустого состояния ставила `planEditMode=true`, но блок оставался
+    скрыт — планов-то по-прежнему ноль. На свежей установке вкладка
+    выглядела так: одна неработающая кнопка и ни одного элемента
+    управления, загрузить первый план физически нечем.
+
+    Проверяем ровно суть: блок, содержащий форму загрузки, обязан
+    показываться и когда планов нет, но включён режим редактирования.
+    """
+    index_path = os.path.join(
+        REPO_ROOT, "wb_energy_meter", "static", "index.html")
+    with open(index_path, encoding="utf-8") as f:
+        html = f.read()
+
+    assert 'x-ref="planFileInput"' in html, \
+        "не нашёлся input[type=file] формы загрузки плана — поправьте тест"
+
+    # Условие показа блока-обёртки, внутри которого лежит форма загрузки.
+    m = re.search(r'<div x-show="planPlans\.length>0([^"]*)"', html)
+    assert m, ("не нашёлся блок вкладки «План» с x-show по planPlans.length "
+               "— если разметку переписали, обновите тест")
+    condition = m.group(1)
+    assert "planEditMode" in condition, (
+        "блок с формой загрузки плана показывается только при "
+        "planPlans.length>0 — значит на свежей установке (планов нет) "
+        "форма недостижима и первый план загрузить нельзя. "
+        "Условие должно включать planEditMode. Сейчас: %r" % condition)
+
+    # Пустое состояние обязано прятаться при входе в режим редактирования,
+    # иначе заглушка «Планов пока нет» перекрывает открывшуюся форму.
+    m2 = re.search(
+        r'<template x-if="!planLoading && planPlans\.length===0([^"]*)"', html)
+    assert m2 and "planEditMode" in m2.group(1), (
+        "пустое состояние вкладки «План» не учитывает planEditMode — "
+        "оно останется на экране поверх формы загрузки")
+    print("[OK] форма загрузки плана достижима, когда планов ещё нет")
+
+
 # ---------------------------------------------------------------------
 # 11. Миграция 004 на БД с уже существующими данными (v0.10.0)
 # ---------------------------------------------------------------------
@@ -577,5 +619,6 @@ if __name__ == "__main__":
     test_live_no_meters_no_data()
     test_static_vendor_traversal_blocked()
     test_static_vendor_serves_every_referenced_file()
+    test_plan_upload_form_reachable_when_no_plans()
     test_migration_004_on_existing_db()
     print("\nВсе тесты Шага 11 (план объекта) пройдены.")
