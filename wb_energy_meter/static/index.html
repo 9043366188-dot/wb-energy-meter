@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <title>wb-energy-meter</title>
 <meta name="viewport" content="width=1100">
+<!-- Вендорено локально (ТЗ v0.11.0) — см. wb_energy_meter/static/vendor/VENDOR.md -->
+<link rel="stylesheet" href="/static/vendor/leaflet.css">
+<link rel="stylesheet" href="/static/vendor/leaflet-geoman.css">
 <style>
 :root[data-theme="dark"]{
   --bg:#0d1117;--bg2:#161b22;--bg3:#1c2330;--line:#2d3543;
@@ -283,6 +286,62 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   margin-bottom:6px;font-size:12px}
 .incident-row .ir-time{color:var(--txt2);font-family:monospace}
 .incident-row .ir-dur{color:var(--txt3);margin-left:12px}
+/* план объекта (ТЗ v0.11.0) — карта Leaflet держит собственный DOM,
+   вкладка на x-show (не x-if), контейнеру нужна явная высота (см.
+   AGENTS.md) */
+#site-plan-map{height:calc(100vh - 220px);min-height:420px;
+  border-radius:10px;border:1px solid var(--line);background:var(--bg3)}
+.leaflet-container{background:var(--bg3);font-family:inherit;outline:none}
+.leaflet-popup-content-wrapper{background:var(--bg2);color:var(--txt);
+  border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+.leaflet-popup-tip{background:var(--bg2)}
+.leaflet-popup-close-button{color:var(--txt2) !important}
+.plan-popup{min-width:210px;font-size:13px}
+.plan-popup .pp-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.plan-popup .pp-dot{width:11px;height:11px;border-radius:3px;flex-shrink:0}
+.plan-popup .pp-title{font-weight:700;font-size:15px}
+.plan-popup .pp-power{font-size:26px;font-weight:700;margin-bottom:6px;
+  font-family:"SF Mono","JetBrains Mono",Consolas,monospace}
+.plan-popup .pp-power small{font-size:13px;color:var(--txt2);font-weight:500}
+.plan-popup .pp-row{display:flex;justify-content:space-between;gap:10px;
+  font-size:12px;color:var(--txt2);padding:3px 0}
+.plan-popup .pp-worst{font-size:11px;color:var(--warn);background:var(--bg3);
+  border-radius:6px;padding:6px 8px;margin-top:6px;line-height:1.4}
+.plan-popup .pp-link{display:block;margin-top:8px;font-size:12px;
+  color:var(--accent2);text-decoration:none;font-weight:600;cursor:pointer}
+.plan-popup .pp-link:hover{text-decoration:underline}
+.plan-zone-alarm{animation:planZonePulse 2s ease-in-out infinite}
+@keyframes planZonePulse{
+  0%,100%{stroke-opacity:1;stroke-width:3}
+  50%{stroke-opacity:.35;stroke-width:5}
+}
+.plan-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.plan-layout{display:grid;grid-template-columns:1fr;gap:16px;align-items:start}
+.plan-layout.plan-edit-open{grid-template-columns:1fr 340px}
+.plan-side{background:var(--bg2);border:1px solid var(--line);border-radius:10px;
+  padding:16px;display:flex;flex-direction:column;gap:16px;
+  max-height:calc(100vh - 220px);overflow:auto}
+.plan-side h3{font-size:12px;text-transform:uppercase;letter-spacing:.5px;
+  color:var(--txt3);font-weight:600}
+.plan-zone-list{display:flex;flex-direction:column;gap:6px}
+.plan-zone-row{display:flex;align-items:center;gap:8px;background:var(--bg3);
+  border-radius:7px;padding:7px 10px;font-size:13px}
+.plan-zone-row .pzr-dot{width:10px;height:10px;border-radius:3px;flex-shrink:0}
+.plan-zone-row .pzr-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plan-zone-row .pzr-check{color:var(--ok);font-size:13px}
+.plan-link-row{background:var(--bg3);border-radius:7px;padding:8px 10px;
+  font-size:12px;display:flex;flex-direction:column;gap:4px}
+.plan-link-row .plr-top{display:flex;justify-content:space-between;align-items:center}
+.plan-empty{text-align:center;color:var(--txt3);padding:60px 20px}
+.plan-upload-form{display:flex;flex-direction:column;gap:8px}
+.plan-upload-form input[type=text],.plan-upload-form input[type=file],
+.plan-upload-form input[type=number]{background:var(--bg3);border:1px solid var(--line);
+  color:var(--txt);padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit}
+.plan-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--txt2)}
+.plan-legend span{display:flex;align-items:center;gap:5px}
+.plan-legend .ll-swatch{width:16px;height:3px;border-radius:2px;display:inline-block}
+.plan-pill{font-size:10px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.3px;padding:2px 7px;border-radius:5px;background:var(--accent);color:#fff}
 </style>
 </head>
 <body>
@@ -294,6 +353,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   </div>
   <nav>
     <button :class="{active:tab=='dash'}" @click="tab='dash'">Дашборд</button>
+    <button :class="{active:tab=='plan'}" @click="tab='plan';openPlanTab()">План</button>
     <button :class="{active:tab=='consumption'}" @click="tab='consumption';loadConsumption()">Расход</button>
     <button :class="{active:tab=='settings'}" @click="tab='settings';loadSettings();initUpdatePanel()">Настройки</button>
     <button :class="{active:tab=='reports'}" @click="tab='reports';initReports()">Отчёты</button>
@@ -411,6 +471,157 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   </template>
     </div>
   </template>
+
+  <!-- ПЛАН ОБЪЕКТА (ТЗ v0.11.0). Сознательно НЕ template x-if: x-if
+       уничтожает DOM при переключении вкладок, а Leaflet держит
+       собственный DOM внутри контейнера карты — при повторном входе
+       получится либо мусор, либо "Map container is already initialized".
+       x-show просто скрывает блок через display:none, карта создаётся
+       один раз в x-init контейнера и переживает переключения вкладок. -->
+  <div x-show="tab=='plan'">
+    <template x-if="!planLoading && planPlans.length===0">
+      <div class="plan-empty">
+        <p style="margin-bottom:14px">Планов объекта пока нет.</p>
+        <button class="btn btn-primary" @click="planEditMode=true">Загрузить план</button>
+      </div>
+    </template>
+
+    <div x-show="planPlans.length>0">
+      <div class="plan-toolbar">
+        <select x-model.number="planCurrentId" @change="selectPlan(planCurrentId)"
+                style="background:var(--bg2);border:1px solid var(--line);color:var(--txt);
+                       padding:8px 12px;border-radius:7px;font-size:13px;font-family:inherit">
+          <template x-for="p in planPlans" :key="p.id">
+            <option :value="p.id" x-text="p.name+(p.is_default?' (по умолчанию)':'')"></option>
+          </template>
+        </select>
+        <template x-for="p in presets" :key="p.id">
+          <button :class="{active:planPeriod==p.id}"
+                  style="background:var(--bg2);border:1px solid var(--line);color:var(--txt2);
+                         cursor:pointer;padding:7px 12px;border-radius:7px;font-size:12px;font-weight:500"
+                  :style="planPeriod==p.id?'background:var(--accent);color:#fff;border-color:var(--accent)':''"
+                  @click="setPlanPeriod(p.id)" x-text="p.label"></button>
+        </template>
+        <div class="spacer"></div>
+        <div class="plan-legend">
+          <span><i class="ll-swatch" style="background:var(--ok)"></i>до 70% тока</span>
+          <span><i class="ll-swatch" style="background:var(--warn)"></i>70–90%</span>
+          <span><i class="ll-swatch" style="background:var(--err)"></i>выше 90%</span>
+        </div>
+        <button class="ico-btn" @click="togglePlanEdit()"
+                x-text="planEditMode?'✓ Готово':'✎ Редактировать'"></button>
+      </div>
+
+      <div class="plan-layout" :class="{'plan-edit-open':planEditMode}">
+        <div>
+          <div id="site-plan-map" x-ref="planMap" x-init="initPlanMap()"></div>
+        </div>
+
+        <!-- Панель редактирования — обычный Alpine-контент СНАРУЖИ
+             контейнера карты. Внутрь #site-plan-map Alpine ничего не
+             биндит: слои, попапы и стили правит только JS через API
+             Leaflet (см. AGENTS.md, ТЗ §3.4). -->
+        <div class="plan-side" x-show="planEditMode">
+          <div>
+            <h3>Загрузить новый план</h3>
+            <div class="plan-upload-form" style="margin-top:8px">
+              <input type="text" placeholder="Название плана (например, «Цех 1, этаж 1»)"
+                     x-model="planUploadName">
+              <input type="file" accept="image/png,image/jpeg" x-ref="planFileInput">
+              <button class="btn btn-primary btn-sm" :disabled="planUploadBusy"
+                      @click="uploadPlan()">
+                <span x-show="!planUploadBusy">Загрузить</span>
+                <span x-show="planUploadBusy"><span class="spin" style="width:12px;height:12px"></span> Загрузка…</span>
+              </button>
+              <div class="muted" style="color:var(--err)" x-show="planUploadError" x-text="planUploadError"></div>
+              <div class="muted">Принимаются PNG и JPEG, до 10 МБ. SVG не поддерживается — экспортируйте план в PNG.</div>
+            </div>
+          </div>
+
+          <template x-if="planCurrent">
+            <div>
+              <h3>Зоны на плане</h3>
+              <div class="plan-zone-list" style="margin-top:8px">
+                <template x-for="g in zones" :key="g.id">
+                  <div class="plan-zone-row">
+                    <span class="pzr-dot" :style="`background:${g.color||'var(--txt3)'}`"></span>
+                    <span class="pzr-name" x-text="g.name"></span>
+                    <span class="pzr-check" x-show="isZoneOnPlan(g.id)" title="Уже нанесена на план">✓</span>
+                    <button class="btn btn-sm btn-secondary"
+                            :disabled="planDrawingGroupId!==null"
+                            @click="startZoneDraw(g)"
+                            x-text="isZoneOnPlan(g.id)?'Перерисовать':'Обвести'"></button>
+                    <button class="btn btn-sm btn-danger" x-show="isZoneOnPlan(g.id)"
+                            @click="planConfirmRemoveZone={group_id:g.id,name:g.name}">✕</button>
+                  </div>
+                </template>
+                <div class="muted" x-show="!zones.length">
+                  Сначала создайте зоны на вкладке «Настройки».
+                </div>
+              </div>
+              <div class="muted" x-show="planDrawingGroupId!==null" style="margin-top:8px">
+                Обведите контур на плане (клик — точка, двойной клик — завершить), затем
+                поправьте вершины при необходимости.
+              </div>
+              <button class="btn btn-primary btn-sm" x-show="planHasPendingZoneDraw"
+                      style="margin-top:8px" @click="saveZoneDraw()">Сохранить контур</button>
+              <button class="btn btn-secondary btn-sm" x-show="planHasPendingZoneDraw"
+                      style="margin-top:8px" @click="cancelZoneDraw()">Отмена</button>
+
+              <h3 style="margin-top:6px">Кабельные связи</h3>
+              <div class="plan-zone-list">
+                <template x-for="l in (planCurrent.links||[])" :key="l.id">
+                  <div class="plan-link-row">
+                    <div class="plr-top">
+                      <span x-text="(zoneNameById(l.from_zone_id)||'?')+' → '+(zoneNameById(l.to_zone_id)||'?')"></span>
+                      <button class="btn btn-sm btn-danger"
+                              @click="planConfirmDeleteLink={id:l.id,label:l.label||''}">✕</button>
+                    </div>
+                    <span class="muted" x-text="l.label||'без подписи'"></span>
+                  </div>
+                </template>
+              </div>
+              <button class="btn btn-sm" :class="planAddingLink?'btn-secondary':'btn-primary'"
+                      @click="toggleAddLink()"
+                      x-text="planAddingLink?'Отменить добавление связи':'Добавить связь'"></button>
+              <div class="muted" x-show="planAddingLink && !planLinkFromZoneId">
+                Кликните по зоне-источнику на плане.
+              </div>
+              <div class="muted" x-show="planAddingLink && planLinkFromZoneId && !planLinkForm.toZoneId">
+                Теперь кликните по зоне-приёмнику.
+              </div>
+              <template x-if="planAddingLink && planLinkForm.toZoneId">
+                <div style="display:flex;flex-direction:column;gap:8px">
+                  <input type="text" placeholder="Подпись, например «АВВГ 4х95, 120 м»"
+                         x-model="planLinkForm.label">
+                  <select x-model="planLinkForm.sourceMeterId"
+                          style="background:var(--bg3);border:1px solid var(--line);color:var(--txt);
+                                 padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit">
+                    <option value="">— без счётчика-источника —</option>
+                    <template x-for="m in regMeters" :key="m.device_id">
+                      <option :value="m.id" x-text="m.display_name"></option>
+                    </template>
+                  </select>
+                  <input type="number" step="0.1" min="0" placeholder="Допустимый ток кабеля, А"
+                         x-model="planLinkForm.ratedCurrentA">
+                  <button class="btn btn-primary btn-sm" @click="saveLink()">Сохранить связь</button>
+                </div>
+              </template>
+
+              <h3 style="margin-top:6px">План</h3>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-sm btn-secondary" @click="renamePlanPrompt()">Переименовать</button>
+                <button class="btn btn-sm btn-secondary" x-show="!planCurrent.is_default"
+                        @click="setDefaultPlan()">Сделать по умолчанию</button>
+                <button class="btn btn-sm btn-danger"
+                        @click="planConfirmDeletePlan={id:planCurrent.id,name:planCurrent.name}">Удалить план</button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- CONSUMPTION -->
   <template x-if="tab=='consumption'">
@@ -1732,13 +1943,73 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     </div>
   </template>
 
+  <!-- CONFIRM REMOVE ZONE FROM PLAN (ТЗ v0.11.0) -->
+  <template x-if="planConfirmRemoveZone">
+    <div class="confirm-overlay">
+      <div class="confirm-box">
+        <h3>Убрать зону с плана?</h3>
+        <p>
+          <b x-text="planConfirmRemoveZone.name"></b><br><br>
+          Контур будет удалён с плана. Сама зона в «Настройках» останется,
+          счётчики никуда не денутся.
+        </p>
+        <div class="actions">
+          <button class="btn btn-secondary" @click="planConfirmRemoveZone=null">Отмена</button>
+          <button class="btn btn-danger" @click="confirmRemoveZoneFromPlan()">Убрать</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- CONFIRM DELETE LINK (ТЗ v0.11.0) -->
+  <template x-if="planConfirmDeleteLink">
+    <div class="confirm-overlay">
+      <div class="confirm-box">
+        <h3>Удалить связь?</h3>
+        <p>
+          <span x-text="planConfirmDeleteLink.label||'Связь без подписи'"></span><br><br>
+          Это действие нельзя отменить.
+        </p>
+        <div class="actions">
+          <button class="btn btn-secondary" @click="planConfirmDeleteLink=null">Отмена</button>
+          <button class="btn btn-danger" @click="confirmDeletePlanLink()">Удалить</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- CONFIRM DELETE PLAN (ТЗ v0.11.0) -->
+  <template x-if="planConfirmDeletePlan">
+    <div class="confirm-overlay">
+      <div class="confirm-box">
+        <h3>Удалить план?</h3>
+        <p>
+          <b x-text="planConfirmDeletePlan.name"></b><br><br>
+          Картинка плана, все зоны и связи на нём будут удалены безвозвратно.
+          Сами зоны («Настройки») и счётчики не пострадают.
+        </p>
+        <div class="actions">
+          <button class="btn btn-secondary" @click="planConfirmDeletePlan=null">Отмена</button>
+          <button class="btn btn-danger" @click="confirmDeletePlanNow()">Удалить план</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
   <!-- TOAST -->
   <template x-if="toast">
     <div class="toast" :class="toast.ok?'toast-ok':'toast-err'" x-text="toast.msg"></div>
   </template>
 </main>
 
-<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.0/dist/cdn.min.js" defer></script>
+<!-- Leaflet + Leaflet-Geoman + Alpine — вендорено локально
+     (wb_energy_meter/static/vendor/, см. VENDOR.md), интерфейс работает
+     без интернета в браузере. leaflet.js/leaflet-geoman.min.js загружаются
+     БЕЗ defer (блокирующе), чтобы глобалы L / L.PM были готовы до того,
+     как деферренный alpine.min.js обработает x-init="init()" на <html>. -->
+<script src="/static/vendor/leaflet.js"></script>
+<script src="/static/vendor/leaflet-geoman.min.js"></script>
+<script src="/static/vendor/alpine.min.js" defer></script>
 <script>
 function app(){ return {
   tab:'dash', theme:lsGet('theme','dark'), loading:true,
@@ -1796,6 +2067,19 @@ function app(){ return {
   cmpPeriodA:'this_month', cmpPeriodB:'last_month',
   cmpRows:[], cmpTotalA:0, cmpTotalB:0,
   cmpLabelA:'', cmpLabelB:'', cmpLoading:false,
+  // план объекта (ТЗ v0.11.0). Сам объект карты L.Map НЕ хранится тут —
+  // он в замыкании модуля (переменная _planMap ниже, вне реактивности
+  // Alpine), чтобы Leaflet не завернуло в Proxy и не начало вести себя
+  // непредсказуемо (§3.4 ТЗ).
+  planPlans:[], planCurrentId:null, planCurrent:null,
+  planLive:{zones:[],links:[]}, planLoading:false,
+  planEditMode:false, planPeriod:'today',
+  planUploadName:'', planUploadBusy:false, planUploadError:'',
+  planDrawingGroupId:null, planHasPendingZoneDraw:false,
+  planAddingLink:false, planLinkFromZoneId:null,
+  planLinkForm:{toZoneId:'', label:'', sourceMeterId:'', ratedCurrentA:''},
+  planConfirmRemoveZone:null, planConfirmDeleteLink:null,
+  planConfirmDeletePlan:null, planInited:false,
   // toast
   toast:null, _toastTimer:null,
   _timer:null,
@@ -1804,7 +2088,13 @@ function app(){ return {
     this.refresh();
     this.loadChannelDictionary();
     this.reloadGroups();
-    this._timer=setInterval(()=>{ if(this.tab=='dash') this.loadStatus(); },5000);
+    this._timer=setInterval(()=>{
+      if(this.tab=='dash') this.loadStatus();
+      // План (ТЗ v0.11.0): та же частота 5с, что и дашборд. Обновляем
+      // только стили/попапы (_planApplyLiveStyles), слои не пересоздаём —
+      // иначе открытый попап зоны закрывался бы на каждый тик.
+      if(this.tab=='plan') this.loadPlanLive();
+    },5000);
   },
   async loadChannelDictionary(){
     try{
@@ -1814,7 +2104,12 @@ function app(){ return {
     }catch(e){ console.error(e); }
   },
   toggleTheme(){ this.theme=this.theme=='dark'?'light':'dark';
-    try{localStorage.setItem('theme',this.theme)}catch(e){} },
+    try{localStorage.setItem('theme',this.theme)}catch(e){}
+    // Цвета связей на плане берутся из CSS-переменных темы (--ok/--warn/
+    // --err/--accent2) в момент отрисовки, не через var() внутри SVG —
+    // после смены темы их нужно пересчитать явно.
+    this.$nextTick(()=>{ if(typeof this._planApplyLiveStyles==='function') this._planApplyLiveStyles(); });
+  },
   refresh(){
     this.loadStatus();
     if(this.tab=='consumption') this.loadConsumption();
@@ -2780,12 +3075,426 @@ function app(){ return {
     }catch(e){this.showToast('Ошибка: '+e,false);}
   },
 
+  // ---- План объекта: зоны на схеме и кабельные связи (ТЗ v0.11.0) ----
+  // Сам L.Map и слои живут в замыкании модуля (переменные _plan* ниже,
+  // объявлены после app()) — НЕ в data() компонента, чтобы Alpine не
+  // завернул L.Map в реактивный Proxy (§3.4 ТЗ). Внутрь контейнера
+  // #site-plan-map Alpine ничего не биндит — слои, попапы и стили правит
+  // только JS через API Leaflet, из методов ниже.
+
+  initPlanMap(){
+    if(_planMap) return; // контейнер не пересоздаётся (x-show, не x-if) —
+                          // карта создаётся ровно один раз за жизнь страницы
+    const el=this.$refs.planMap;
+    _planMap=L.map(el, {crs:L.CRS.Simple, minZoom:-4, zoomControl:true,
+                        attributionControl:false});
+    _planMap.setView([0,0],0);
+    _planMap.on('pm:create', (e)=>this._planOnPmCreate(e));
+    _planMap.on('popupopen', (e)=>{
+      const wrap=e.popup.getElement();
+      const link=wrap && wrap.querySelector('.pp-link');
+      if(link){
+        link.onclick=(ev)=>{
+          ev.preventDefault();
+          if(_planOpenPopupGroupId!=null) this.openZoneOnDashboard(_planOpenPopupGroupId);
+        };
+      }
+    });
+    window.addEventListener('resize', ()=>{ if(_planMap) _planMap.invalidateSize(); });
+  },
+  async openPlanTab(){
+    if(!_planMap) this.initPlanMap();
+    if(!this.planInited){
+      this.planInited=true;
+      await this.reloadGroups();
+      await this.loadPlanList();
+    }
+    this.$nextTick(()=>{ if(_planMap) _planMap.invalidateSize(); });
+  },
+  async loadPlanList(){
+    this.planLoading=true;
+    try{
+      const r=await fetch('/api/plans'); const d=await r.json();
+      this.planPlans=d.items||[];
+      if(this.planPlans.length>0 && !this.planCurrentId){
+        const def=this.planPlans.find(p=>p.is_default)||this.planPlans[0];
+        await this.selectPlan(def.id);
+      }
+    }catch(e){ console.error(e); }
+    this.planLoading=false;
+  },
+  async selectPlan(id){
+    if(!id) return;
+    this.cancelZoneDraw(); this.cancelAddLink();
+    this.planCurrentId=id;
+    try{
+      const r=await fetch('/api/plans/'+id);
+      if(!r.ok){ this.showToast('Не удалось загрузить план',false); return; }
+      this.planCurrent=await r.json();
+    }catch(e){ console.error(e); return; }
+    this._planRenderBase();
+    await this.loadPlanLive();
+  },
+  async loadPlanLive(){
+    if(!this.planCurrentId) return;
+    try{
+      const r=await fetch(`/api/plans/${this.planCurrentId}/live?period=${encodeURIComponent(this.planPeriod)}`);
+      if(!r.ok) return;
+      this.planLive=await r.json();
+    }catch(e){ console.error(e); return; }
+    this._planApplyLiveStyles();
+  },
+  setPlanPeriod(id){ this.planPeriod=id; this.loadPlanLive(); },
+  togglePlanEdit(){
+    this.planEditMode=!this.planEditMode;
+    if(!this.planEditMode){ this.cancelZoneDraw(); this.cancelAddLink(); }
+    this.$nextTick(()=>{ if(_planMap) _planMap.invalidateSize(); });
+  },
+  isZoneOnPlan(groupId){
+    return !!(this.planCurrent && (this.planCurrent.zones||[]).some(z=>z.group_id===groupId));
+  },
+  zoneNameById(zoneId){
+    const z=this.planCurrent && (this.planCurrent.zones||[]).find(zz=>zz.id===zoneId);
+    return z? z.group_name : null;
+  },
+  _planLiveForGroup(groupId){
+    return (this.planLive.zones||[]).find(z=>z.group_id===groupId) || null;
+  },
+  openZoneOnDashboard(groupId){
+    const z=(this.zones||[]).find(g=>g.id===groupId);
+    const name=z?z.name:null;
+    this.tab='dash';
+    this.$nextTick(()=>{
+      if(!name) return;
+      const target=[...document.querySelectorAll('.zone-title')]
+        .find(elx=>elx.textContent===name);
+      if(target) target.scrollIntoView({behavior:'smooth', block:'start'});
+    });
+  },
+
+  // ---- Отрисовка (пересоздаёт слои — только при смене плана/зон/связей,
+  // НЕ на каждый 5-секундный тик живых данных, иначе открытый попап
+  // закрывался бы каждые 5 секунд, см. §8.1 ТЗ) ----
+  _planClearLayers(){
+    if(!_planMap) return;
+    if(_planImageLayer){ try{_planMap.removeLayer(_planImageLayer);}catch(e){} _planImageLayer=null; }
+    _planZoneLayers.forEach(rec=>{ try{_planMap.removeLayer(rec.layer);}catch(e){} });
+    _planZoneLayers.clear();
+    _planLinkLayers.forEach(line=>{ try{_planMap.removeLayer(line);}catch(e){} });
+    _planLinkLayers.clear();
+    _planOpenPopupGroupId=null;
+  },
+  _planZoneAnchorLatLng(zone){
+    if(zone.anchor) return L.latLng(zone.anchor[0], zone.anchor[1]);
+    const rec=_planZoneLayers.get(zone.group_id);
+    if(rec){
+      if(rec.layer.getBounds) return rec.layer.getBounds().getCenter();
+      if(rec.layer.getLatLng) return rec.layer.getLatLng();
+    }
+    return L.latLng(0,0);
+  },
+  _planRenderBase(){
+    if(!_planMap || !this.planCurrent) return;
+    this._planClearLayers();
+    const pc=this.planCurrent;
+    const bounds=[[0,0],[pc.image_height, pc.image_width]];
+    _planImageLayer=L.imageOverlay('/api/plans/'+pc.id+'/image', bounds).addTo(_planMap);
+    _planMap.fitBounds(bounds);
+
+    (pc.zones||[]).forEach(z=>{
+      const color=z.color||'#3dd6c0';
+      let layer;
+      if(z.shape_type==='marker'){
+        layer=L.circleMarker(z.geometry, {radius:10, color, fillColor:color,
+                                          fillOpacity:.5, weight:2});
+      }else{
+        layer=L.polygon(z.geometry, {color, weight:2, fillColor:color, fillOpacity:.25});
+      }
+      const popup=L.popup({className:'plan-popup-wrap', maxWidth:270, autoPan:true});
+      layer.on('click', (e)=>{
+        if(this.planAddingLink){ this._planHandleLinkZoneClick(z.group_id); return; }
+        _planOpenPopupGroupId=z.group_id;
+        popup.setLatLng(e.latlng)
+             .setContent(this._planPopupHtml(z, this._planLiveForGroup(z.group_id)))
+             .openOn(_planMap);
+      });
+      layer.addTo(_planMap);
+      _planZoneLayers.set(z.group_id, {layer, popup, zone:z});
+    });
+
+    (pc.links||[]).forEach(l=>{
+      const fz=(pc.zones||[]).find(z=>z.id===l.from_zone_id);
+      const tz=(pc.zones||[]).find(z=>z.id===l.to_zone_id);
+      if(!fz || !tz) return;
+      const fromLL=this._planZoneAnchorLatLng(fz);
+      const toLL=this._planZoneAnchorLatLng(tz);
+      const mid=(l.waypoints||[]).map(p=>L.latLng(p[0],p[1]));
+      const line=L.polyline([fromLL, ...mid, toLL],
+        {color:_planCssVar('--accent2'), weight:3, opacity:.85});
+      line.addTo(_planMap);
+      _planLinkLayers.set(l.id, line);
+    });
+
+    this._planApplyLiveStyles();
+  },
+  _planPopupHtml(zone, live){
+    const name=_planEscapeHtml(zone.group_name||'');
+    const color=zone.color||'#3dd6c0';
+    const power=live && live.power_kw!=null ? live.power_kw.toFixed(3) : '—';
+    const cons=live && live.consumption_kwh!=null ? live.consumption_kwh.toFixed(2) : '—';
+    const total=live ? live.meters_total : 0;
+    const ok=live ? live.meters_ok : 0;
+    let worstHtml='';
+    if(live && live.worst_status && live.worst_status!=='ok'){
+      worstHtml=`<div class="pp-worst">${_planEscapeHtml(this.statusLabel(live.worst_status))}</div>`;
+    }
+    return `<div class="plan-popup">`+
+      `<div class="pp-head"><span class="pp-dot" style="background:${color}"></span>`+
+      `<span class="pp-title">${name}</span></div>`+
+      `<div class="pp-power">${power}<small> кВт</small></div>`+
+      `<div class="pp-row"><span>Счётчиков</span><span>${ok}/${total} в порядке</span></div>`+
+      `<div class="pp-row"><span>Расход за период</span><span>${cons} кВт·ч</span></div>`+
+      worstHtml+
+      `<a class="pp-link" href="#">Открыть счётчики зоны →</a></div>`;
+  },
+  _planApplyLiveStyles(){
+    if(!_planMap) return;
+    const zoneLive={};
+    (this.planLive.zones||[]).forEach(z=>{ zoneLive[z.group_id]=z; });
+    _planZoneLayers.forEach((rec, groupId)=>{
+      const zl=zoneLive[groupId]||null;
+      const alarm=!!(zl && zl.worst_status && zl.worst_status!=='ok');
+      const path=rec.layer._path;
+      if(path) path.classList.toggle('plan-zone-alarm', alarm);
+      // Только контент попапа, слой НЕ пересоздаётся — открытый попап не закроется.
+      rec.popup.setContent(this._planPopupHtml(rec.zone, zl));
+    });
+    const linkLive={};
+    (this.planLive.links||[]).forEach(l=>{ linkLive[l.id]=l; });
+    _planLinkLayers.forEach((line, linkId)=>{
+      const ll=linkLive[linkId]||null;
+      const weight=ll && ll.weight!=null ? (2 + ll.weight*8) : 3;
+      const color=ll ? _planLinkColor(ll.state) : _planCssVar('--accent2');
+      line.setStyle({weight, color, opacity:.85});
+      const linkMeta=(this.planCurrent && (this.planCurrent.links||[]).find(x=>x.id===linkId));
+      const parts=[];
+      if(linkMeta && linkMeta.label) parts.push(_planEscapeHtml(linkMeta.label));
+      if(ll && ll.current_a!=null) parts.push(ll.current_a.toFixed(1)+' А');
+      if(ll && ll.load_pct!=null) parts.push(ll.load_pct+'%');
+      const tip=parts.join(' · ')||'Связь';
+      if(line.getTooltip()) line.setTooltipContent(tip);
+      else line.bindTooltip(tip, {sticky:true});
+    });
+  },
+
+  // ---- Редактирование: контур зоны (Geoman) ----
+  startZoneDraw(group){
+    if(this.planDrawingGroupId!==null || !_planMap) return;
+    this.planDrawingGroupId=group.id;
+    this.planHasPendingZoneDraw=false;
+    _planMap.pm.enableDraw('Polygon', {snappable:true, finishOn:'dblclick'});
+  },
+  _planOnPmCreate(e){
+    if(e.shape==='Polygon' && this.planDrawingGroupId!==null){
+      if(_planDrawLayer){ try{_planMap.removeLayer(_planDrawLayer);}catch(err){} }
+      _planDrawLayer=e.layer;
+      if(_planDrawLayer.pm) _planDrawLayer.pm.enable({allowSelfIntersection:false});
+      this.planHasPendingZoneDraw=true;
+    }
+  },
+  async saveZoneDraw(){
+    if(!_planDrawLayer || this.planDrawingGroupId===null) return;
+    const rings=_planDrawLayer.getLatLngs();
+    const ring=Array.isArray(rings[0]) ? rings[0] : rings;
+    const geometry=ring.map(ll=>[ll.lat, ll.lng]);
+    const groupId=this.planDrawingGroupId;
+    try{
+      const r=await fetch(`/api/plans/${this.planCurrentId}/zones/${groupId}`,
+        {method:'PUT', headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({shape_type:'polygon', geometry})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){ this.showToast(d.error||'Не удалось сохранить контур',false); return; }
+      this.showToast('Контур зоны сохранён');
+      this.cancelZoneDraw();
+      await this.selectPlan(this.planCurrentId);
+    }catch(e){ this.showToast('Ошибка: '+e,false); }
+  },
+  cancelZoneDraw(){
+    if(_planMap && _planMap.pm) _planMap.pm.disableDraw('Polygon');
+    if(_planDrawLayer){ try{_planMap.removeLayer(_planDrawLayer);}catch(e){} _planDrawLayer=null; }
+    this.planDrawingGroupId=null;
+    this.planHasPendingZoneDraw=false;
+  },
+  async confirmRemoveZoneFromPlan(){
+    const target=this.planConfirmRemoveZone; this.planConfirmRemoveZone=null;
+    if(!target) return;
+    try{
+      const r=await fetch(`/api/plans/${this.planCurrentId}/zones/${target.group_id}`,
+        {method:'DELETE'});
+      if(!r.ok){ const d=await r.json().catch(()=>({})); this.showToast(d.error||'Ошибка',false); return; }
+      this.showToast('Зона убрана с плана');
+      await this.selectPlan(this.planCurrentId);
+    }catch(e){ this.showToast('Ошибка: '+e,false); }
+  },
+
+  // ---- Редактирование: кабельные связи ----
+  toggleAddLink(){
+    if(this.planAddingLink){ this.cancelAddLink(); return; }
+    this.planAddingLink=true;
+    this.planLinkFromZoneId=null;
+    this.planLinkForm={toZoneId:'', label:'', sourceMeterId:'', ratedCurrentA:''};
+  },
+  cancelAddLink(){
+    this.planAddingLink=false;
+    this.planLinkFromZoneId=null;
+    this.planLinkForm={toZoneId:'', label:'', sourceMeterId:'', ratedCurrentA:''};
+  },
+  _planHandleLinkZoneClick(groupId){
+    const zone=this.planCurrent && (this.planCurrent.zones||[]).find(z=>z.group_id===groupId);
+    if(!zone){ this.showToast('У этой зоны ещё нет контура на плане', false); return; }
+    if(!this.planLinkFromZoneId){
+      this.planLinkFromZoneId=zone.id;
+      this.showToast('Зона-источник выбрана, кликните по зоне-приёмнику', true);
+      return;
+    }
+    if(zone.id===this.planLinkFromZoneId){
+      this.showToast('Зона-приёмник должна отличаться от источника', false);
+      return;
+    }
+    this.planLinkForm.toZoneId=zone.id;
+  },
+  async saveLink(){
+    if(!this.planLinkFromZoneId || !this.planLinkForm.toZoneId) return;
+    const body={
+      from_zone_id:this.planLinkFromZoneId,
+      to_zone_id:this.planLinkForm.toZoneId,
+      label:this.planLinkForm.label || null,
+      source_meter_id:this.planLinkForm.sourceMeterId ? Number(this.planLinkForm.sourceMeterId) : null,
+      rated_current_a:this.planLinkForm.ratedCurrentA!==''
+        ? Number(this.planLinkForm.ratedCurrentA) : null,
+    };
+    try{
+      const r=await fetch(`/api/plans/${this.planCurrentId}/links`,
+        {method:'POST', headers:{'Content-Type':'application/json'},
+         body:JSON.stringify(body)});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){ this.showToast(d.error||'Не удалось сохранить связь',false); return; }
+      this.showToast('Связь создана');
+      this.cancelAddLink();
+      await this.selectPlan(this.planCurrentId);
+    }catch(e){ this.showToast('Ошибка: '+e,false); }
+  },
+  async confirmDeletePlanLink(){
+    const target=this.planConfirmDeleteLink; this.planConfirmDeleteLink=null;
+    if(!target) return;
+    try{
+      const r=await fetch(`/api/plans/${this.planCurrentId}/links/${target.id}`,
+        {method:'DELETE'});
+      if(!r.ok){ const d=await r.json().catch(()=>({})); this.showToast(d.error||'Ошибка',false); return; }
+      this.showToast('Связь удалена');
+      await this.selectPlan(this.planCurrentId);
+    }catch(e){ this.showToast('Ошибка: '+e,false); }
+  },
+
+  // ---- Управление планом: загрузка, переименование, удаление ----
+  async uploadPlan(){
+    const input=this.$refs.planFileInput;
+    const file=input && input.files && input.files[0];
+    this.planUploadError='';
+    if(!file){ this.planUploadError='Выберите файл'; return; }
+    if(!this.planUploadName.trim()){ this.planUploadError='Укажите название плана'; return; }
+    this.planUploadBusy=true;
+    try{
+      const fd=new FormData();
+      fd.append('name', this.planUploadName.trim());
+      fd.append('file', file);
+      const r=await fetch('/api/plans', {method:'POST', body:fd});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){
+        this.planUploadError=d.error||'Не удалось загрузить план';
+        this.planUploadBusy=false; return;
+      }
+      this.showToast('План загружен');
+      this.planUploadName=''; if(input) input.value='';
+      this.planCurrentId=null; // чтобы loadPlanList не оставил старый выбор
+      await this.loadPlanList();
+      await this.selectPlan(d.id);
+    }catch(e){ this.planUploadError='Ошибка: '+e; }
+    this.planUploadBusy=false;
+  },
+  async renamePlanPrompt(){
+    if(!this.planCurrent) return;
+    const name=prompt('Новое имя плана', this.planCurrent.name);
+    if(!name || !name.trim()) return;
+    try{
+      const r=await fetch(`/api/plans/${this.planCurrent.id}`,
+        {method:'PATCH', headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({name:name.trim()})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){ this.showToast(d.error||'Ошибка',false); return; }
+      this.showToast('План переименован');
+      await this.loadPlanList();
+      await this.selectPlan(this.planCurrentId);
+    }catch(e){ this.showToast('Ошибка: '+e,false); }
+  },
+  async setDefaultPlan(){
+    if(!this.planCurrent) return;
+    try{
+      const r=await fetch(`/api/plans/${this.planCurrent.id}`,
+        {method:'PATCH', headers:{'Content-Type':'application/json'},
+         body:JSON.stringify({is_default:true})});
+      if(!r.ok){ const d=await r.json().catch(()=>({})); this.showToast(d.error||'Ошибка',false); return; }
+      this.showToast('План назначен по умолчанию');
+      await this.loadPlanList();
+    }catch(e){ this.showToast('Ошибка: '+e,false); }
+  },
+  async confirmDeletePlanNow(){
+    const target=this.planConfirmDeletePlan; this.planConfirmDeletePlan=null;
+    if(!target) return;
+    try{
+      const r=await fetch(`/api/plans/${target.id}`, {method:'DELETE'});
+      if(!r.ok){ const d=await r.json().catch(()=>({})); this.showToast(d.error||'Ошибка',false); return; }
+      this.showToast('План удалён');
+      this._planClearLayers();
+      this.planCurrentId=null; this.planCurrent=null;
+      this.planPlans=this.planPlans.filter(p=>p.id!==target.id);
+      await this.loadPlanList();
+    }catch(e){ this.showToast('Ошибка: '+e,false); }
+  },
+
   showToast(msg, ok=true){
     clearTimeout(this._toastTimer);
     this.toast={msg,ok};
     this._toastTimer=setTimeout(()=>{ this.toast=null; },3000);
   },
 }; }
+
+// ---- План объекта (ТЗ v0.11.0): состояние карты Leaflet — ВНЕ
+// реактивности Alpine (§3.4 ТЗ). Это обычные переменные модуля, а не
+// свойства data() компонента: L.Map, завёрнутый в реактивный Proxy
+// Alpine, ведёт себя непредсказуемо (Leaflet держит собственный DOM и
+// свои внутренние структуры, которые Proxy-обёртка ломает).
+let _planMap=null;
+let _planImageLayer=null;
+const _planZoneLayers=new Map();   // group_id -> {layer, popup, zone}
+const _planLinkLayers=new Map();   // link_id -> polyline
+let _planDrawLayer=null;           // временный слой контура во время рисования зоны
+let _planOpenPopupGroupId=null;    // группа последнего открытого попапа (для ссылки в нём)
+
+function _planCssVar(name){
+  try{
+    const v=getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v||'#3dd6c0';
+  }catch(e){ return '#3dd6c0'; }
+}
+function _planEscapeHtml(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c=>(
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+function _planLinkColor(state){
+  return ({ok:_planCssVar('--ok'), warn:_planCssVar('--warn'),
+           danger:_planCssVar('--err')})[state] || _planCssVar('--accent2');
+}
 
 function lsGet(k,def){ try{ return localStorage.getItem(k)||def; }catch(e){ return def; } }
 function lsGetJSON(k,def){
