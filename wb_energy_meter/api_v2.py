@@ -34,7 +34,9 @@ from __future__ import annotations
 import logging
 import time
 
-from flask import request
+import os
+
+from flask import request, Response
 
 from .accounting_contract import ContractViolation
 from .accounting_service import (
@@ -48,6 +50,11 @@ from .topology_service import (
 )
 from .aggregates_repo import AggregateRepo
 from .periods import parse_user_datetime
+from .plan_repo import read_plan_image
+from .plan_service_v2 import (
+    SitePlanRepoV2, PlanItemRepo, PlanEdgeViewRepo,
+    RevisionConflict, PlanError, save_plan_layout,
+)
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +95,9 @@ def register_v2_routes(app, state, json_response):
     def _node_repo(): return ElectricalNodeRepo(db)
     def _edge_repo(): return ElectricalEdgeRepo(db)
     def _aggregates_repo(): return state.aggregates_repo or AggregateRepo(db)
+    def _plan_repo_v2(): return SitePlanRepoV2(db, state.plans_dir)
+    def _plan_item_repo(): return PlanItemRepo(db)
+    def _plan_edge_view_repo(): return PlanEdgeViewRepo(db)
 
     def _point_to_dict(p):
         return {
@@ -136,6 +146,13 @@ def register_v2_routes(app, state, json_response):
             "replacement_note": b.replacement_note,
             "created_at": b.created_at,
         }
+
+    def _plan_or_404_v2(plan_id):
+        plan = _plan_repo_v2().get_by_id(plan_id)
+        if plan is None:
+            body, status = _err("not_found", f"План {plan_id} не найден", 404, ids=[plan_id])
+            return None, json_response(body, status)
+        return plan, None
 
     # ------------------------------------------------------------ points
 
@@ -605,3 +622,247 @@ def register_v2_routes(app, state, json_response):
         except ValueError as e:
             body, status = _err("bad_request", str(e), 400)
             return json_response(body, status)
+
+    # -------------------------------------------------------------- plans
+    # Стадия D (ТЗ §7): план помещений/однолинейная схема поверх
+    # site_plans(plan_kind/canvas_*) — параллельно v1 /api/plans
+    # (plan_zones/plan_links), который не трогается (см. plan_service_v2
+    # module docstring). Фронтенд-редактор (Leaflet-Geoman) в эту
+    # задачу не входит — здесь только HTTP-слой над репозиториями.
+
+    def _plan_to_dict_v2(p):
+        return p.to_dict()
+
+    def _plan_item_to_dict(i):
+        return i.to_dict()
+
+    def _plan_edge_view_to_dict(v):
+        return v.to_dict()
+
+    @app.route("/api/v2/plans", methods=["GET", "POST"])
+    def v2_plans():
+        if state.plans_dir is None:
+            body, status = _err("service_unavailable", "plans_dir не настроен", 503)
+            return json_response(body, status)
+        repo = _plan_repo_v2()
+        if request.method == "GET":
+            plan_kind = request.args.get("plan_kind")
+            return json_response([_plan_to_dict_v2(p) for p in repo.list_all(plan_kind)])
+
+        # multipart/form-data (как v1 /api/plans, §6/§7.2): name,
+        # plan_kind, file (необязателен для single_line),
+        # canvas_width/canvas_height (для пустой single_line).
+        name = (request.form.get("name") or "").strip()
+        plan_kind = request.form.get("plan_kind", "floor")
+        image_bytes = None
+        upload = request.files.get("file")
+        if upload is not None:
+            image_bytes = upload.stream.read()
+        canvas_width = request.form.get("canvas_width")
+        canvas_height = request.form.get("canvas_height")
+        try:
+            canvas_width = int(canvas_width) if canvas_width else None
+            canvas_height = int(canvas_height) if canvas_height else None
+        except ValueError:
+            body, status = _err(
+                "bad_request", "canvas_width/canvas_height должны быть целыми числами",
+                400, fields=["canvas_width", "canvas_height"])
+            return json_response(body, status)
+
+        try:
+            plan = repo.create(
+                name=name, plan_kind=plan_kind, image_bytes=image_bytes,
+                canvas_width=canvas_width, canvas_height=canvas_height)
+        except PlanError as e:
+            body, status = _err("bad_request", str(e), 400)
+            return json_response(body, status)
+        return json_response(_plan_to_dict_v2(plan), 201)
+
+    @app.route("/api/v2/plans/<int:plan_id>", methods=["GET", "DELETE"])
+    def v2_plan_detail(plan_id):
+        plan, err = _plan_or_404_v2(plan_id)
+        if err:
+            return err
+
+        if request.method == "DELETE":
+            _plan_repo_v2().delete(plan_id)
+            return json_response({"ok": True, "id": plan_id})
+
+        out = _plan_to_dict_v2(plan)
+        out["items"] = [_plan_item_to_dict(i) for i in _plan_item_repo().list_for_plan(plan_id)]
+        out["edges"] = [_plan_edge_view_to_dict(v)
+                        for v in _plan_edge_view_repo().list_for_plan(plan_id)]
+        return json_response(out)
+
+    @app.route("/api/v2/plans/<int:plan_id>/image", methods=["GET", "POST"])
+    def v2_plan_image(plan_id):
+        plan, err = _plan_or_404_v2(plan_id)
+        if err:
+            return err
+        if state.plans_dir is None:
+            body, status = _err("service_unavailable", "plans_dir не настроен", 503)
+            return json_response(body, status)
+
+        if request.method == "GET":
+            if not plan.image_file:
+                body, status = _err(
+                    "not_found", f"У плана {plan_id} нет фонового изображения", 404,
+                    ids=[plan_id])
+                return json_response(body, status)
+            data = read_plan_image(state.plans_dir, plan.image_file)
+            if data is None:
+                body, status = _err("not_found", "файл изображения не найден", 404, ids=[plan_id])
+                return json_response(body, status)
+            ext = os.path.splitext(plan.image_file)[1].lower()
+            mime = "image/png" if ext == ".png" else "image/jpeg"
+            resp = Response(data, mimetype=mime)
+            resp.headers["Cache-Control"] = "private, max-age=3600"
+            resp.headers["X-Content-Type-Options"] = "nosniff"
+            return resp
+
+        upload = request.files.get("file")
+        if upload is None:
+            body, status = _err("bad_request", "Файл не передан (поле формы file)", 400,
+                                 fields=["file"])
+            return json_response(body, status)
+        image_bytes = upload.stream.read()
+        try:
+            plan = _plan_repo_v2().replace_image(plan_id, image_bytes)
+        except PlanError as e:
+            body, status = _err("bad_request", str(e), 400)
+            return json_response(body, status)
+        return json_response(_plan_to_dict_v2(plan))
+
+    @app.route("/api/v2/plans/<int:plan_id>/items", methods=["GET", "POST"])
+    def v2_plan_items(plan_id):
+        plan, err = _plan_or_404_v2(plan_id)
+        if err:
+            return err
+        repo = _plan_item_repo()
+        if request.method == "GET":
+            return json_response([_plan_item_to_dict(i) for i in repo.list_for_plan(plan_id)])
+
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        try:
+            item = repo.add(
+                plan_id, kind=data.get("kind"), geometry=data.get("geometry"),
+                coord_space=data.get("coord_space"),
+                point_id=data.get("point_id"), location_id=data.get("location_id"),
+                group_id=data.get("group_id"), node_id=data.get("node_id"),
+                target_plan_id=data.get("target_plan_id"),
+                label=data.get("label"), sort_order=data.get("sort_order", 0),
+            )
+        except PlanError as e:
+            body, status = _err("bad_request", str(e), 400)
+            return json_response(body, status)
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400)
+            return json_response(body, status)
+        return json_response(_plan_item_to_dict(item), 201)
+
+    @app.route("/api/v2/plans/<int:plan_id>/items/<int:item_id>", methods=["PATCH", "DELETE"])
+    def v2_plan_item_detail(plan_id, item_id):
+        plan, err = _plan_or_404_v2(plan_id)
+        if err:
+            return err
+        repo = _plan_item_repo()
+        item = repo.get_by_id(item_id)
+        if item is None or item.plan_id != plan_id:
+            body, status = _err(
+                "not_found", f"Элемент плана {item_id} не найден на плане {plan_id}", 404,
+                ids=[plan_id, item_id])
+            return json_response(body, status)
+
+        if request.method == "DELETE":
+            repo.remove_from_plan(item_id)
+            return json_response({"ok": True, "id": item_id})
+
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        if "geometry" not in data:
+            body, status = _err("bad_request", "требуется geometry", 400, fields=["geometry"])
+            return json_response(body, status)
+        try:
+            item = repo.update_geometry(item_id, data["geometry"], data.get("coord_space"))
+        except PlanError as e:
+            body, status = _err("bad_request", str(e), 400)
+            return json_response(body, status)
+        return json_response(_plan_item_to_dict(item))
+
+    @app.route("/api/v2/plans/<int:plan_id>/edges", methods=["GET", "POST"])
+    def v2_plan_edge_views(plan_id):
+        plan, err = _plan_or_404_v2(plan_id)
+        if err:
+            return err
+        repo = _plan_edge_view_repo()
+        if request.method == "GET":
+            return json_response([_plan_edge_view_to_dict(v) for v in repo.list_for_plan(plan_id)])
+
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        edge_id = data.get("edge_id")
+        if edge_id is None:
+            body, status = _err("bad_request", "требуется edge_id", 400, fields=["edge_id"])
+            return json_response(body, status)
+        try:
+            view = repo.add(
+                plan_id, edge_id,
+                from_item_id=data.get("from_item_id"), to_item_id=data.get("to_item_id"),
+                waypoints=data.get("waypoints"), view_kind=data.get("view_kind", "structural"),
+            )
+        except PlanError as e:
+            body, status = _err("bad_request", str(e), 400)
+            return json_response(body, status)
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400)
+            return json_response(body, status)
+        return json_response(_plan_edge_view_to_dict(view), 201)
+
+    @app.route("/api/v2/plans/<int:plan_id>/edges/<int:view_id>", methods=["DELETE"])
+    def v2_plan_edge_view_delete(plan_id, view_id):
+        plan, err = _plan_or_404_v2(plan_id)
+        if err:
+            return err
+        view = _plan_edge_view_repo().get_by_id(view_id)
+        if view is None or view.plan_id != plan_id:
+            body, status = _err(
+                "not_found", f"Связь {view_id} не найдена на плане {plan_id}", 404,
+                ids=[plan_id, view_id])
+            return json_response(body, status)
+        _plan_edge_view_repo().remove(view_id)
+        return json_response({"ok": True, "id": view_id})
+
+    @app.route("/api/v2/plans/<int:plan_id>/layout", methods=["POST"])
+    def v2_plan_layout(plan_id):
+        """A35 (ТЗ §13): атомарное сохранение пакета изменений layout с
+        оптимистичной блокировкой по canvas_revision. Тело: {"data":
+        {"expected_revision": N, "item_ops": [...], "edge_view_ops": [...]}}
+        (или плоское тело — см. _unwrap_data). Конфликт ревизии -> 409,
+        БЕЗ каких-либо изменений в БД (save_plan_layout проверяет ревизию
+        первой операцией транзакции)."""
+        plan, err = _plan_or_404_v2(plan_id)
+        if err:
+            return err
+
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        expected_revision = data.get("expected_revision")
+        if expected_revision is None:
+            body, status = _err(
+                "bad_request", "требуется expected_revision (текущая canvas_revision клиента)",
+                400, fields=["expected_revision"])
+            return json_response(body, status)
+
+        try:
+            updated = save_plan_layout(
+                db, plan_id, expected_revision,
+                item_ops=data.get("item_ops"), edge_view_ops=data.get("edge_view_ops"))
+        except RevisionConflict as e:
+            body, status = _err(
+                "revision_conflict", str(e), 409, ids=[plan_id],
+                fields=["expected_revision"])
+            return json_response(body, status)
+        except PlanError as e:
+            body, status = _err("bad_request", str(e), 400, ids=[plan_id])
+            return json_response(body, status)
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400, ids=[plan_id])
+            return json_response(body, status)
+        return json_response(_plan_to_dict_v2(updated))

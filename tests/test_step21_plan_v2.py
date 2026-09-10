@@ -1,0 +1,442 @@
+"""Тесты Шага 21 (этап D): HTTP-слой /api/v2/plans (ТЗ §7).
+
+Самостоятельный скрипт (не pytest):
+    python tests/test_step21_plan_v2.py
+
+Проверяет план помещений/однолинейные схемы (plan_kind), план_items,
+план_edge_views, координатные пространства, canvas_revision (оптимистичная
+блокировка A35 §13), валидацию размеров изображений и геометрии."""
+
+from __future__ import annotations
+
+import os
+import sys
+import tempfile
+import time
+import io
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_ROOT)
+
+from PIL import Image
+
+from wb_energy_meter.db import Database
+from wb_energy_meter.repo import GroupRepo, MeterRepo
+from wb_energy_meter.api import create_app, _AppState
+from wb_energy_meter.model import MeterRegistry
+from wb_energy_meter.point_repo import MeteringPointRepo
+from wb_energy_meter.topology_service import ElectricalNodeRepo, ElectricalEdgeRepo
+from wb_energy_meter.plan_service_v2 import MAX_DECODED_LONG_SIDE, MAX_DECODED_MEGAPIXELS
+
+
+def make_client():
+    fd, path = tempfile.mkstemp(suffix=".sqlite3")
+    os.close(fd)
+    os.unlink(path)
+    db = Database(path=path)
+    db.open()
+
+    groups_repo = GroupRepo(db)
+    meters_repo = MeterRepo(db, groups_repo)
+    registry = MeterRegistry()
+    plans_dir = tempfile.mkdtemp()
+
+    state = _AppState(
+        registry=registry, meters_repo=meters_repo, groups_repo=groups_repo,
+        is_mqtt_connected=lambda: False, mqtt_message_count=lambda: 0,
+        mqtt_error_count=lambda: 0, wb_db_client=None,
+        consumption_service=None, started_at=time.time(), db=db,
+        plans_dir=plans_dir,
+    )
+    app = create_app(state)
+    return app.test_client(), db, path, plans_dir
+
+
+def test_floor_and_single_line_plan_create():
+    """Тест 1-4: создание floor и single_line планов, список с фильтром,
+    получение изображения."""
+    client, db, path, plans_dir = make_client()
+    try:
+        # --- 1. create floor plan with image ---
+        buf = io.BytesIO()
+        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+        r = client.post("/api/v2/plans", data={
+            "name": "Этаж 1", "plan_kind": "floor",
+            "file": (io.BytesIO(png_bytes), "bg.png"),
+        }, content_type="multipart/form-data")
+        assert r.status_code == 201, (r.status_code, r.get_json())
+        plan = r.get_json()
+        assert plan["plan_kind"] == "floor" and plan["image_width"] == 800 and plan["image_height"] == 600
+        assert plan["canvas_revision"] == 1
+        plan_id = plan["id"]
+
+        # --- 2. create single_line plan without image ---
+        r = client.post("/api/v2/plans", data={
+            "name": "Однолинейная", "plan_kind": "single_line",
+            "canvas_width": "2000", "canvas_height": "1200",
+        }, content_type="multipart/form-data")
+        assert r.status_code == 201, (r.status_code, r.get_json())
+        sl_plan = r.get_json()
+        assert sl_plan["canvas_width"] == 2000 and sl_plan["canvas_height"] == 1200
+        sl_id = sl_plan["id"]
+
+        # --- 3. list plans, filter by kind ---
+        r = client.get("/api/v2/plans?plan_kind=floor")
+        assert r.status_code == 200 and len(r.get_json()) == 1
+
+        # --- 4. GET image ---
+        r = client.get(f"/api/v2/plans/{plan_id}/image")
+        assert r.status_code == 200 and r.data == png_bytes and r.mimetype == "image/png"
+
+        print("[OK] планы floor/single_line: создание, список с фильтром, IMAGE GET roundtrip (§7)")
+    finally:
+        db.close(); os.unlink(path)
+
+
+def test_plan_items_geometry_validation():
+    """Тест 5-5b: создание план_item с точкой меринга, валидация границ."""
+    client, db, path, plans_dir = make_client()
+    try:
+        # Create floor plan with image
+        buf = io.BytesIO()
+        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+        r = client.post("/api/v2/plans", data={
+            "name": "Этаж 1", "plan_kind": "floor",
+            "file": (io.BytesIO(png_bytes), "bg.png"),
+        }, content_type="multipart/form-data")
+        assert r.status_code == 201
+        plan_id = r.get_json()["id"]
+
+        # --- 5. create a metering point + plan_item referencing it ---
+        point_repo = MeteringPointRepo(db)
+        point = point_repo.add(code="pt1", name="Точка 1")
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "point", "point_id": point.id,
+            "geometry": {"x": 100, "y": 50}, "coord_space": "image_px_xy_v2",
+        })
+        assert r.status_code == 201, (r.status_code, r.get_json())
+        item1 = r.get_json()
+
+        # --- 5b. reject out-of-bounds geometry ---
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "point", "point_id": point.id,
+            "geometry": {"x": 9999, "y": 50}, "coord_space": "image_px_xy_v2",
+        })
+        assert r.status_code == 400, (r.status_code, r.get_json())
+
+        print("[OK] план_items: создание в границах, отклонение out-of-bounds (§7)")
+    finally:
+        db.close(); os.unlink(path)
+
+
+def test_edge_view_endpoint_validation():
+    """Тест 6-7: создание edge_view с валидацией endpoint, GET detail с embeds."""
+    client, db, path, plans_dir = make_client()
+    try:
+        # Create floor plan
+        buf = io.BytesIO()
+        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+        r = client.post("/api/v2/plans", data={
+            "name": "Этаж 1", "plan_kind": "floor",
+            "file": (io.BytesIO(png_bytes), "bg.png"),
+        }, content_type="multipart/form-data")
+        assert r.status_code == 201
+        plan_id = r.get_json()["id"]
+
+        # Create metering point for item
+        point_repo = MeteringPointRepo(db)
+        point = point_repo.add(code="pt1", name="Точка 1")
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "point", "point_id": point.id,
+            "geometry": {"x": 100, "y": 50}, "coord_space": "image_px_xy_v2",
+        })
+        item1 = r.get_json()
+
+        # --- 6. topology node + edge, then edge_view ---
+        node_repo = ElectricalNodeRepo(db)
+        edge_repo = ElectricalEdgeRepo(db)
+        n1 = node_repo.add(code="n1", name="Узел 1", kind="panel")
+        n2 = node_repo.add(code="n2", name="Узел 2", kind="panel")
+        edge = edge_repo.add_draft(from_node_id=n1.id, to_node_id=n2.id, code="e1", name="Кабель 1")
+
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "node", "node_id": n1.id,
+            "geometry": {"x": 10, "y": 10}, "coord_space": "image_px_xy_v2",
+        })
+        node_item1 = r.get_json()
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "node", "node_id": n2.id,
+            "geometry": {"x": 20, "y": 20}, "coord_space": "image_px_xy_v2",
+        })
+        node_item2 = r.get_json()
+
+        r = client.post(f"/api/v2/plans/{plan_id}/edges", json={
+            "edge_id": edge.id, "from_item_id": node_item1["id"], "to_item_id": node_item2["id"],
+        })
+        assert r.status_code == 201, (r.status_code, r.get_json())
+
+        # mismatched endpoint (item's node_id != edge's from_node_id) -> 400
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "point", "point_id": point.id,
+            "geometry": {"x": 30, "y": 30}, "coord_space": "image_px_xy_v2",
+        })
+        wrong_item = r.get_json()
+        r = client.post(f"/api/v2/plans/{plan_id}/edges", json={
+            "edge_id": edge.id, "from_item_id": wrong_item["id"], "to_item_id": node_item2["id"],
+        })
+        assert r.status_code == 400, (r.status_code, r.get_json())
+
+        # --- 7. GET plan detail embeds items+edges ---
+        r = client.get(f"/api/v2/plans/{plan_id}")
+        detail = r.get_json()
+        assert len(detail["items"]) == 4
+        assert len(detail["edges"]) == 1
+
+        print("[OK] edge_view: валидация endpoint, GET detail с embeds (§7)")
+    finally:
+        db.close(); os.unlink(path)
+
+
+def test_layout_revision_conflict_a35():
+    """Тест 8-10: сохранение layout с проверкой ревизии, конфликт 409,
+    атомарность, batch с $-индексами (A35 ТЗ §13)."""
+    client, db, path, plans_dir = make_client()
+    try:
+        # Create floor plan
+        buf = io.BytesIO()
+        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+        r = client.post("/api/v2/plans", data={
+            "name": "Этаж 1", "plan_kind": "floor",
+            "file": (io.BytesIO(png_bytes), "bg.png"),
+        }, content_type="multipart/form-data")
+        assert r.status_code == 201
+        plan_id = r.get_json()["id"]
+
+        # Create topology for edge test
+        node_repo = ElectricalNodeRepo(db)
+        edge_repo = ElectricalEdgeRepo(db)
+        n1 = node_repo.add(code="n1", name="Узел 1", kind="panel")
+        n2 = node_repo.add(code="n2", name="Узел 2", kind="panel")
+        edge = edge_repo.add_draft(from_node_id=n1.id, to_node_id=n2.id, code="e1", name="Кабель 1")
+
+        # Create point and item
+        point_repo = MeteringPointRepo(db)
+        point = point_repo.add(code="pt1", name="Точка 1")
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "point", "point_id": point.id,
+            "geometry": {"x": 100, "y": 50}, "coord_space": "image_px_xy_v2",
+        })
+        item1 = r.get_json()
+
+        # Create node items for edge
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "node", "node_id": n1.id,
+            "geometry": {"x": 10, "y": 10}, "coord_space": "image_px_xy_v2",
+        })
+        node_item1 = r.get_json()
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "node", "node_id": n2.id,
+            "geometry": {"x": 20, "y": 20}, "coord_space": "image_px_xy_v2",
+        })
+        node_item2 = r.get_json()
+
+        # --- 8. save_plan_layout: happy path with revision check ---
+        r = client.post(f"/api/v2/plans/{plan_id}/layout", json={
+            "expected_revision": 1,
+            "item_ops": [{"op": "upsert", "id": item1["id"], "geometry": {"x": 111, "y": 55},
+                          "coord_space": "image_px_xy_v2"}],
+        })
+        assert r.status_code == 200, (r.status_code, r.get_json())
+        updated = r.get_json()
+        assert updated["canvas_revision"] == 2, updated
+
+        # --- 9. save_plan_layout: stale revision -> 409, no partial writes ---
+        r = client.post(f"/api/v2/plans/{plan_id}/layout", json={
+            "expected_revision": 1,   # stale, actual is now 2
+            "item_ops": [{"op": "upsert", "id": item1["id"], "geometry": {"x": 5, "y": 5},
+                          "coord_space": "image_px_xy_v2"}],
+        })
+        assert r.status_code == 409, (r.status_code, r.get_json())
+
+        # verify the stale write did NOT apply
+        r = client.get(f"/api/v2/plans/{plan_id}")
+        items_by_id = {i["id"]: i for i in r.get_json()["items"]}
+        assert items_by_id[item1["id"]]["geometry"] == {"x": 111, "y": 55}, items_by_id[item1["id"]]
+        assert r.get_json()["canvas_revision"] == 2
+
+        # --- 10. layout batch: create item + edge_view referencing it via $N in one call ---
+        r = client.post(f"/api/v2/plans/{plan_id}/layout", json={
+            "expected_revision": 2,
+            "item_ops": [{"op": "upsert", "kind": "node", "node_id": n1.id,
+                          "geometry": {"x": 1, "y": 1}, "coord_space": "image_px_xy_v2"}],
+            "edge_view_ops": [{"op": "upsert", "edge_id": edge.id,
+                                "from_item_id": "$0", "to_item_id": node_item2["id"]}],
+        })
+        assert r.status_code == 200, (r.status_code, r.get_json())
+
+        print("[OK] layout save: ревизия, конфликт 409 (A35 §13), batch с $-индексами (§7)")
+    finally:
+        db.close(); os.unlink(path)
+
+
+def test_plan_item_removal_preserves_entity():
+    """Тест 11: удаление план_item не удаляет underlying сущность (точку меринга)."""
+    client, db, path, plans_dir = make_client()
+    try:
+        # Create floor plan
+        buf = io.BytesIO()
+        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+        r = client.post("/api/v2/plans", data={
+            "name": "Этаж 1", "plan_kind": "floor",
+            "file": (io.BytesIO(png_bytes), "bg.png"),
+        }, content_type="multipart/form-data")
+        assert r.status_code == 201
+        plan_id = r.get_json()["id"]
+
+        # Create point and item
+        point_repo = MeteringPointRepo(db)
+        point = point_repo.add(code="pt1", name="Точка 1")
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "point", "point_id": point.id,
+            "geometry": {"x": 100, "y": 50}, "coord_space": "image_px_xy_v2",
+        })
+        item1 = r.get_json()
+
+        # --- 11. remove item (view only, not the underlying point) ---
+        r = client.delete(f"/api/v2/plans/{plan_id}/items/{item1['id']}")
+        assert r.status_code == 200
+        r = client.get(f"/api/v2/points/{point.id}")
+        assert r.status_code == 200, "underlying point must survive plan_item removal"
+
+        print("[OK] удаление план_item: underlying metering_point остаётся (§7)")
+    finally:
+        db.close(); os.unlink(path)
+
+
+def test_plan_delete_cascade_and_404s():
+    """Тест 12-13: удаление плана каскадит items/edges, неизвестный план -> 404."""
+    client, db, path, plans_dir = make_client()
+    try:
+        # Create two plans
+        buf = io.BytesIO()
+        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+        r = client.post("/api/v2/plans", data={
+            "name": "План 1", "plan_kind": "floor",
+            "file": (io.BytesIO(png_bytes), "bg.png"),
+        }, content_type="multipart/form-data")
+        assert r.status_code == 201
+        plan_id = r.get_json()["id"]
+
+        r = client.post("/api/v2/plans", data={
+            "name": "План 2", "plan_kind": "single_line",
+            "canvas_width": "2000", "canvas_height": "1200",
+        }, content_type="multipart/form-data")
+        assert r.status_code == 201
+        sl_id = r.get_json()["id"]
+
+        # --- 12. delete plan cascades items/edge_views ---
+        r = client.delete(f"/api/v2/plans/{sl_id}")
+        assert r.status_code == 200
+        r = client.get(f"/api/v2/plans/{sl_id}")
+        assert r.status_code == 404
+
+        # --- 13. 404 for unknown plan ---
+        r = client.get("/api/v2/plans/99999")
+        assert r.status_code == 404
+
+        print("[OK] удаление плана: каскадит items/edges, неизвестный -> 404 (§7)")
+    finally:
+        db.close(); os.unlink(path)
+
+
+def test_image_size_limit_rejected():
+    """Тест: изображение больше MAX_DECODED_LONG_SIDE отклоняется 400."""
+    client, db, path, plans_dir = make_client()
+    try:
+        # Create image exceeding MAX_DECODED_LONG_SIDE
+        oversized_width = MAX_DECODED_LONG_SIDE + 100
+        buf = io.BytesIO()
+        Image.new("RGB", (oversized_width, 100), (255, 0, 0)).save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+        r = client.post("/api/v2/plans", data={
+            "name": "Огромный план", "plan_kind": "floor",
+            "file": (io.BytesIO(png_bytes), "bg.png"),
+        }, content_type="multipart/form-data")
+        assert r.status_code == 400, (r.status_code, r.get_json())
+        error = r.get_json()
+        assert "MAX_DECODED_LONG_SIDE" in error.get("message", "") or "8192" in error.get("message", "")
+
+        print("[OK] изображение > MAX_DECODED_LONG_SIDE отклоняется 400 (§7.2)")
+    finally:
+        db.close(); os.unlink(path)
+
+
+def test_waypoints_out_of_bounds_rejected():
+    """Тест: waypoints с точками вне границ плана отклоняются 400."""
+    client, db, path, plans_dir = make_client()
+    try:
+        # Create floor plan
+        buf = io.BytesIO()
+        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
+        png_bytes = buf.getvalue()
+
+        r = client.post("/api/v2/plans", data={
+            "name": "Этаж 1", "plan_kind": "floor",
+            "file": (io.BytesIO(png_bytes), "bg.png"),
+        }, content_type="multipart/form-data")
+        assert r.status_code == 201
+        plan_id = r.get_json()["id"]
+
+        # Create two node items in bounds
+        node_repo = ElectricalNodeRepo(db)
+        edge_repo = ElectricalEdgeRepo(db)
+        n1 = node_repo.add(code="n1", name="Узел 1", kind="panel")
+        n2 = node_repo.add(code="n2", name="Узел 2", kind="panel")
+        edge = edge_repo.add_draft(from_node_id=n1.id, to_node_id=n2.id, code="e1", name="Кабель 1")
+
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "node", "node_id": n1.id,
+            "geometry": {"x": 10, "y": 10}, "coord_space": "image_px_xy_v2",
+        })
+        node_item1 = r.get_json()
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "node", "node_id": n2.id,
+            "geometry": {"x": 20, "y": 20}, "coord_space": "image_px_xy_v2",
+        })
+        node_item2 = r.get_json()
+
+        # Try to create edge with out-of-bounds waypoint
+        r = client.post(f"/api/v2/plans/{plan_id}/edges", json={
+            "edge_id": edge.id, "from_item_id": node_item1["id"], "to_item_id": node_item2["id"],
+            "waypoints": [[100, 100], [99999, 100]],
+        })
+        assert r.status_code == 400, (r.status_code, r.get_json())
+
+        print("[OK] waypoints out-of-bounds отклоняются 400 (§7)")
+    finally:
+        db.close(); os.unlink(path)
+
+
+if __name__ == "__main__":
+    test_floor_and_single_line_plan_create()
+    test_plan_items_geometry_validation()
+    test_edge_view_endpoint_validation()
+    test_layout_revision_conflict_a35()
+    test_plan_item_removal_preserves_entity()
+    test_plan_delete_cascade_and_404s()
+    test_image_size_limit_rejected()
+    test_waypoints_out_of_bounds_rejected()
+    print("\nВсе тесты plan v2 (Шаг 21) пройдены.")
