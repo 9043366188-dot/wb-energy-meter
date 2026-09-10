@@ -291,6 +291,8 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
    AGENTS.md) */
 #site-plan-map{height:calc(100vh - 220px);min-height:420px;
   border-radius:10px;border:1px solid var(--line);background:var(--bg3)}
+#site-plan-v2-map{height:calc(100vh - 220px);min-height:420px;
+  border-radius:10px;border:1px solid var(--line);background:var(--bg3)}
 .leaflet-container{background:var(--bg3);font-family:inherit;outline:none}
 .leaflet-popup-content-wrapper{background:var(--bg2);color:var(--txt);
   border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.4)}
@@ -433,6 +435,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   <nav>
     <button :class="{active:tab=='dash'}" @click="tab='dash'">Дашборд</button>
     <button :class="{active:tab=='plan'}" @click="tab='plan';openPlanTab()">План</button>
+    <button :class="{active:tab=='planv2'}" @click="tab='planv2';openPlanV2Tab()">План v2</button>
     <button :class="{active:tab=='consumption'}" @click="tab='consumption';loadConsumption()">Расход</button>
     <button :class="{active:tab=='settings'}" @click="tab='settings';loadSettings();initUpdatePanel()">Настройки</button>
     <button :class="{active:tab=='reports'}" @click="tab='reports';initReports()">Отчёты</button>
@@ -709,6 +712,39 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <button class="btn btn-sm btn-danger"
                         @click="planConfirmDeletePlan={id:planCurrent.id,name:planCurrent.name}">Удалить план</button>
               </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ПЛАН v2 (ТЗ §7) — пока только просмотр: список планов, карта,
+       инспектор выбранного элемента по клику. Своя L.Map (_planV2Map
+       ниже, вне реактивности Alpine) — та же причина, что у v1 плана
+       выше: Leaflet держит собственный DOM, Proxy-обёртка его ломает. -->
+  <div x-show="tab=='planv2'">
+    <template x-if="!planV2Loading && planV2Plans.length===0">
+      <div class="plan-empty">Планов v2 пока нет.</div>
+    </template>
+    <div x-show="planV2Plans.length>0">
+      <div class="plan-toolbar">
+        <select x-model.number="planV2CurrentId" @change="selectPlanV2(planV2CurrentId)">
+          <template x-for="p in planV2Plans" :key="p.id">
+            <option :value="p.id"
+                    x-text="p.name + (p.plan_kind==='floor' ? ' (помещения)' : ' (однолинейная)')"></option>
+          </template>
+        </select>
+      </div>
+      <div class="plan-layout" :class="{'plan-edit-open': planV2SelectedItem}">
+        <div id="site-plan-v2-map" x-ref="planV2Map"></div>
+        <div class="plan-side" x-show="planV2SelectedItem">
+          <template x-if="planV2SelectedItem">
+            <div>
+              <h3 x-text="planV2ItemKindLabel(planV2SelectedItem.kind)"></h3>
+              <div x-show="planV2SelectedItem.label" x-text="planV2SelectedItem.label"></div>
+              <div class="muted mono" x-text="'id: '+planV2SelectedItem.id"></div>
+              <button class="ico-btn" @click="planV2SelectedItem=null" style="margin-top:10px">Закрыть</button>
             </div>
           </template>
         </div>
@@ -2173,6 +2209,10 @@ function app(){ return {
   planLinkForm:{toZoneId:'', label:'', sourceMeterId:'', ratedCurrentA:''},
   planConfirmRemoveZone:null, planConfirmDeleteLink:null,
   planConfirmDeletePlan:null, planInited:false,
+  // План v2 (ТЗ §7) — пока только просмотр. Своя L.Map — см. _planV2Map
+  // (модульная переменная ниже app(), та же причина, что у v1 плана).
+  planV2Plans:[], planV2CurrentId:null, planV2Current:null,
+  planV2Loading:false, planV2Inited:false, planV2SelectedItem:null,
   // toast
   toast:null, _toastTimer:null,
   _timer:null,
@@ -3558,6 +3598,100 @@ function app(){ return {
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
 
+  // === План v2 (ТЗ §7): только просмотр в этом шаге — выбор плана,
+  // отрисовка фона/элементов, инспектор по клику. Формула координат
+  // (lat=H-y, lng=x) в _planV2XyToLatLng ВЕРИФИЦИРОВАНА реальным
+  // leaflet.js в headless-проверке (см. wb_energy_meter/plan_geo_v2.py,
+  // коммит db36c2a) — не менять без повторной проверки.
+  initPlanV2Map(){
+    if(_planV2Map) return;
+    const el=this.$refs.planV2Map;
+    _planV2Map=L.map(el, {crs:L.CRS.Simple, minZoom:-4, zoomControl:true,
+                          attributionControl:false});
+    _planV2Map.setView([0,0],0);
+    window.addEventListener('resize', ()=>{ if(_planV2Map) _planV2Map.invalidateSize(); });
+  },
+  async openPlanV2Tab(){
+    if(!_planV2Map) this.initPlanV2Map();
+    if(!this.planV2Inited){
+      this.planV2Inited=true;
+      await this.loadPlanV2List();
+    }
+    this.$nextTick(()=>{ if(_planV2Map) _planV2Map.invalidateSize(); });
+  },
+  async loadPlanV2List(){
+    this.planV2Loading=true;
+    try{
+      const r=await fetch('/api/v2/plans');
+      const d=await r.json();
+      this.planV2Plans=Array.isArray(d)?d:[];
+      if(this.planV2Plans.length>0 && !this.planV2CurrentId){
+        await this.selectPlanV2(this.planV2Plans[0].id);
+      }
+    }catch(e){ console.error(e); }
+    this.planV2Loading=false;
+  },
+  async selectPlanV2(id){
+    if(!id) return;
+    this.planV2CurrentId=id;
+    this.planV2SelectedItem=null;
+    try{
+      const r=await fetch('/api/v2/plans/'+id);
+      if(!r.ok){ this.showToast('Не удалось загрузить план v2', false); return; }
+      this.planV2Current=await r.json();
+    }catch(e){ console.error(e); return; }
+    this._planV2RenderBase();
+  },
+  _planV2EffectiveDims(plan){
+    // §7.2: у floor — размеры изображения, у single_line без картинки —
+    // логический холст (canvas_width/height). Та же логика, что
+    // PlanV2.effective_width/height в plan_service_v2.py.
+    if(plan.image_width && plan.image_height) return [plan.image_width, plan.image_height];
+    return [plan.canvas_width||2000, plan.canvas_height||1200];
+  },
+  _planV2XyToLatLng(x, y, height){
+    return [height - y, x];
+  },
+  _planV2ItemLayerFor(item, height){
+    if(item.coord_space!=='image_px_xy_v2' && item.coord_space!=='canvas_xy_v2'){
+      console.warn('planV2: неподдерживаемый coord_space на элементе', item);
+      return null;
+    }
+    const g=item.geometry;
+    if(!g || typeof g.x!=='number' || typeof g.y!=='number') return null;
+    const latlng=this._planV2XyToLatLng(g.x, g.y, height);
+    const color=_planV2KindColor(item.kind);
+    const layer=L.circleMarker(latlng, {radius:8, color, fillColor:color, fillOpacity:.7, weight:2});
+    layer.on('click', ()=>{ this.planV2SelectedItem=item; });
+    return layer;
+  },
+  _planV2RenderBase(){
+    if(!_planV2Map || !this.planV2Current) return;
+    if(_planV2ImageLayer){ try{_planV2Map.removeLayer(_planV2ImageLayer);}catch(e){} _planV2ImageLayer=null; }
+    _planV2ItemLayers.forEach(layer=>{ try{_planV2Map.removeLayer(layer);}catch(e){} });
+    _planV2ItemLayers.clear();
+
+    const pc=this.planV2Current;
+    const [W,H]=this._planV2EffectiveDims(pc);
+    const bounds=[[0,0],[H,W]];
+    if(pc.plan_kind==='floor'){
+      _planV2ImageLayer=L.imageOverlay('/api/v2/plans/'+pc.id+'/image', bounds).addTo(_planV2Map);
+    }else{
+      _planV2ImageLayer=L.rectangle(bounds, {color:_planCssVar('--line'), weight:1, fill:false, dashArray:'4,4'}).addTo(_planV2Map);
+    }
+    _planV2Map.fitBounds(bounds);
+
+    (pc.items||[]).forEach(item=>{
+      const layer=this._planV2ItemLayerFor(item, H);
+      if(layer){ layer.addTo(_planV2Map); _planV2ItemLayers.set(item.id, layer); }
+    });
+  },
+  planV2ItemKindLabel(kind){
+    const labels={point:'Точка учёта', location:'Место', group:'Группа',
+                  node:'Узел сети', port:'Переход на другой план', annotation:'Подпись'};
+    return labels[kind]||kind;
+  },
+
   showToast(msg, ok=true){
     clearTimeout(this._toastTimer);
     this.toast={msg,ok};
@@ -3576,6 +3710,14 @@ const _planZoneLayers=new Map();   // group_id -> {layer, popup, zone}
 const _planLinkLayers=new Map();   // link_id -> polyline
 let _planDrawLayer=null;           // временный слой контура во время рисования зоны
 let _planOpenPopupGroupId=null;    // группа последнего открытого попапа (для ссылки в нём)
+let _planV2Map=null;
+let _planV2ImageLayer=null;
+const _planV2ItemLayers=new Map();   // item_id -> layer
+function _planV2KindColor(kind){
+  const colors={point:'#3dd6c0', location:'#8a7cff', group:'#f0a83c',
+                node:'#4fa8f5', port:'#e05fae', annotation:'#9aa0a8'};
+  return colors[kind] || '#3dd6c0';
+}
 
 function _planCssVar(name){
   try{
