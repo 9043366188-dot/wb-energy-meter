@@ -68,6 +68,12 @@ DEFAULTS = {
     "rpc_max_retries": 3,
     # RPC-таймаут на одиночный вызов.
     "rpc_timeout_s": 15.0,
+    # Перенос вперёд: сколько дней доверять последнему РЕАЛЬНО
+    # подтверждённому значению (quality_flag='ok'), если RPC-окно часа
+    # не вернуло ни одной точки. WB публикует control только по
+    # изменению значения — час без новых точек часто означает "значение
+    # не изменилось", а не "прибора нет" (см. inject_carry_forward_point).
+    "carryforward_max_lookback_days": 30,
 }
 
 
@@ -88,6 +94,7 @@ class AggregatorConfig:
     rpc_backoff_s: float = DEFAULTS["rpc_backoff_s"]
     rpc_max_retries: int = DEFAULTS["rpc_max_retries"]
     rpc_timeout_s: float = DEFAULTS["rpc_timeout_s"]
+    carryforward_max_lookback_days: int = DEFAULTS["carryforward_max_lookback_days"]
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +186,37 @@ def compute_hourly_aggregate(
         quality_flag=quality,
         computed_at=now_ts,
     )
+
+
+def inject_carry_forward_point(
+    hour_start: int,
+    points_with_context: list[HistoryPoint],
+    carried: Optional[HistoryPoint],
+) -> list[HistoryPoint]:
+    """Если среди `points_with_context` нет точки <= `hour_start`, но
+    передан `carried` (последнее ДОСТОВЕРНОЕ значение из нашей же
+    истории, см. AggregateRepo.last_known_value_before) — подставить
+    его как синтетическую точку-якорь.
+
+    Зачем: Wiren Board публикует control в MQTT только по изменению
+    значения (retained, publish-on-delta). Если счётчик энергии не
+    менялся дольше часа (например ток на этой линии фактически нулевой
+    — нечего накапливать), `wb-mqtt-db` не хранит для него новых точек
+    в этом окне — это НЕ значит "прибора нет", а значит "значение не
+    изменилось". Без этой подстановки такой час ошибочно считается
+    no_data, хотя расход за него достоверно известен: 0.
+
+    Если `carried` не None, его timestamp всегда более чем на час
+    раньше `hour_start` (иначе он бы уже нашёлся в points_with_context
+    штатным RPC-окном) — поэтому compute_hourly_aggregate() сам
+    пометит такой час `edge_approx` (штатная проверка start_dist>600с):
+    перенесённое значение не теряется молча, а остаётся видно как
+    приближённое."""
+    if carried is None:
+        return points_with_context
+    if any(p.timestamp <= hour_start for p in points_with_context):
+        return points_with_context
+    return sorted(points_with_context + [carried], key=lambda p: p.timestamp)
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +350,10 @@ class Aggregator:
         points_energy = self._rpc_get_values_with_retry(
             device_id, self._cfg.energy_channel, ts_from, ts_to,
         )
+        if points_energy is not None:
+            anchor = self._carry_forward_anchor(meter_id, hour_start)
+            points_energy = inject_carry_forward_point(
+                hour_start, points_energy, anchor)
         if points_energy is None:
             # RPC окончательно отказал — пишем no_data
             agg = HourlyAggregate(
@@ -336,6 +378,16 @@ class Aggregator:
         )
         self._aggregates.upsert(agg)
         return agg
+
+    def _carry_forward_anchor(self, meter_id: int, before_ts: int):
+        """Последнее достоверное значение до before_ts, с учётом
+        carryforward_max_lookback_days — обёртка над
+        AggregateRepo.last_known_value_before для трёх мест использования
+        ниже (hourly/catchup/patcher)."""
+        return self._aggregates.last_known_value_before(
+            meter_id, before_ts,
+            max_lookback_s=self._cfg.carryforward_max_lookback_days * 86400,
+        )
 
     def _rpc_get_values_with_retry(
         self,
@@ -458,6 +510,10 @@ class Aggregator:
             points_energy = self._rpc_get_values_with_retry(
                 device_id, self._cfg.energy_channel, ts_from, ts_to,
             )
+            if points_energy is not None:
+                anchor = self._carry_forward_anchor(meter_id, batch_start)
+                points_energy = inject_carry_forward_point(
+                    batch_start, points_energy, anchor)
             if points_energy is None:
                 # RPC окончательно отказал на этом батче — пишем no_data
                 # для всех часов в батче, чтобы catch-up не пытался
@@ -546,6 +602,8 @@ class Aggregator:
                 )
                 if points is None:
                     continue
+                anchor = self._carry_forward_anchor(m.id, batch_start)
+                points = inject_carry_forward_point(batch_start, points, anchor)
                 aggs = [
                     compute_hourly_aggregate(
                         meter_id=m.id, hour_start=h,

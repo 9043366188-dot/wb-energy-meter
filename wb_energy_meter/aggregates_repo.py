@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Iterable, Optional
 
 from .db import Database
+from .wb_db_client import HistoryPoint
 
 log = logging.getLogger(__name__)
 
@@ -202,6 +203,54 @@ class AggregateRepo:
                 (meter_id, PERIOD_TYPE_HOUR),
             ).fetchone()
             return row["m"] if row and row["m"] is not None else None
+
+    def last_known_value_before(
+        self, meter_id: int, before_ts: int,
+        max_lookback_s: Optional[int] = None,
+    ) -> Optional[HistoryPoint]:
+        """Последнее ДОСТОВЕРНО известное значение `ap_energy_end` строго
+        до `before_ts` — для переноса вперёд в часы, где RPC-окно не
+        вернуло ни одной точки.
+
+        Wiren Board публикует control в MQTT только по изменению
+        значения (retained, publish-on-delta) — отсутствие новых точек
+        за час НЕ означает "прибора нет", это может означать "значение
+        не изменилось". aggregator.py::inject_carry_forward_point
+        использует результат этого метода как синтетический якорь.
+
+        Намеренно смотрит только на строки с `quality_flag='ok'`
+        (оба конца часа были подтверждены РЕАЛЬНЫМИ точками) — иначе
+        перенос мог бы опираться на уже перенесённое ранее значение и
+        протянуть его сколь угодно далеко, никогда не упираясь в
+        `max_lookback_s`. С этим ограничением "источник" переноса
+        всегда настоящий, и его возраст всегда измеряется от настоящего
+        наблюдения, а не от предыдущего переноса.
+
+        `max_lookback_s`, если задан, ограничивает, насколько старым
+        может быть этот якорь — не тащить значение через обрыв в
+        полгода, как будто ничего не произошло."""
+        with self._db.read() as c:
+            params = [meter_id, PERIOD_TYPE_HOUR, before_ts]
+            floor_clause = ""
+            if max_lookback_s is not None:
+                floor_clause = "AND period_start >= ? "
+                params.append(before_ts - max_lookback_s)
+            row = c.execute(
+                "SELECT period_start, ap_energy_end FROM period_aggregates "
+                "WHERE meter_id=? AND period_type=? AND period_start < ? "
+                f"{floor_clause}"
+                "AND quality_flag='ok' AND ap_energy_end IS NOT NULL "
+                "ORDER BY period_start DESC LIMIT 1",
+                params,
+            ).fetchone()
+            if row is None:
+                return None
+            # period_start+3600 — момент конца часа, для которого
+            # ap_energy_end был последний раз подтверждён реальной точкой.
+            return HistoryPoint(
+                timestamp=row["period_start"] + 3600,
+                value=row["ap_energy_end"],
+            )
 
     def count_for_meter(self, meter_id: int) -> int:
         with self._db.read() as c:
