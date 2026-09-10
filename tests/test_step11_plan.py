@@ -570,11 +570,11 @@ def test_migration_004_on_existing_db():
             "SELECT MAX(version) FROM schema_migrations").fetchone()[0] == 3
         conn.close()
 
-        # Шаг 2: открываем той же Database (уже с миграцией 004 в комплекте) —
-        # должна доехать до версии 4, ничего не потеряв.
+        # Шаг 2: открываем той же Database (уже с миграциями 004+005 в
+        # комплекте) — должна доехать до текущей версии, ничего не потеряв.
         db = Database(path=dbpath)
         db.open()
-        assert db.current_schema_version() == 4
+        assert db.current_schema_version() == 5
 
         row = db.conn().execute(
             "SELECT display_name, group_id FROM meters WHERE device_id='wb-map3e_1'"
@@ -592,15 +592,15 @@ def test_migration_004_on_existing_db():
             n = db.conn().execute(f"SELECT COUNT(*) AS n FROM {t}").fetchone()["n"]
             assert n == 0, t
 
-        # И миграцию можно применить второй раз (повторный запуск сервиса)
-        # без ошибок — current_schema_version уже 4, значит она просто
-        # пропускается (см. db.py::_apply_migrations: version <= current).
+        # И миграции можно применить второй раз (повторный запуск сервиса)
+        # без ошибок — current_schema_version уже 5, значит они просто
+        # пропускаются (см. db.py::_apply_migrations: version <= current).
         db.close()
         db2 = Database(path=dbpath)
         db2.open()
-        assert db2.current_schema_version() == 4
+        assert db2.current_schema_version() == 5
         db2.close()
-    print("[OK] миграция 004 применяется на БД с данными v0.10.0 без потерь")
+    print("[OK] миграции 004-005 применяются на БД с данными v0.10.0 без потерь")
 
 
 if __name__ == "__main__":

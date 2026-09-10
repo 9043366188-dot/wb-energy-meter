@@ -20,6 +20,51 @@ _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _MIGRATION_RE = re.compile(r"^(\d+)_([a-zA-Z0-9_]+)\.sql$")
 
 
+def _split_sql_statements(script: str):
+    """Разбить SQL-скрипт на отдельные операторы для пошагового
+    выполнения внутри явной транзакции (см. `_apply_migration_atomic`).
+    Корректно пропускает ';' внутри '...'/"..." строк (с удвоенными
+    кавычками как экранированием, по правилам SQLite) и внутри
+    однострочных '--' комментариев. Не рассчитан на блочные /* */
+    комментарии и на тела триггеров с ';' внутри BEGIN...END — в
+    миграциях этого проекта их нет."""
+    statements = []
+    in_string = False
+    quote_char = ""
+    i = 0
+    n = len(script)
+    stmt_start = 0
+    while i < n:
+        ch = script[i]
+        if in_string:
+            if ch == quote_char:
+                if i + 1 < n and script[i + 1] == quote_char:
+                    i += 2
+                    continue
+                in_string = False
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            in_string = True
+            quote_char = ch
+            i += 1
+            continue
+        if ch == '-' and i + 1 < n and script[i + 1] == '-':
+            j = script.find('\n', i)
+            i = n if j == -1 else j + 1
+            continue
+        if ch == ';':
+            stmt = script[stmt_start:i].strip()
+            if stmt:
+                statements.append(stmt)
+            stmt_start = i + 1
+        i += 1
+    tail = script[stmt_start:].strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
 def _py_casefold(s):
     """SQL-функция py_casefold(x) — правильная казефолд-нормализация строк,
     в отличие от SQLite COLLATE NOCASE (только ASCII A-Z) корректно
@@ -119,11 +164,45 @@ class Database:
             if version <= current: continue
             log.info("Применяю миграцию %03d_%s ...", version, name)
             sql = path.read_text(encoding="utf-8")
-            try: self.conn().executescript(sql)
-            except sqlite3.Error as e:
-                log.error("Миграция %03d_%s упала: %s", version, name, e)
-                raise
+            if version >= 5:
+                # Миграции 001-004 уже применены на объекте старым путём
+                # (executescript без явной транзакции) — их код не трогаем.
+                # С версии 5 — атомарный протокол, см. docs/migration-plan-v2.md §4.
+                self._apply_migration_atomic(version, name, sql)
+            else:
+                try: self.conn().executescript(sql)
+                except sqlite3.Error as e:
+                    log.error("Миграция %03d_%s упала: %s", version, name, e)
+                    raise
             log.info("Миграция %03d_%s применена", version, name)
+
+    def _apply_migration_atomic(self, version, name, sql):
+        """Атомарный протокол для миграций версии >= 5 (docs/migration-plan-v2.md §4).
+
+        `Connection.executescript()` сама коммитит текущую транзакцию перед
+        запуском скрипта (задокументированное поведение sqlite3 в Python —
+        она ориентирована на автономные скрипты, а не на встраивание в
+        внешнюю транзакцию), поэтому явный BEGIN перед executescript()
+        молча проглатывается и НЕ защищает от частичного применения. Чтобы
+        держать транзакцию самим, скрипт разбирается на отдельные операторы
+        и каждый выполняется через execute() внутри одного BEGIN/COMMIT.
+        При любой ошибке — ROLLBACK, БД остаётся в состоянии ДО миграции,
+        следующий запуск может безопасно повторить попытку.
+        """
+        conn = self.conn()
+        statements = _split_sql_statements(sql)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for stmt in statements:
+                conn.execute(stmt)
+            conn.execute("COMMIT")
+        except sqlite3.Error as e:
+            conn.execute("ROLLBACK")
+            log.error("Миграция %03d_%s упала и полностью откачена: %s",
+                      version, name, e)
+            raise
+        log.info("Миграция %03d_%s применена атомарно (%d операторов)",
+                  version, name, len(statements))
 
     def vacuum(self):
         with self._lock:

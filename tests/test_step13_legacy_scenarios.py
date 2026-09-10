@@ -195,13 +195,19 @@ def test_migration_apply_is_not_atomic():
     tmpdir = tempfile.mkdtemp(prefix="wbem_test_migration_atomic_")
     try:
         db = Database(path=os.path.join(tmpdir, "state.db"))
-        db.open()  # применяет реальные 001-004
+        db.open()  # применяет реальные 001-005 (005+ уже идёт через
+                   # атомарный протокол — см. test_atomic_rollback_actually_rolls_back
+                   # ниже; этот тест намеренно бьёт мимо него, напрямую
+                   # через executescript, чтобы задокументировать, ПОЧЕМУ
+                   # атомарный протокол вообще понадобился)
+        assert db.current_schema_version() == 5
 
-        # Имитация будущей миграции 005, вторая инструкция которой
-        # обязана провалиться (типичная опечатка в ручном DDL).
+        # Имитация гипотетической будущей миграции, применённой СТАРЫМ
+        # способом (прямой executescript, без обёртки) — вторая
+        # инструкция обязана провалиться (типичная опечатка в ручном DDL).
         broken_sql = (
-            "CREATE TABLE electrical_nodes (id INTEGER PRIMARY KEY, code TEXT);\n"
-            "CREATE TABEL electrical_edges (id INTEGER PRIMARY KEY);\n"  # опечатка нарочно
+            "CREATE TABLE hypothetical_probe (id INTEGER PRIMARY KEY, code TEXT);\n"
+            "CREATE TABEL hypothetical_probe_2 (id INTEGER PRIMARY KEY);\n"  # опечатка нарочно
         )
         try:
             db.conn().executescript(broken_sql)
@@ -212,26 +218,71 @@ def test_migration_apply_is_not_atomic():
         tables = {r["name"] for r in db.conn().execute(
             "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
-        # ДЕФЕКТ: первая инструкция уже закоммичена в файл, версия
-        # миграции нигде не отмечена — повторный запуск попробует
-        # применить тот же файл ещё раз и упадёт на "table already exists".
-        assert "electrical_nodes" in tables, (
+        # ДЕФЕКТ (у executescript БЕЗ обёртки): первая инструкция уже
+        # закоммичена в файл, версия миграции нигде не отмечена —
+        # повторный запуск попробует применить тот же файл ещё раз и
+        # упадёт на "table already exists".
+        assert "hypothetical_probe" in tables, (
             "если это упало — поведение executescript уже изменилось, "
             "обновите тест и docs/migration-plan-v2.md")
-        assert db.current_schema_version() == 4  # версия 005 нигде не записана
+        assert db.current_schema_version() == 5  # версия гипотетической миграции нигде не записана
 
         try:
             db.conn().executescript(
-                "CREATE TABLE electrical_nodes (id INTEGER PRIMARY KEY, code TEXT);\n")
+                "CREATE TABLE hypothetical_probe (id INTEGER PRIMARY KEY, code TEXT);\n")
             raise AssertionError("ожидался sqlite3.OperationalError: table already exists")
         except sqlite3.OperationalError as e:
             assert "already exists" in str(e)
 
-        print("[REPRODUCED] §6.1/§11.1.4: частично применённый DDL "
-              "остаётся в файле БД, а schema_migrations об этом не "
-              "знает — повторный запуск не идемпотентен. Нужен явный "
-              "BEGIN/COMMIT/ROLLBACK вокруг каждой миграции, см. "
-              "docs/migration-plan-v2.md.")
+        print("[REPRODUCED] §6.1/§11.1.4: частично применённый DDL через "
+              "голый executescript остаётся в файле БД, а schema_migrations "
+              "об этом не знает — повторный запуск не идемпотентен. Это и "
+              "есть причина, по которой миграции >=5 идут через "
+              "Database._apply_migration_atomic(), см. следующий тест.")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def test_atomic_migration_wrapper_rolls_back_cleanly():
+    """Позитивная проверка исправления: `Database._apply_migration_atomic`
+    (db.py) на такой же опечатке откатывает ВСЁ целиком — в отличие от
+    голого executescript выше."""
+    tmpdir = tempfile.mkdtemp(prefix="wbem_test_migration_atomic_fix_")
+    try:
+        db = Database(path=os.path.join(tmpdir, "state.db"))
+        db.open()
+        assert db.current_schema_version() == 5
+
+        broken_sql = (
+            "CREATE TABLE hypothetical_probe (id INTEGER PRIMARY KEY, code TEXT);\n"
+            "CREATE TABEL hypothetical_probe_2 (id INTEGER PRIMARY KEY);\n"
+            "INSERT INTO schema_migrations (version, name, applied_at) "
+            "VALUES (6, 'hypothetical', strftime('%s','now'));\n"
+        )
+        try:
+            db._apply_migration_atomic(6, "hypothetical", broken_sql)
+            raise AssertionError("ожидалась ошибка на опечатке")
+        except sqlite3.OperationalError:
+            pass
+
+        tables = {r["name"] for r in db.conn().execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert "hypothetical_probe" not in tables, (
+            "атомарный протокол должен откатывать ВСЁ, включая уже "
+            "выполненные statements того же скрипта")
+        assert db.current_schema_version() == 5, "версия не должна была измениться"
+
+        # Повторный запуск после исправления опечатки проходит штатно —
+        # идемпотентность восстановлена.
+        fixed_sql = (
+            "CREATE TABLE hypothetical_probe (id INTEGER PRIMARY KEY, code TEXT);\n"
+            "INSERT INTO schema_migrations (version, name, applied_at) "
+            "VALUES (6, 'hypothetical', strftime('%s','now'));\n"
+        )
+        db._apply_migration_atomic(6, "hypothetical", fixed_sql)
+        assert db.current_schema_version() == 6
+        print("[OK] атомарный протокол миграций откатывает частично "
+              "применённый DDL целиком и остаётся идемпотентным")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
@@ -241,5 +292,6 @@ if __name__ == "__main__":
     test_internal_reset_not_detected_a13()
     test_hybrid_gap_swallowed_as_zero_a12()
     test_migration_apply_is_not_atomic()
+    test_atomic_migration_wrapper_rolls_back_cleanly()
     print("\nВсе воспроизводимые сценарии этапа A подтверждены на "
           "текущем коде v0.11.1.")
