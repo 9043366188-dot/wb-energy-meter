@@ -53,7 +53,11 @@ class _AppState:
                  wb_serial_config=None, kv_repo=None,
                  wb_serial=None, service_restarter=None,
                  plan_repo=None, plan_zone_repo=None, plan_link_repo=None,
-                 plans_dir=None):
+                 plans_dir=None, db=None):
+        # `db` (wb_energy_meter.db.Database) — только для /api/v2 (этап C):
+        # существующие поля выше остаются отдельными репозиториями legacy
+        # API, db добавлен по необходимости и не меняет их поведение.
+        self.db = db
         self.registry = registry
         self.meters_repo = meters_repo
         self.groups_repo = groups_repo
@@ -1795,6 +1799,9 @@ def create_app(state):
         log.exception("Unhandled HTTP error: %s", e)
         return json_response({"error": "internal", "detail": str(e)}, 500)
 
+    from . import api_v2 as _api_v2_module
+    _api_v2_module.register_v2_routes(app, state, json_response)
+
     return app
 
 
@@ -1808,7 +1815,7 @@ class ApiServer:
                  status_path=None, install_dir=None,
                  wb_serial_config=None, kv_repo=None,
                  plan_repo=None, plan_zone_repo=None, plan_link_repo=None,
-                 plans_dir=None):
+                 plans_dir=None, db=None):
         self._host = host
         self._port = port
         self._app_state = _AppState(
@@ -1827,6 +1834,7 @@ class ApiServer:
             wb_serial_config=wb_serial_config, kv_repo=kv_repo,
             plan_repo=plan_repo, plan_zone_repo=plan_zone_repo,
             plan_link_repo=plan_link_repo, plans_dir=plans_dir,
+            db=db,
             started_at=time.time())
         self._app = create_app(self._app_state)
         self._server = None

@@ -187,6 +187,7 @@ def main(argv=None):
         kv_repo=kv_repo,
         plan_repo=plan_repo, plan_zone_repo=plan_zone_repo,
         plan_link_repo=plan_link_repo, plans_dir=plans_directory,
+        db=db,
     )
     try:
         api.start()

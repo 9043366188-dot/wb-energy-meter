@@ -377,6 +377,58 @@ class ElectricalEdgeRepo:
             edge_id = cur.lastrowid
         return self.get_by_id(edge_id)
 
+    def _compute_candidate(self, c, edge_ids):
+        """Общая часть validate_edges/publish_edges: загружает предлагаемые
+        draft-рёбра, текущий активный граф, вычисляет итоговый кандидат
+        (текущие связи минус вытесняемые тем же to_node_id, плюс новые) и
+        прогоняет validate_forest. Возвращает (violations, new_rows,
+        superseded, kept) — вызывающий код решает, применять изменения или
+        только сообщить о результате."""
+        new_rows = []
+        for eid in edge_ids:
+            row = c.execute(
+                "SELECT * FROM electrical_edges WHERE id = ?", (eid,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Связь {eid} не найдена")
+            if row["state"] != "draft":
+                raise ValueError(f"Связь {eid} не является черновиком (state={row['state']!r})")
+            new_rows.append(row)
+
+        current_rows = c.execute(
+            "SELECT * FROM electrical_edges WHERE state = 'published' AND valid_to IS NULL"
+        ).fetchall()
+
+        new_to_nodes = {row["to_node_id"] for row in new_rows}
+        superseded = [row for row in current_rows if row["to_node_id"] in new_to_nodes]
+        kept = [row for row in current_rows if row["to_node_id"] not in new_to_nodes]
+
+        candidate_rows = kept + new_rows
+        edge_refs = [
+            EdgeRef(row["id"], row["from_node_id"], row["to_node_id"])
+            for row in candidate_rows
+        ]
+        node_ids = {row["from_node_id"] for row in candidate_rows} | \
+                   {row["to_node_id"] for row in candidate_rows}
+        node_kind_by_id = {}
+        for node_id in node_ids:
+            nrow = c.execute(
+                "SELECT kind FROM electrical_nodes WHERE id = ?", (node_id,)
+            ).fetchone()
+            if nrow is not None:
+                node_kind_by_id[node_id] = nrow["kind"]
+
+        violations = validate_forest(edge_refs, node_kind_by_id)
+        return violations, new_rows, superseded, kept
+
+    def validate_edges(self, edge_ids: List[int]):
+        """Сухая проверка (POST /api/v2/topology/validate, §9.2): те же
+        правила, что и publish_edges, но НИЧЕГО не меняет — только читает.
+        Возвращает список TopologyViolation (пустой = можно публиковать)."""
+        with self._db.read() as c:
+            violations, _new_rows, _superseded, _kept = self._compute_candidate(c, edge_ids)
+        return violations
+
     def publish_edges(self, edge_ids: List[int], at: Optional[int] = None):
         """Публикует набор draft-рёбер атомарно (A24): вычисляет
         результирующий активный граф (текущие опубликованные связи минус
@@ -389,44 +441,8 @@ class ElectricalEdgeRepo:
         at = at if at is not None else now
 
         with self._db.transaction() as c:
-            new_rows = []
-            for eid in edge_ids:
-                row = c.execute(
-                    "SELECT * FROM electrical_edges WHERE id = ?", (eid,)
-                ).fetchone()
-                if row is None:
-                    raise ValueError(f"Связь {eid} не найдена")
-                if row["state"] != "draft":
-                    raise ValueError(f"Связь {eid} не является черновиком (state={row['state']!r})")
-                new_rows.append(row)
+            violations, new_rows, superseded, kept = self._compute_candidate(c, edge_ids)
 
-            current_rows = c.execute(
-                "SELECT * FROM electrical_edges WHERE state = 'published' AND valid_to IS NULL"
-            ).fetchall()
-
-            new_to_nodes = {row["to_node_id"] for row in new_rows}
-            # Итоговый активный граф: текущие опубликованные связи, КРОМЕ тех,
-            # чей to_node_id вытесняется новой публикуемой связью, плюс сами
-            # новые связи.
-            superseded = [row for row in current_rows if row["to_node_id"] in new_to_nodes]
-            kept = [row for row in current_rows if row["to_node_id"] not in new_to_nodes]
-
-            candidate_rows = kept + new_rows
-            edge_refs = [
-                EdgeRef(row["id"], row["from_node_id"], row["to_node_id"])
-                for row in candidate_rows
-            ]
-            node_ids = {row["from_node_id"] for row in candidate_rows} | \
-                       {row["to_node_id"] for row in candidate_rows}
-            node_kind_by_id = {}
-            for node_id in node_ids:
-                nrow = c.execute(
-                    "SELECT kind FROM electrical_nodes WHERE id = ?", (node_id,)
-                ).fetchone()
-                if nrow is not None:
-                    node_kind_by_id[node_id] = nrow["kind"]
-
-            violations = validate_forest(edge_refs, node_kind_by_id)
             if violations:
                 raise TopologyConflict(
                     "; ".join(v.message for v in violations)
