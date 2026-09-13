@@ -430,6 +430,177 @@ def test_waypoints_out_of_bounds_rejected():
         db.close(); os.unlink(path)
 
 
+def test_layout_frontend_payload_shape():
+    """Stage D (фронтенд-редактор index.html, план v2): проверяет ИМЕННО
+    ту форму /layout-payload, которую строит JS _planV2BuildLayoutPayload()
+    в статике — batch upsert существующего item (drag), новый item
+    ("$idx"-ссылка на него из edge_view_ops — способ сослаться на элемент,
+    ещё не имеющий id, см. save_plan_layout docstring), и remove
+    существующего item одним запросом. Ловит рассинхронизацию контракта
+    между фронтендом и save_plan_layout, если формат payload когда-либо
+    разъедется по одну или другую сторону."""
+    client, db, path, plans_dir = make_client()
+    try:
+        r = client.post("/api/v2/plans", data={
+            "name": "Однолинейная", "plan_kind": "single_line",
+            "canvas_width": "2000", "canvas_height": "1200",
+        }, content_type="multipart/form-data")
+        assert r.status_code == 201, (r.status_code, r.get_json())
+        plan = r.get_json()
+        plan_id, revision = plan["id"], plan["canvas_revision"]
+
+        node_repo = ElectricalNodeRepo(db)
+        n1 = node_repo.add(code="n1", name="Щит 1", kind="panel")
+        n2 = node_repo.add(code="n2", name="Щит 2", kind="panel")
+        edge = ElectricalEdgeRepo(db).add_draft(from_node_id=n1.id, to_node_id=n2.id, code="e1")
+
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "node", "node_id": n1.id,
+            "geometry": {"x": 100, "y": 200}, "coord_space": "canvas_xy_v2",
+            "label": "Щит 1",
+        })
+        assert r.status_code == 201, (r.status_code, r.get_json())
+        item1 = r.get_json()
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "node", "node_id": n2.id,
+            "geometry": {"x": 400, "y": 200}, "coord_space": "canvas_xy_v2",
+        })
+        assert r.status_code == 201, (r.status_code, r.get_json())
+        item2 = r.get_json()
+
+        # Форма payload — 1:1 то, что строит _planV2BuildLayoutPayload():
+        # item_ops[0] = drag существующего item1 (перенос label/kind не
+        # требуется — только geometry/coord_space/label как шлёт JS);
+        # item_ops[1] = пользователь убрал старую метку item2 и поставил
+        # новую для того же узла n2 в другом месте — новый node-item;
+        # item_ops[2] = remove item2 (старая метка n2);
+        # edge_view_ops[0] = новая связь: from=item1 (реальный id),
+        # to="$1" (ссылка на item_ops[1] по индексу, как делает resolveRef()
+        # в index.html при from_item_id/to_item_id, начинающемся с "new:").
+        # Заодно проверяет, что _check_edge_view_endpoints матчит node_id
+        # НОВОГО item'а (ещё без id на момент построения payload на
+        # фронтенде) против from_node_id/to_node_id связи.
+        payload = {
+            "expected_revision": revision,
+            "item_ops": [
+                {"op": "upsert", "id": item1["id"], "geometry": {"x": 150, "y": 250},
+                 "coord_space": "canvas_xy_v2", "label": "Щит 1"},
+                {"op": "upsert", "kind": "node", "node_id": n2.id,
+                 "geometry": {"x": 500, "y": 300},
+                 "coord_space": "canvas_xy_v2", "label": "Щит 2 (переставлен)"},
+                {"op": "remove", "id": item2["id"]},
+            ],
+            "edge_view_ops": [
+                {"op": "upsert", "edge_id": edge.id,
+                 "from_item_id": item1["id"], "to_item_id": "$1",
+                 "waypoints": None, "view_kind": "structural"},
+            ],
+        }
+        r = client.post(f"/api/v2/plans/{plan_id}/layout", json=payload)
+        assert r.status_code == 200, (r.status_code, r.get_json())
+        updated = r.get_json()
+        assert updated["canvas_revision"] == revision + 1
+
+        r = client.get(f"/api/v2/plans/{plan_id}")
+        detail = r.get_json()
+        items_by_id = {i["id"]: i for i in detail["items"]}
+        assert item1["id"] in items_by_id and items_by_id[item1["id"]]["geometry"] == {"x": 150, "y": 250}
+        assert item2["id"] not in items_by_id, "item2 должен быть удалён по remove-op"
+        new_items = [i for i in detail["items"] if i["id"] not in (item1["id"],)]
+        assert len(new_items) == 1 and new_items[0]["geometry"] == {"x": 500, "y": 300}
+        assert new_items[0]["node_id"] == n2.id
+        new_item_id = new_items[0]["id"]
+
+        assert len(detail["edges"]) == 1
+        ev = detail["edges"][0]
+        assert ev["from_item_id"] == item1["id"]
+        assert ev["to_item_id"] == new_item_id, "\"$1\" должен резолвиться в id только что созданного item_ops[1]"
+
+        print("[OK] /layout принимает payload ровно в форме, которую строит index.html (Stage D)")
+    finally:
+        db.close(); os.unlink(path)
+
+
+def test_layout_frontend_payload_shape_waypoints_drawing():
+    """Stage D (фронтенд, index.html): проверяет форму payload, которую
+    строит planV2SaveDrawnWaypoints()/_planV2BuildLayoutPayload() при
+    рисовании линии edge_view через leaflet-geoman —
+    waypoints:[[x,y],[x,y],...] (пары-массивы, НЕ объекты {x,y}, как у
+    geometry item'ов — см. _planV2LatLngToXy в index.html и
+    _validate_xy_pair/validate_waypoints_v2 в plan_geo_v2.py, которые ждут
+    именно такую форму). Отдельно от test_layout_frontend_payload_shape,
+    т.к. та фиксирует форму item-полей, а эта — конкретно waypoints
+    upsert на уже существующем edge_view (planV2ClearWaypoints/
+    planV2SaveDrawnWaypoints оба шлют upsert с id существующей связи)."""
+    client, db, path, plans_dir = make_client()
+    try:
+        r = client.post("/api/v2/plans", data={
+            "name": "Однолинейная", "plan_kind": "single_line",
+            "canvas_width": "2000", "canvas_height": "1200",
+        }, content_type="multipart/form-data")
+        assert r.status_code == 201, (r.status_code, r.get_json())
+        plan = r.get_json()
+        plan_id, revision = plan["id"], plan["canvas_revision"]
+
+        node_repo = ElectricalNodeRepo(db)
+        n1 = node_repo.add(code="n1", name="Щит 1", kind="panel")
+        n2 = node_repo.add(code="n2", name="Щит 2", kind="panel")
+        edge = ElectricalEdgeRepo(db).add_draft(from_node_id=n1.id, to_node_id=n2.id, code="e1")
+
+        item1 = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "node", "node_id": n1.id,
+            "geometry": {"x": 100, "y": 200}, "coord_space": "canvas_xy_v2",
+        }).get_json()
+        item2 = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "node", "node_id": n2.id,
+            "geometry": {"x": 400, "y": 200}, "coord_space": "canvas_xy_v2",
+        }).get_json()
+        edge_view = client.post(f"/api/v2/plans/{plan_id}/edges", json={
+            "edge_id": edge.id, "from_item_id": item1["id"], "to_item_id": item2["id"],
+            "view_kind": "structural",
+        }).get_json()
+
+        # planV2SaveDrawnWaypoints: upsert по существующему id, остальные
+        # поля — из _planV2BaseEdgeFields(view) (т.е. неизменные edge_id/
+        # from_item_id/to_item_id/view_kind), только waypoints новые.
+        payload = {
+            "expected_revision": revision,
+            "item_ops": [],
+            "edge_view_ops": [
+                {"op": "upsert", "id": edge_view["id"], "edge_id": edge.id,
+                 "from_item_id": item1["id"], "to_item_id": item2["id"],
+                 "waypoints": [[150, 220], [250, 260], [350, 220]],
+                 "view_kind": "structural"},
+            ],
+        }
+        r = client.post(f"/api/v2/plans/{plan_id}/layout", json=payload)
+        assert r.status_code == 200, (r.status_code, r.get_json())
+
+        detail = client.get(f"/api/v2/plans/{plan_id}").get_json()
+        assert len(detail["edges"]) == 1
+        assert detail["edges"][0]["waypoints"] == [[150, 220], [250, 260], [350, 220]]
+
+        # planV2ClearWaypoints: тот же upsert, но waypoints:null — линия
+        # возвращается к прямой между метками.
+        revision2 = detail["canvas_revision"]
+        r = client.post(f"/api/v2/plans/{plan_id}/layout", json={
+            "expected_revision": revision2,
+            "item_ops": [],
+            "edge_view_ops": [
+                {"op": "upsert", "id": edge_view["id"], "edge_id": edge.id,
+                 "from_item_id": item1["id"], "to_item_id": item2["id"],
+                 "waypoints": None, "view_kind": "structural"},
+            ],
+        })
+        assert r.status_code == 200, (r.status_code, r.get_json())
+        detail2 = client.get(f"/api/v2/plans/{plan_id}").get_json()
+        assert detail2["edges"][0]["waypoints"] is None
+
+        print("[OK] /layout принимает waypoints:[[x,y],...] в форме planV2SaveDrawnWaypoints/planV2ClearWaypoints")
+    finally:
+        db.close(); os.unlink(path)
+
+
 if __name__ == "__main__":
     test_floor_and_single_line_plan_create()
     test_plan_items_geometry_validation()
@@ -439,4 +610,6 @@ if __name__ == "__main__":
     test_plan_delete_cascade_and_404s()
     test_image_size_limit_rejected()
     test_waypoints_out_of_bounds_rejected()
+    test_layout_frontend_payload_shape()
+    test_layout_frontend_payload_shape_waypoints_drawing()
     print("\nВсе тесты plan v2 (Шаг 21) пройдены.")

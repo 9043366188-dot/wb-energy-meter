@@ -293,6 +293,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   border-radius:10px;border:1px solid var(--line);background:var(--bg3)}
 #site-plan-v2-map{height:calc(100vh - 220px);min-height:420px;
   border-radius:10px;border:1px solid var(--line);background:var(--bg3)}
+#site-plan-v2-map.planv2-placing{cursor:crosshair}
 .leaflet-container{background:var(--bg3);font-family:inherit;outline:none}
 .leaflet-popup-content-wrapper{background:var(--bg2);color:var(--txt);
   border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.4)}
@@ -719,10 +720,16 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     </div>
   </div>
 
-  <!-- ПЛАН v2 (ТЗ §7) — пока только просмотр: список планов, карта,
-       инспектор выбранного элемента по клику. Своя L.Map (_planV2Map
-       ниже, вне реактивности Alpine) — та же причина, что у v1 плана
-       выше: Leaflet держит собственный DOM, Proxy-обёртка его ломает. -->
+  <!-- ПЛАН v2 (ТЗ §7): просмотр + редактирование (Stage D) — список
+       планов, карта, инспектор по клику, перетаскивание меток, добавление/
+       удаление элементов и связей в локальном черновике (§7.3) с undo/redo,
+       атомарное сохранение через /layout с обработкой конфликта ревизии
+       (A35, §13). Своя L.Map (_planV2Map ниже, вне реактивности Alpine) —
+       та же причина, что у v1 плана выше: Leaflet держит собственный DOM,
+       Proxy-обёртка его ломает. Перетаскивание — через leaflet-geoman
+       (layer.pm.enableLayerDrag()/'pm:dragend'): L.circleMarker не
+       поддерживает draggable:true нативно (это только у L.Marker), а
+       geoman уже используется в проекте для зон v1 — тот же приём. -->
   <div x-show="tab=='planv2'">
     <template x-if="!planV2Loading && planV2Plans.length===0">
       <div class="plan-empty">Планов v2 пока нет.</div>
@@ -735,16 +742,171 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     x-text="p.name + (p.plan_kind==='floor' ? ' (помещения)' : ' (однолинейная)')"></option>
           </template>
         </select>
+        <div class="spacer"></div>
+        <template x-if="planV2PendingCount()>0">
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="ico-btn" :disabled="!planV2History.length" @click="planV2Undo()"
+                    title="Отменить последнее действие">↺</button>
+            <button class="ico-btn" :disabled="!planV2Future.length" @click="planV2Redo()"
+                    title="Вернуть отменённое">↻</button>
+            <span class="muted mono" x-text="'изменений: '+planV2PendingCount()"></span>
+            <button class="btn btn-sm btn-secondary" @click="planV2RequestDiscard()">Отменить черновик</button>
+            <button class="btn btn-sm btn-primary" :disabled="planV2Saving" @click="planV2SaveLayout()">
+              <span x-show="!planV2Saving">Сохранить</span>
+              <span x-show="planV2Saving"><span class="spin" style="width:12px;height:12px"></span> Сохранение…</span>
+            </button>
+          </div>
+        </template>
+        <button class="ico-btn" @click="togglePlanV2Edit()"
+                x-text="planV2EditMode?'✓ Готово':'✎ Редактировать'"></button>
       </div>
-      <div class="plan-layout" :class="{'plan-edit-open': planV2SelectedItem}">
-        <div id="site-plan-v2-map" x-ref="planV2Map"></div>
-        <div class="plan-side" x-show="planV2SelectedItem">
+
+      <div class="plan-layout"
+           :class="{'plan-edit-open': planV2EditMode || planV2SelectedItem || planV2SelectedEdgeView}">
+        <div id="site-plan-v2-map" x-ref="planV2Map" :class="{'planv2-placing':planV2Placing}"></div>
+
+        <div class="plan-side" x-show="planV2EditMode || planV2SelectedItem || planV2SelectedEdgeView">
           <template x-if="planV2SelectedItem">
             <div>
               <h3 x-text="planV2ItemKindLabel(planV2SelectedItem.kind)"></h3>
               <div x-show="planV2SelectedItem.label" x-text="planV2SelectedItem.label"></div>
               <div class="muted mono" x-text="'id: '+planV2SelectedItem.id"></div>
-              <button class="ico-btn" @click="planV2SelectedItem=null" style="margin-top:10px">Закрыть</button>
+              <div style="display:flex;gap:8px;margin-top:10px">
+                <button class="ico-btn" @click="planV2SelectedItem=null">Закрыть</button>
+                <button class="btn btn-sm btn-danger" x-show="planV2EditMode"
+                        @click="planV2RemoveItem(planV2SelectedItem); planV2SelectedItem=null">Убрать с плана</button>
+              </div>
+            </div>
+          </template>
+
+          <template x-if="planV2SelectedEdgeView && !planV2SelectedItem">
+            <div>
+              <h3>Связь на плане</h3>
+              <div class="muted mono" x-text="'edge_id: '+planV2SelectedEdgeView.edge_id"></div>
+              <div class="muted" x-text="planV2SelectedEdgeView.waypoints ? 'Линия: нарисована вручную' : 'Линия: прямая между метками'"></div>
+
+              <template x-if="planV2EditMode && planV2DrawingEdgeKey===String(planV2SelectedEdgeView.id)">
+                <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
+                  <div class="muted">Кликайте по плану, чтобы добавлять точки линии; двойной клик — завершить.</div>
+                  <div style="display:flex;gap:8px">
+                    <button class="btn btn-sm btn-primary" :disabled="!planV2HasPendingEdgeDraw"
+                            @click="planV2SaveDrawnWaypoints()">Сохранить линию</button>
+                    <button class="btn btn-sm btn-secondary" @click="planV2CancelDrawWaypoints()">Отмена</button>
+                  </div>
+                </div>
+              </template>
+              <template x-if="planV2EditMode && planV2DrawingEdgeKey!==String(planV2SelectedEdgeView.id)">
+                <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+                  <button class="btn btn-sm btn-secondary" :disabled="planV2DrawingEdgeKey!==null"
+                          @click="planV2StartDrawWaypoints(planV2SelectedEdgeView)"
+                          x-text="planV2SelectedEdgeView.waypoints ? 'Перерисовать линию' : 'Нарисовать линию'"></button>
+                  <button class="btn btn-sm btn-secondary" x-show="planV2SelectedEdgeView.waypoints"
+                          :disabled="planV2DrawingEdgeKey!==null"
+                          @click="planV2ClearWaypoints(planV2SelectedEdgeView)">Сделать прямой</button>
+                </div>
+              </template>
+
+              <div style="display:flex;gap:8px;margin-top:10px">
+                <button class="ico-btn" @click="planV2SelectedEdgeView=null">Закрыть</button>
+                <button class="btn btn-sm btn-danger" x-show="planV2EditMode && planV2DrawingEdgeKey===null"
+                        @click="planV2RemoveEdgeView(planV2SelectedEdgeView); planV2SelectedEdgeView=null">Удалить связь</button>
+              </div>
+            </div>
+          </template>
+
+          <template x-if="planV2EditMode && !planV2SelectedItem && !planV2SelectedEdgeView">
+            <div>
+              <h3>Добавить элемент</h3>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <select x-model="planV2AddKind">
+                  <option value="">— тип элемента —</option>
+                  <option value="point">Точка учёта</option>
+                  <option value="location">Место</option>
+                  <option value="node">Узел сети</option>
+                  <option value="port">Переход на другой план</option>
+                  <option value="annotation">Подпись</option>
+                </select>
+                <select x-show="planV2AddKind==='point'" x-model.number="planV2AddRefId">
+                  <option value="">— точка —</option>
+                  <template x-for="p in planV2Points" :key="p.id">
+                    <option :value="p.id" x-text="p.name"></option>
+                  </template>
+                </select>
+                <select x-show="planV2AddKind==='location'" x-model.number="planV2AddRefId">
+                  <option value="">— место —</option>
+                  <template x-for="l in planV2Locations" :key="l.id">
+                    <option :value="l.id" x-text="l.name"></option>
+                  </template>
+                </select>
+                <select x-show="planV2AddKind==='node' || planV2AddKind==='port'" x-model.number="planV2AddRefId">
+                  <option value="">— узел —</option>
+                  <template x-for="n in planV2Nodes" :key="n.id">
+                    <option :value="n.id" x-text="n.name"></option>
+                  </template>
+                </select>
+                <select x-show="planV2AddKind==='port'" x-model.number="planV2AddTargetPlanId">
+                  <option value="">— ведёт на план (необязательно) —</option>
+                  <template x-for="p in planV2Plans" :key="p.id">
+                    <option :value="p.id" x-text="p.name"></option>
+                  </template>
+                </select>
+                <input type="text" placeholder="Подпись (необязательно)" x-model="planV2AddLabel"
+                       x-show="planV2AddKind">
+                <button class="btn btn-sm btn-primary" x-show="planV2AddKind && !planV2Placing"
+                        @click="planV2StartPlace()">Разместить на карте</button>
+                <div class="muted" x-show="planV2Placing">Кликните на плане, чтобы поставить метку.</div>
+                <button class="btn btn-sm btn-secondary" x-show="planV2Placing" @click="planV2CancelPlace()">Отмена</button>
+              </div>
+
+              <h3 style="margin-top:14px">Элементы на плане</h3>
+              <div class="plan-zone-list">
+                <template x-for="it in _planV2EffectiveItems()" :key="it.id">
+                  <div class="plan-zone-row">
+                    <span class="pzr-dot" :style="`background:${planV2ItemColor(it.kind)}`"></span>
+                    <span class="pzr-name" x-text="(it.label||planV2ItemKindLabel(it.kind))"></span>
+                    <button class="btn btn-sm btn-danger" @click="planV2RemoveItem(it)">✕</button>
+                  </div>
+                </template>
+                <div class="muted" x-show="!_planV2EffectiveItems().length">Элементов пока нет.</div>
+              </div>
+
+              <h3 style="margin-top:14px">Связи (edge_views)</h3>
+              <div class="plan-zone-list">
+                <template x-for="v in _planV2EffectiveEdgeViews()" :key="v.id">
+                  <div class="plan-zone-row" style="cursor:pointer"
+                       @click="planV2SelectedItem=null; planV2SelectedEdgeView=v">
+                    <span class="pzr-name" x-text="'edge_id: '+v.edge_id+(v.waypoints?' 🖊':'')"></span>
+                    <button class="btn btn-sm btn-danger" @click.stop="planV2RemoveEdgeView(v)">✕</button>
+                  </div>
+                </template>
+                <div class="muted" x-show="!_planV2EffectiveEdgeViews().length">Связей пока нет.</div>
+              </div>
+              <button class="btn btn-sm" :class="planV2AddingEdgeView?'btn-secondary':'btn-primary'"
+                      @click="planV2ToggleAddingEdgeView()"
+                      x-text="planV2AddingEdgeView?'Отменить добавление связи':'Добавить связь'"></button>
+              <template x-if="planV2AddingEdgeView">
+                <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+                  <select x-model.number="planV2EdgeForm.edgeId">
+                    <option value="">— электрическая связь (edge) —</option>
+                    <template x-for="e in planV2Edges" :key="e.id">
+                      <option :value="e.id" x-text="(e.code||('#'+e.id))+' '+(e.name||'')"></option>
+                    </template>
+                  </select>
+                  <select x-model="planV2EdgeForm.fromItemKey">
+                    <option value="">— откуда (необязательно) —</option>
+                    <template x-for="it in planV2NodeLikeItems()" :key="it.id">
+                      <option :value="String(it.id)" x-text="it.label||('элемент '+it.id)"></option>
+                    </template>
+                  </select>
+                  <select x-model="planV2EdgeForm.toItemKey">
+                    <option value="">— куда (необязательно) —</option>
+                    <template x-for="it in planV2NodeLikeItems()" :key="it.id">
+                      <option :value="String(it.id)" x-text="it.label||('элемент '+it.id)"></option>
+                    </template>
+                  </select>
+                  <button class="btn btn-primary btn-sm" @click="planV2SaveEdgeDraft()">Добавить в черновик</button>
+                </div>
+              </template>
             </div>
           </template>
         </div>
@@ -2125,6 +2287,37 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     </div>
   </template>
 
+  <!-- CONFIRM DISCARD PLAN V2 DRAFT (ТЗ §7.3) -->
+  <template x-if="planV2ConfirmDiscard">
+    <div class="confirm-overlay">
+      <div class="confirm-box">
+        <h3>Отменить черновик?</h3>
+        <p>Все несохранённые изменения плана (перемещения, добавленные и
+           убранные элементы и связи) будут потеряны.</p>
+        <div class="actions">
+          <button class="btn btn-secondary" @click="planV2ConfirmDiscard=false">Отмена</button>
+          <button class="btn btn-danger" @click="planV2ConfirmDiscardNow()">Отменить черновик</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <!-- REVISION CONFLICT PLAN V2 (A35, ТЗ §13) -->
+  <template x-if="planV2RevisionConflict">
+    <div class="confirm-overlay">
+      <div class="confirm-box">
+        <h3>План изменён в другом месте</h3>
+        <p>Кто-то ещё сохранил изменения этого плана, пока вы редактировали.
+           Чтобы не потерять чужие правки, сохранение отменено — ваш
+           черновик изменений НЕ записан на сервер.</p>
+        <div class="actions">
+          <button class="btn btn-secondary" @click="planV2RevisionConflict=false">Закрыть (черновик останется)</button>
+          <button class="btn btn-danger" @click="planV2ConfirmDiscardReload()">Обновить план (черновик будет потерян)</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
   <!-- TOAST -->
   <template x-if="toast">
     <div class="toast" :class="toast.ok?'toast-ok':'toast-err'" x-text="toast.msg"></div>
@@ -2213,6 +2406,31 @@ function app(){ return {
   // (модульная переменная ниже app(), та же причина, что у v1 плана).
   planV2Plans:[], planV2CurrentId:null, planV2Current:null,
   planV2Loading:false, planV2Inited:false, planV2SelectedItem:null,
+  planV2SelectedEdgeView:null,
+  // --- Stage D (ТЗ §7.3): редактирование плана v2 локальным черновиком.
+  // planV2Draft.items/edges: ключ -> {op:'upsert'|'remove', ...поля}.
+  // Ключ существующего элемента/связи — String(id); ключ элемента/связи,
+  // созданных в этом же черновике и ещё не сохранённых — 'new:N'/'newedge:N'
+  // (see _planV2BuildLayoutPayload — им нет смысла слать op:'remove' на
+  // сервер, они просто удаляются из черновика). planV2History/Future —
+  // стек глубоких копий planV2Draft для undo/redo.
+  planV2EditMode:false, planV2Draft:{items:{}, edges:{}},
+  planV2History:[], planV2Future:[], planV2Saving:false,
+  planV2ConfirmDiscard:false, planV2RevisionConflict:false,
+  planV2Placing:false, planV2AddKind:'', planV2AddRefId:'',
+  planV2AddTargetPlanId:'', planV2AddLabel:'', planV2NewItemSeq:0,
+  planV2AddingEdgeView:false, planV2NewEdgeSeq:0,
+  planV2EdgeForm:{edgeId:'', fromItemKey:'', toItemKey:''},
+  // Рисование waypoints для edge_view через leaflet-geoman (по образцу
+  // v1 startZoneDraw/_planOnPmCreate). planV2DrawingEdgeKey — ключ
+  // edge_view (String(id) или 'newedge:N'), для которого сейчас идёт
+  // рисование линии; null — режим рисования выключен. Пока он не null,
+  // _planV2OnMapClick (плейсмент новых item) должен ничего не делать —
+  // иначе клики по карте во время рисования линии ещё и добавляли бы
+  // новый item.
+  planV2DrawingEdgeKey:null, planV2HasPendingEdgeDraw:false,
+  planV2PickersLoaded:false, planV2Points:[], planV2Locations:[],
+  planV2Nodes:[], planV2Edges:[],
   // toast
   toast:null, _toastTimer:null,
   _timer:null,
@@ -3598,17 +3816,28 @@ function app(){ return {
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
 
-  // === План v2 (ТЗ §7): только просмотр в этом шаге — выбор плана,
-  // отрисовка фона/элементов, инспектор по клику. Формула координат
+  // === План v2 (ТЗ §7): выбор плана, отрисовка фона/элементов/связей,
+  // инспектор по клику, редактирование локальным черновиком (Stage D,
+  // §7.3) — перетаскивание, добавление/удаление элементов и edge_views,
+  // undo/redo, атомарное сохранение через /layout (A35). Формула координат
   // (lat=H-y, lng=x) в _planV2XyToLatLng ВЕРИФИЦИРОВАНА реальным
   // leaflet.js в headless-проверке (см. wb_energy_meter/plan_geo_v2.py,
   // коммит db36c2a) — не менять без повторной проверки.
+  //
+  // ВАЖНО про _planV2RenderBase() vs _planV2RenderItems(): фон и
+  // map.fitBounds() перерисовываются ТОЛЬКО при выборе/загрузке плана
+  // (_planV2RenderBase) — иначе каждое перетаскивание метки сбрасывало бы
+  // масштаб/позицию карты обратно на "показать весь план". Черновик,
+  // drag/add/remove и undo/redo дёргают только _planV2RenderItems()
+  // (метки + линии связей), фон и вид карты не трогают.
   initPlanV2Map(){
     if(_planV2Map) return;
     const el=this.$refs.planV2Map;
     _planV2Map=L.map(el, {crs:L.CRS.Simple, minZoom:-4, zoomControl:true,
                           attributionControl:false});
     _planV2Map.setView([0,0],0);
+    _planV2Map.on('click', (e)=>this._planV2OnMapClick(e));
+    _planV2Map.on('pm:create', (e)=>this._planV2OnPmCreate(e));
     window.addEventListener('resize', ()=>{ if(_planV2Map) _planV2Map.invalidateSize(); });
   },
   async openPlanV2Tab(){
@@ -3633,14 +3862,27 @@ function app(){ return {
   },
   async selectPlanV2(id){
     if(!id) return;
+    // Переключение плана с несохранённым черновиком отменяет черновик —
+    // черновик привязан к конкретному плану и его canvas_revision, нести
+    // его на другой план бессмысленно и опасно (см. §7.3).
+    if(this.planV2PendingCount()>0){
+      this.showToast('Черновик изменений отменён при смене плана', false);
+    }
+    this._planV2ResetDraft();
     this.planV2CurrentId=id;
     this.planV2SelectedItem=null;
+    this.planV2SelectedEdgeView=null;
+    this.planV2Placing=false;
     try{
       const r=await fetch('/api/v2/plans/'+id);
       if(!r.ok){ this.showToast('Не удалось загрузить план v2', false); return; }
       this.planV2Current=await r.json();
     }catch(e){ console.error(e); return; }
     this._planV2RenderBase();
+  },
+  _planV2ResetDraft(){
+    this.planV2Draft={items:{}, edges:{}};
+    this.planV2History=[]; this.planV2Future=[];
   },
   _planV2EffectiveDims(plan){
     // §7.2: у floor — размеры изображения, у single_line без картинки —
@@ -3652,6 +3894,377 @@ function app(){ return {
   _planV2XyToLatLng(x, y, height){
     return [height - y, x];
   },
+  planV2ItemColor(kind){ return _planV2KindColor(kind); },
+  planV2PendingCount(){
+    return Object.keys(this.planV2Draft.items).length + Object.keys(this.planV2Draft.edges).length;
+  },
+  planV2NodeLikeItems(){
+    return this._planV2EffectiveItems().filter(it=>it.kind==='node'||it.kind==='port');
+  },
+
+  // --- слияние сервер+черновик для отрисовки/списков (§7.3) ---
+  _planV2EffectiveItems(){
+    if(!this.planV2Current) return [];
+    const draft=this.planV2Draft.items;
+    const out=[];
+    (this.planV2Current.items||[]).forEach(it=>{
+      const rec=draft[String(it.id)];
+      if(rec && rec.op==='remove') return;
+      out.push(rec && rec.op==='upsert' ? {...it, ...rec, id:it.id} : it);
+    });
+    Object.keys(draft).forEach(key=>{
+      if(!key.startsWith('new:')) return;
+      const rec=draft[key];
+      if(rec.op==='upsert') out.push({...rec, id:key});
+    });
+    return out;
+  },
+  _planV2EffectiveEdgeViews(){
+    if(!this.planV2Current) return [];
+    const draft=this.planV2Draft.edges;
+    const out=[];
+    (this.planV2Current.edges||[]).forEach(v=>{
+      const rec=draft[String(v.id)];
+      if(rec && rec.op==='remove') return;
+      out.push(rec && rec.op==='upsert' ? {...v, ...rec, id:v.id} : v);
+    });
+    Object.keys(draft).forEach(key=>{
+      if(!key.startsWith('newedge:')) return;
+      const rec=draft[key];
+      if(rec.op==='upsert') out.push({...rec, id:key});
+    });
+    return out;
+  },
+
+  // --- undo/redo (§7.3): снимок черновика ДО мутации кладётся в
+  // History, Future очищается при каждом новом действии (обычная
+  // семантика undo-стека — "вернуть" доступно только сразу после
+  // "отменить", не после произвольного нового действия). ---
+  _planV2PushHistory(){
+    this.planV2History.push(JSON.parse(JSON.stringify(this.planV2Draft)));
+    if(this.planV2History.length>50) this.planV2History.shift();
+    this.planV2Future=[];
+  },
+  planV2Undo(){
+    if(!this.planV2History.length) return;
+    this.planV2Future.push(JSON.parse(JSON.stringify(this.planV2Draft)));
+    this.planV2Draft=this.planV2History.pop();
+    this.planV2SelectedItem=null; this.planV2SelectedEdgeView=null;
+    this._planV2RenderItems();
+  },
+  planV2Redo(){
+    if(!this.planV2Future.length) return;
+    this.planV2History.push(JSON.parse(JSON.stringify(this.planV2Draft)));
+    this.planV2Draft=this.planV2Future.pop();
+    this.planV2SelectedItem=null; this.planV2SelectedEdgeView=null;
+    this._planV2RenderItems();
+  },
+  planV2RequestDiscard(){
+    if(this.planV2PendingCount()===0) return;
+    this.planV2ConfirmDiscard=true;
+  },
+  planV2ConfirmDiscardNow(){
+    this.planV2ConfirmDiscard=false;
+    this._planV2ResetDraft();
+    this.planV2SelectedItem=null; this.planV2SelectedEdgeView=null;
+    this._planV2RenderItems();
+  },
+
+  // --- редактирование: перетаскивание, добавление, удаление ---
+  togglePlanV2Edit(){
+    this.planV2EditMode=!this.planV2EditMode;
+    this.planV2Placing=false;
+    if(this.planV2EditMode && !this.planV2PickersLoaded){
+      this.planV2PickersLoaded=true;
+      this._planV2LoadPickers();
+    }
+    this._planV2RenderItems();
+  },
+  async _planV2LoadPickers(){
+    try{
+      const [pts, locs, nodes, edgesDraft, edgesPub] = await Promise.all([
+        fetch('/api/v2/points').then(r=>r.json()),
+        fetch('/api/v2/locations').then(r=>r.json()),
+        fetch('/api/v2/topology/nodes').then(r=>r.json()),
+        fetch('/api/v2/topology/edges?state=draft').then(r=>r.json()),
+        fetch('/api/v2/topology/edges?state=published').then(r=>r.json()),
+      ]);
+      this.planV2Points=Array.isArray(pts)?pts:[];
+      this.planV2Locations=Array.isArray(locs)?locs:[];
+      this.planV2Nodes=Array.isArray(nodes)?nodes:[];
+      const byId={};
+      [...(Array.isArray(edgesPub)?edgesPub:[]), ...(Array.isArray(edgesDraft)?edgesDraft:[])]
+        .forEach(e=>{ byId[e.id]=e; });
+      this.planV2Edges=Object.values(byId);
+    }catch(e){ console.error('planV2: не удалось загрузить справочники для редактирования', e); }
+  },
+  // Собирает базовые (сохраняемые) поля элемента — источник истины для
+  // ОБЯЗАТЕЛЬНОГО переноса kind/ссылок/подписи в черновик при первом
+  // касании существующего элемента (drag), чтобы не потерять их при
+  // отправке item_ops (сервер ждёт их в каждом upsert, см.
+  // save_plan_layout в plan_service_v2.py).
+  _planV2BaseItemFields(effItem){
+    return {kind:effItem.kind, point_id:effItem.point_id ?? null,
+            location_id:effItem.location_id ?? null, group_id:effItem.group_id ?? null,
+            node_id:effItem.node_id ?? null, target_plan_id:effItem.target_plan_id ?? null,
+            label:effItem.label ?? null};
+  },
+  // Обратное преобразование leaflet [lat,lng] -> plan_v2 {x,y} (инверсия
+  // _planV2XyToLatLng: [height-y, x] -> [lat,lng]). Общий хелпер для всех
+  // мест, где карта отдаёт координаты кликом/перетаскиванием/рисованием
+  // линии (плейсмент item, drag item, рисование waypoints edge_view).
+  _planV2LatLngToXy(latlng, height){
+    return [latlng.lng, height-latlng.lat];
+  },
+  _planV2OnItemDragEnd(effItem, latlng, height){
+    this._planV2PushHistory();
+    const key=String(effItem.id);
+    const base=this.planV2Draft.items[key] && this.planV2Draft.items[key].op==='upsert'
+      ? this.planV2Draft.items[key] : this._planV2BaseItemFields(effItem);
+    const [x,y]=this._planV2LatLngToXy(latlng, height);
+    this.planV2Draft.items[key]={...base, op:'upsert',
+      geometry:{x,y}, coord_space:effItem.coord_space};
+    this._planV2RenderItems();
+  },
+  planV2RemoveItem(effItem){
+    if(!effItem) return;
+    this._planV2PushHistory();
+    const key=String(effItem.id);
+    if(typeof effItem.id==='string' && effItem.id.startsWith('new:')){
+      delete this.planV2Draft.items[key];
+    }else{
+      this.planV2Draft.items[key]={op:'remove'};
+    }
+    // Связи этого же черновика, ссылающиеся на убираемый элемент, теряют
+    // смысл — убираем их из черновика тоже (уже сохранённые edge_views
+    // сервер сам отвяжет по ON DELETE SET NULL при реальном удалении).
+    Object.entries(this.planV2Draft.edges).forEach(([ek,erec])=>{
+      if(erec.op==='upsert' && (erec.from_item_id===effItem.id || erec.to_item_id===effItem.id)){
+        delete this.planV2Draft.edges[ek];
+      }
+    });
+    if(this.planV2SelectedItem && this.planV2SelectedItem.id===effItem.id) this.planV2SelectedItem=null;
+    this._planV2RenderItems();
+  },
+  planV2StartPlace(){
+    if(!this.planV2AddKind) return;
+    if(['point','location','node','port'].includes(this.planV2AddKind) && !this.planV2AddRefId){
+      this.showToast('Выберите объект для размещения', false); return;
+    }
+    this.planV2Placing=true;
+  },
+  planV2CancelPlace(){ this.planV2Placing=false; },
+  _planV2OnMapClick(e){
+    // Пока идёт рисование линии edge_view (leaflet-geoman) — клики по
+    // карте принадлежат geoman (расстановка вершин линии), а не плейсменту
+    // новых item; иначе один и тот же клик ставил бы ещё и метку.
+    if(this.planV2DrawingEdgeKey!==null) return;
+    if(!this.planV2Placing || !this.planV2Current) return;
+    const [W,H]=this._planV2EffectiveDims(this.planV2Current);
+    const [x,y]=this._planV2LatLngToXy(e.latlng, H);
+    if(x<0||x>W||y<0||y>H){ this.showToast('Точка вне границ плана', false); return; }
+    const coordSpace=this.planV2Current.plan_kind==='floor' ? 'image_px_xy_v2' : 'canvas_xy_v2';
+    this._planV2PushHistory();
+    const key='new:'+(++this.planV2NewItemSeq);
+    const rec={op:'upsert', kind:this.planV2AddKind, geometry:{x,y}, coord_space:coordSpace,
+               label:this.planV2AddLabel||null, point_id:null, location_id:null,
+               group_id:null, node_id:null, target_plan_id:null};
+    if(this.planV2AddKind==='point') rec.point_id=this.planV2AddRefId;
+    if(this.planV2AddKind==='location') rec.location_id=this.planV2AddRefId;
+    if(this.planV2AddKind==='node') rec.node_id=this.planV2AddRefId;
+    if(this.planV2AddKind==='port'){
+      rec.node_id=this.planV2AddRefId;
+      if(this.planV2AddTargetPlanId) rec.target_plan_id=this.planV2AddTargetPlanId;
+    }
+    this.planV2Draft.items[key]=rec;
+    this.planV2Placing=false;
+    this.planV2AddKind=''; this.planV2AddRefId=''; this.planV2AddLabel=''; this.planV2AddTargetPlanId='';
+    this._planV2RenderItems();
+    this.showToast('Элемент добавлен в черновик', true);
+  },
+
+  // --- edge_views: связи на плане (§7.1/§7.3) ---
+  planV2ToggleAddingEdgeView(){
+    this.planV2AddingEdgeView=!this.planV2AddingEdgeView;
+    this.planV2EdgeForm={edgeId:'', fromItemKey:'', toItemKey:''};
+  },
+  _planV2ParseItemKey(key){
+    if(!key) return null;
+    return key.startsWith('new:') ? key : Number(key);
+  },
+  planV2SaveEdgeDraft(){
+    const f=this.planV2EdgeForm;
+    if(!f.edgeId){ this.showToast('Выберите связь (edge)', false); return; }
+    this._planV2PushHistory();
+    const key='newedge:'+(++this.planV2NewEdgeSeq);
+    this.planV2Draft.edges[key]={
+      op:'upsert', edge_id:Number(f.edgeId),
+      from_item_id:this._planV2ParseItemKey(f.fromItemKey),
+      to_item_id:this._planV2ParseItemKey(f.toItemKey),
+      view_kind:'structural', waypoints:null,
+    };
+    this.planV2AddingEdgeView=false;
+    this._planV2RenderItems();
+    this.showToast('Связь добавлена в черновик', true);
+  },
+  planV2RemoveEdgeView(view){
+    if(!view) return;
+    this._planV2PushHistory();
+    const key=String(view.id);
+    if(typeof view.id==='string' && view.id.startsWith('newedge:')){
+      delete this.planV2Draft.edges[key];
+    }else{
+      this.planV2Draft.edges[key]={op:'remove'};
+    }
+    if(this.planV2SelectedEdgeView && this.planV2SelectedEdgeView.id===view.id) this.planV2SelectedEdgeView=null;
+    this._planV2RenderItems();
+  },
+
+  // --- сохранение layout: A35 (ТЗ §13) — 409 при устаревшей
+  // canvas_revision, БЕЗ изменений на сервере, черновик остаётся на
+  // клиенте (пользователь явно решает: обновить план или остаться). ---
+  _planV2BuildLayoutPayload(){
+    const itemOps=[]; const idxByKey={};
+    Object.entries(this.planV2Draft.items).forEach(([key,rec])=>{
+      if(rec.op==='remove'){ itemOps.push({op:'remove', id:Number(key)}); return; }
+      const isNew=key.startsWith('new:');
+      const entry={op:'upsert', geometry:rec.geometry, coord_space:rec.coord_space,
+                   label:rec.label ?? null};
+      if(!isNew){ entry.id=Number(key); }
+      else{
+        entry.kind=rec.kind;
+        if(rec.point_id!=null) entry.point_id=rec.point_id;
+        if(rec.location_id!=null) entry.location_id=rec.location_id;
+        if(rec.group_id!=null) entry.group_id=rec.group_id;
+        if(rec.node_id!=null) entry.node_id=rec.node_id;
+        if(rec.target_plan_id!=null) entry.target_plan_id=rec.target_plan_id;
+      }
+      idxByKey[key]=itemOps.length;
+      itemOps.push(entry);
+    });
+    const resolveRef=(ref)=>{
+      if(ref==null) return null;
+      if(typeof ref==='string' && ref.startsWith('new:')){
+        if(!(ref in idxByKey)) throw new Error('Элемент для связи ещё не размещён в этом черновике');
+        return '$'+idxByKey[ref];
+      }
+      return Number(ref);
+    };
+    const edgeViewOps=[];
+    Object.entries(this.planV2Draft.edges).forEach(([key,rec])=>{
+      if(rec.op==='remove'){ edgeViewOps.push({op:'remove', id:Number(key)}); return; }
+      const entry={op:'upsert', edge_id:rec.edge_id,
+                   from_item_id:resolveRef(rec.from_item_id), to_item_id:resolveRef(rec.to_item_id),
+                   waypoints:rec.waypoints ?? null, view_kind:rec.view_kind || 'structural'};
+      if(!key.startsWith('newedge:')) entry.id=Number(key);
+      edgeViewOps.push(entry);
+    });
+    return {expected_revision:this.planV2Current.canvas_revision,
+            item_ops:itemOps, edge_view_ops:edgeViewOps};
+  },
+  async planV2SaveLayout(){
+    if(!this.planV2Current || this.planV2PendingCount()===0) return;
+    let payload;
+    try{ payload=this._planV2BuildLayoutPayload(); }
+    catch(e){ this.showToast(String(e.message||e), false); return; }
+    this.planV2Saving=true;
+    try{
+      const r=await fetch('/api/v2/plans/'+this.planV2Current.id+'/layout', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(payload),
+      });
+      if(r.status===409){
+        this.planV2RevisionConflict=true;
+        this.planV2Saving=false;
+        return;
+      }
+      if(!r.ok){
+        const err=await r.json().catch(()=>({}));
+        this.showToast('Ошибка сохранения: '+(err.error && err.error.message || r.status), false);
+        this.planV2Saving=false;
+        return;
+      }
+      this._planV2ResetDraft();
+      this.planV2SelectedItem=null; this.planV2SelectedEdgeView=null;
+      await this.selectPlanV2(this.planV2Current.id);
+      this.showToast('Изменения плана сохранены', true);
+    }catch(e){
+      this.showToast('Ошибка сети при сохранении: '+e, false);
+    }
+    this.planV2Saving=false;
+  },
+  planV2ConfirmDiscardReload(){
+    this.planV2RevisionConflict=false;
+    const id=this.planV2Current.id;
+    this._planV2ResetDraft();
+    this.selectPlanV2(id);
+  },
+
+  // --- edge_views: рисование ломаной (waypoints) через leaflet-geoman ---
+  // (по образцу v1 startZoneDraw/_planOnPmCreate/saveZoneDraw/cancelZoneDraw,
+  // см. выше — та же связка enableDraw/pm:create/getLatLngs). Один и тот же
+  // приём для существующего edge_view (ключ — String(id), число) и ещё не
+  // сохранённого черновичного (ключ 'newedge:N').
+  _planV2BaseEdgeFields(view){
+    return {edge_id:view.edge_id, from_item_id:view.from_item_id ?? null,
+            to_item_id:view.to_item_id ?? null, view_kind:view.view_kind || 'structural',
+            waypoints:view.waypoints ?? null};
+  },
+  _planV2CleanupDrawLayer(){
+    if(_planV2DrawLayer){ try{_planV2Map.removeLayer(_planV2DrawLayer);}catch(e){} _planV2DrawLayer=null; }
+  },
+  planV2StartDrawWaypoints(view){
+    if(!view || this.planV2DrawingEdgeKey!==null || !_planV2Map || !this.planV2EditMode) return;
+    this.planV2DrawingEdgeKey=String(view.id);
+    this.planV2HasPendingEdgeDraw=false;
+    _planV2Map.pm.enableDraw('Line', {snappable:true, finishOn:'dblclick'});
+  },
+  _planV2OnPmCreate(e){
+    if(e.shape==='Line' && this.planV2DrawingEdgeKey!==null){
+      if(_planV2DrawLayer){ try{_planV2Map.removeLayer(_planV2DrawLayer);}catch(err){} }
+      _planV2DrawLayer=e.layer;
+      if(_planV2DrawLayer.pm) _planV2DrawLayer.pm.enable({allowSelfIntersection:false});
+      this.planV2HasPendingEdgeDraw=true;
+    }
+  },
+  planV2SaveDrawnWaypoints(){
+    if(!_planV2DrawLayer || this.planV2DrawingEdgeKey===null || !this.planV2Current) return;
+    const key=this.planV2DrawingEdgeKey;
+    const view=this._planV2EffectiveEdgeViews().find(v=>String(v.id)===key);
+    if(!view){ this.planV2CancelDrawWaypoints(); return; }
+    const latlngs=_planV2DrawLayer.getLatLngs();
+    if(latlngs.length<2){ this.showToast('Линия должна иметь минимум 2 точки', false); return; }
+    const [,H]=this._planV2EffectiveDims(this.planV2Current);
+    const waypoints=latlngs.map(ll=>this._planV2LatLngToXy(ll, H));
+    this._planV2PushHistory();
+    const base=this.planV2Draft.edges[key] && this.planV2Draft.edges[key].op==='upsert'
+      ? this.planV2Draft.edges[key] : this._planV2BaseEdgeFields(view);
+    this.planV2Draft.edges[key]={...base, op:'upsert', waypoints};
+    if(_planV2Map && _planV2Map.pm) _planV2Map.pm.disableDraw('Line');
+    this._planV2CleanupDrawLayer();
+    this.planV2DrawingEdgeKey=null; this.planV2HasPendingEdgeDraw=false;
+    this._planV2RenderItems();
+    this.showToast('Линия связи обновлена в черновике', true);
+  },
+  planV2CancelDrawWaypoints(){
+    if(_planV2Map && _planV2Map.pm) _planV2Map.pm.disableDraw('Line');
+    this._planV2CleanupDrawLayer();
+    this.planV2DrawingEdgeKey=null;
+    this.planV2HasPendingEdgeDraw=false;
+  },
+  // Сбросить нарисованную линию — вернуться к прямой между метками
+  // (waypoints:null, как у edge_view без ручного рисования).
+  planV2ClearWaypoints(view){
+    if(!view || !view.waypoints) return;
+    this._planV2PushHistory();
+    const key=String(view.id);
+    const base=this.planV2Draft.edges[key] && this.planV2Draft.edges[key].op==='upsert'
+      ? this.planV2Draft.edges[key] : this._planV2BaseEdgeFields(view);
+    this.planV2Draft.edges[key]={...base, op:'upsert', waypoints:null};
+    this._planV2RenderItems();
+  },
+
+  // --- отрисовка ---
   _planV2ItemLayerFor(item, height){
     if(item.coord_space!=='image_px_xy_v2' && item.coord_space!=='canvas_xy_v2'){
       console.warn('planV2: неподдерживаемый coord_space на элементе', item);
@@ -3662,14 +4275,64 @@ function app(){ return {
     const latlng=this._planV2XyToLatLng(g.x, g.y, height);
     const color=_planV2KindColor(item.kind);
     const layer=L.circleMarker(latlng, {radius:8, color, fillColor:color, fillOpacity:.7, weight:2});
-    layer.on('click', ()=>{ this.planV2SelectedItem=item; });
+    layer.on('click', (e)=>{
+      if(e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+      this.planV2SelectedEdgeView=null;
+      this.planV2SelectedItem=item;
+    });
+    // Перетаскивание — через leaflet-geoman (см. комментарий у секции
+    // "План v2" выше): L.circleMarker не умеет draggable:true нативно.
+    if(this.planV2EditMode && layer.pm){
+      layer.pm.enableLayerDrag();
+      layer.on('pm:dragend', ()=>{
+        this._planV2OnItemDragEnd(item, layer.getLatLng(), height);
+      });
+    }
     return layer;
+  },
+  _planV2RenderItems(){
+    if(!_planV2Map || !this.planV2Current) return;
+    _planV2ItemLayers.forEach(layer=>{ try{_planV2Map.removeLayer(layer);}catch(e){} });
+    _planV2ItemLayers.clear();
+    _planV2EdgeLayers.forEach(layer=>{ try{_planV2Map.removeLayer(layer);}catch(e){} });
+    _planV2EdgeLayers.clear();
+
+    const [,H]=this._planV2EffectiveDims(this.planV2Current);
+    const items=this._planV2EffectiveItems();
+    const itemById={};
+    items.forEach(it=>{
+      itemById[String(it.id)]=it;
+      const layer=this._planV2ItemLayerFor(it, H);
+      if(layer){ layer.addTo(_planV2Map); _planV2ItemLayers.set(String(it.id), layer); }
+    });
+
+    this._planV2EffectiveEdgeViews().forEach(v=>{
+      let latlngs=[];
+      if(v.waypoints && v.waypoints.length){
+        latlngs=v.waypoints.map(([x,y])=>this._planV2XyToLatLng(x,y,H));
+      }else{
+        const fromIt=v.from_item_id!=null ? itemById[String(v.from_item_id)] : null;
+        const toIt=v.to_item_id!=null ? itemById[String(v.to_item_id)] : null;
+        if(fromIt && fromIt.geometry && toIt && toIt.geometry){
+          latlngs=[this._planV2XyToLatLng(fromIt.geometry.x, fromIt.geometry.y, H),
+                   this._planV2XyToLatLng(toIt.geometry.x, toIt.geometry.y, H)];
+        }
+      }
+      if(latlngs.length<2) return;
+      const line=L.polyline(latlngs, {color:'#e0995f', weight:3,
+                                       dashArray:v.view_kind==='cable_route'?null:'6,4'});
+      line.on('click', (e)=>{
+        if(e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+        this.planV2SelectedItem=null;
+        this.planV2SelectedEdgeView=v;
+      });
+      line.addTo(_planV2Map);
+      _planV2EdgeLayers.set(String(v.id), line);
+    });
   },
   _planV2RenderBase(){
     if(!_planV2Map || !this.planV2Current) return;
     if(_planV2ImageLayer){ try{_planV2Map.removeLayer(_planV2ImageLayer);}catch(e){} _planV2ImageLayer=null; }
-    _planV2ItemLayers.forEach(layer=>{ try{_planV2Map.removeLayer(layer);}catch(e){} });
-    _planV2ItemLayers.clear();
 
     const pc=this.planV2Current;
     const [W,H]=this._planV2EffectiveDims(pc);
@@ -3680,11 +4343,7 @@ function app(){ return {
       _planV2ImageLayer=L.rectangle(bounds, {color:_planCssVar('--line'), weight:1, fill:false, dashArray:'4,4'}).addTo(_planV2Map);
     }
     _planV2Map.fitBounds(bounds);
-
-    (pc.items||[]).forEach(item=>{
-      const layer=this._planV2ItemLayerFor(item, H);
-      if(layer){ layer.addTo(_planV2Map); _planV2ItemLayers.set(item.id, layer); }
-    });
+    this._planV2RenderItems();
   },
   planV2ItemKindLabel(kind){
     const labels={point:'Точка учёта', location:'Место', group:'Группа',
@@ -3712,7 +4371,9 @@ let _planDrawLayer=null;           // временный слой контура
 let _planOpenPopupGroupId=null;    // группа последнего открытого попапа (для ссылки в нём)
 let _planV2Map=null;
 let _planV2ImageLayer=null;
-const _planV2ItemLayers=new Map();   // item_id -> layer
+const _planV2ItemLayers=new Map();   // item_id (String) -> layer
+const _planV2EdgeLayers=new Map();   // edge_view_id (String) -> polyline
+let _planV2DrawLayer=null;           // временный слой линии во время рисования waypoints edge_view
 function _planV2KindColor(kind){
   const colors={point:'#3dd6c0', location:'#8a7cff', group:'#f0a83c',
                 node:'#4fa8f5', port:'#e05fae', annotation:'#9aa0a8'};
