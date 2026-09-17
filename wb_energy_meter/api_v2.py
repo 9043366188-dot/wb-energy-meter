@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 
 from flask import request, Response
 
-from .accounting_contract import ContractViolation
+from .accounting_contract import ContractViolation, resolve_percentage
 from .accounting_service import (
     AccountingConflict, measured_point, sum_points, balance, comparison,
 )
@@ -1130,6 +1130,194 @@ def register_v2_routes(app, state, json_response):
         return json_response({
             "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "points": items,
+        })
+
+    # ------------------------------------------------- overview (задача 2)
+    # ТЗ §8.2, партия 2: "Обзор отвечает на четыре вопроса: сколько
+    # потребляет объект, какие ветви дают расход, где проблема, каких
+    # данных нет". Единственная задача этого маршрута — ОДИН раз собрать
+    # то, что экран и CSV обязаны показывать одинаково (A43): итог объекта
+    # через назначенный ввод (а не сумму счётчиков), ветви верхнего
+    # уровня, небаланс подписанным. Экран (index.html) не считает
+    # ничего сам — только рендерит уже посчитанное здесь через
+    # accounting_service (сформулировано в задании прямым текстом:
+    # "если обнаружишь, что проще посчитать на фронте — это сигнал, что
+    # ты идёшь не туда").
+
+    def _resolve_object_input_point_ids(node_repo, edge_repo):
+        """§8.2: "Основа итога — назначенный ввод". Ввод объекта — это
+        primary_point_id каждой действующей ОПУБЛИКОВАННОЙ связи,
+        исходящей из узла kind='source' (внешний ввод сети — по
+        валидатору топологии source никогда не бывает приёмником, см.
+        topology_service.validate_forest). Несколько вводов
+        суммируются через тот же sum_points, что и любая ветвь — двойной
+        счёт (A03/A04) проверяется той же логикой, что и везде."""
+        edges = edge_repo.list_active_published()
+        point_ids = []
+        for e in edges:
+            if e.primary_point_id is None:
+                continue
+            node = node_repo.get_by_id(e.from_node_id)
+            if node is not None and node.kind == "source":
+                point_ids.append(e.primary_point_id)
+        return list(dict.fromkeys(point_ids))
+
+    def _overview_branch_result(member_point_ids, binding_repo, aggregates_repo,
+                                 source_repo, edge_repo, ts_from, ts_to, timezone_name):
+        """§8.2: "Если у выбранной группы неподтверждённый non-overlap —
+        Обзор переключается в режим сравнения точек (без общего итога)".
+        sum_points уже возвращает structure_quality=unverified, когда
+        топология части точек ПРОСТО неизвестна (это нормальный
+        промежуточный итог) — единственный случай, требующий переключения
+        в comparison, это ПОДТВЕРЖДЁННОЕ пересечение (AccountingConflict,
+        A04)."""
+        if not member_point_ids:
+            return {"mode": "sum", "result": None, "conflict_reason": None}
+        try:
+            result = sum_points(binding_repo, aggregates_repo, source_repo, edge_repo,
+                                 member_point_ids, ts_from, ts_to, timezone_name)
+            return {"mode": "sum", "result": result, "conflict_reason": None}
+        except AccountingConflict as e:
+            results = comparison(binding_repo, aggregates_repo, source_repo,
+                                  member_point_ids, ts_from, ts_to, timezone_name)
+            return {"mode": "comparison", "result": results, "conflict_reason": str(e)}
+
+    @app.route("/api/v2/overview/summary", methods=["POST"])
+    def v2_overview_summary():
+        """Тело: {"from", "to", "timezone", "configuration_revision_id"?}
+        (те же поля, что и metrics/query, — A43 тем же приёмом: один
+        db.read() на весь расчёт, ревизия фиксируется один раз в начале)."""
+        data = request.get_json(silent=True) or {}
+        timezone_name = data.get("timezone", "UTC")
+        try:
+            ts_from = _parse_ts(data.get("from"), "from")
+            ts_to = _parse_ts(data.get("to"), "to")
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400, fields=["from", "to"])
+            return json_response(body, status)
+        if ts_to <= ts_from:
+            body, status = _err("bad_request", "to должно быть позже from", 400, fields=["from", "to"])
+            return json_response(body, status)
+
+        requested_revision = data.get("configuration_revision_id")
+
+        binding_repo = _binding_repo()
+        aggregates_repo = _aggregates_repo()
+        source_repo = _source_repo()
+        edge_repo = _edge_repo()
+        node_repo = _node_repo()
+        group_repo = _group_repo_v2()
+
+        with db.read() as c:
+            if requested_revision is not None:
+                try:
+                    requested_revision = int(requested_revision)
+                except (TypeError, ValueError):
+                    body, status = _err(
+                        "bad_request", "configuration_revision_id должен быть целым числом",
+                        400, fields=["configuration_revision_id"])
+                    return json_response(body, status)
+                if not revision_exists(c, requested_revision):
+                    body, status = _err(
+                        "not_found", f"Ревизия конфигурации {requested_revision} не найдена",
+                        404, ids=[requested_revision])
+                    return json_response(body, status)
+                pinned_revision = requested_revision
+            else:
+                pinned_revision = current_revision_id(c)
+
+            try:
+                input_point_ids = _resolve_object_input_point_ids(node_repo, edge_repo)
+                object_total = None
+                object_total_unavailable_reason = None
+                if not input_point_ids:
+                    # §8.2: "Без назначенного ввода показывать действие
+                    # 'Настроить границу объекта', а не ложное число" —
+                    # никакой суммы всех счётчиков вместо этого.
+                    object_total_unavailable_reason = "no_input_assigned"
+                else:
+                    try:
+                        object_total = _tag_result(
+                            sum_points(binding_repo, aggregates_repo, source_repo, edge_repo,
+                                       input_point_ids, ts_from, ts_to, timezone_name),
+                            pinned_revision)
+                    except AccountingConflict as e:
+                        object_total_unavailable_reason = f"input_overlap_conflict: {e}"
+
+                branches = []
+                for g in group_repo.list_children(None):
+                    member_ids = [
+                        m["point_id"] for m in
+                        group_repo.resolve_effective_members(g.id)
+                    ]
+                    branch = _overview_branch_result(
+                        member_ids, binding_repo, aggregates_repo, source_repo, edge_repo,
+                        ts_from, ts_to, timezone_name)
+                    entry = {
+                        "group_id": g.id, "name": g.name, "category": g.category,
+                        "member_point_ids": member_ids,
+                        "mode": branch["mode"],
+                        "conflict_reason": branch["conflict_reason"],
+                    }
+                    if branch["mode"] == "sum":
+                        result = branch["result"]
+                        if result is not None:
+                            _tag_result(result, pinned_revision)
+                            entry["result"] = result.to_dict()
+                            pct, pct_reason = resolve_percentage(
+                                result.value,
+                                object_total.value if object_total is not None else None)
+                            entry["percentage_of_object"] = pct
+                            entry["percentage_of_object_reason"] = pct_reason
+                        else:
+                            entry["result"] = None
+                            entry["percentage_of_object"] = None
+                            entry["percentage_of_object_reason"] = "no_data"
+                    else:
+                        entry["points"] = {
+                            str(pid): _tag_result(r, pinned_revision).to_dict()
+                            for pid, r in branch["result"].items()
+                        }
+                    branches.append(entry)
+
+                # §8.2: "Небаланс — отдельной строкой, знак сохраняется".
+                # Считается только если известны и итог объекта, и ВСЕ
+                # ветви режима sum с числовым result.value; иначе
+                # неизвестен целиком (не подменяется нулём/частичной
+                # суммой — тот же инвариант A08/A09, что и в balance()).
+                imbalance_value = None
+                if (object_total is not None and object_total.value is not None
+                        and all(b["mode"] == "sum" and b.get("result") is not None
+                                and b["result"]["value"] is not None for b in branches)):
+                    branches_sum = sum(b["result"]["value"] for b in branches)
+                    imbalance_value = round(object_total.value - branches_sum, 6)
+
+                ungrouped_ids = None
+                if object_total is not None or branches:
+                    grouped = set()
+                    for b in branches:
+                        grouped.update(b["member_point_ids"])
+                    all_ids = {p.id for p in _point_repo().list_all(include_archived=False)}
+                    ungrouped_ids = sorted(all_ids - grouped)
+
+            except ContractViolation as e:
+                log.exception("ContractViolation при overview/summary: %s", e)
+                body, status = _err("internal", "внутренняя ошибка формирования результата", 500)
+                return json_response(body, status)
+            except ValueError as e:
+                body, status = _err("bad_request", str(e), 400)
+                return json_response(body, status)
+
+        return json_response({
+            "configuration_revision_id": pinned_revision,
+            "as_of": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "period": {"from": str(ts_from), "to": str(ts_to), "timezone": timezone_name},
+            "object_input_point_ids": input_point_ids,
+            "object_total": object_total.to_dict() if object_total is not None else None,
+            "object_total_unavailable_reason": object_total_unavailable_reason,
+            "imbalance_value": imbalance_value,
+            "branches": branches,
+            "ungrouped_point_ids": ungrouped_ids,
         })
 
     # -------------------------------------------------------------- plans

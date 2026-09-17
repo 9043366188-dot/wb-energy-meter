@@ -136,6 +136,9 @@ jobs:
       - name: "Run unit tests (v2: протокол ревизий, партия 2)"
         run: python tests/test_step26_revision_protocol.py
 
+      - name: "Run unit tests (v2: сводка Обзора, партия 2)"
+        run: python tests/test_step27_overview_summary.py
+
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
 
@@ -215,6 +218,7 @@ jobs:
           python tests/test_step24_group_repo_v2.py
           python tests/test_step25_api_v2_groups.py
           python tests/test_step26_revision_protocol.py
+          python tests/test_step27_overview_summary.py
 
   lint:
     name: Basic checks
