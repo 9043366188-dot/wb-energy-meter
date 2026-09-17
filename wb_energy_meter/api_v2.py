@@ -64,6 +64,10 @@ from .plan_service_v2 import (
 )
 from .legacy_migration import migrate_meters_and_groups
 from .group_repo_v2 import GroupRepoV2
+from .revision_service import (
+    RevisionConflict as GlobalRevisionConflict, with_revision_check, bump_revision,
+    current_revision_id, check_expected_revision, create_revision, revision_exists,
+)
 from dataclasses import asdict as _dataclass_asdict
 
 log = logging.getLogger(__name__)
@@ -179,6 +183,24 @@ def register_v2_routes(app, state, json_response):
             return None, json_response(body, status)
         return plan, None
 
+    def _revision_conflict(e, ids=None):
+        """§9.2/§6.1 (партия 2, задача 1): единый 409 для устаревшей/
+        отсутствующей expected_revision — см. revision_service.py."""
+        body, status = _err("revision_conflict", str(e), 409, ids=ids,
+                             fields=["expected_revision"])
+        return json_response(body, status)
+
+    # ------------------------------------------------------- revision (partия 2)
+
+    @app.route("/api/v2/revision", methods=["GET"])
+    def v2_revision():
+        """Текущая глобальная ревизия конфигурации — точка отсчёта для
+        expected_revision в последующей записи (ТЗ §6.1/§9.2). 0, если в
+        этой БД ещё не было ни одной защищённой предметной транзакции."""
+        with db.read() as c:
+            rev = current_revision_id(c)
+        return json_response({"configuration_revision": rev})
+
     # ------------------------------------------------------------ points
 
     @app.route("/api/v2/points", methods=["GET", "POST"])
@@ -191,16 +213,21 @@ def register_v2_routes(app, state, json_response):
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
         try:
-            p = repo.add(
-                code=data.get("code"), name=data.get("name"),
-                description=data.get("description"),
-                installation_location_id=data.get("installation_location_id"),
-                installation_note=data.get("installation_note"),
-            )
+            p, new_rev = bump_revision(
+                db,
+                lambda: repo.add(
+                    code=data.get("code"), name=data.get("name"),
+                    description=data.get("description"),
+                    installation_location_id=data.get("installation_location_id"),
+                    installation_note=data.get("installation_note"),
+                ),
+                touched=[("metering_point", "new")])
         except ValueError as e:
             body, status = _err("bad_request", str(e), 400, fields=["code", "name"])
             return json_response(body, status)
-        return json_response(_point_to_dict(p), 201)
+        out = _point_to_dict(p)
+        out["configuration_revision"] = new_rev
+        return json_response(out, 201)
 
     @app.route("/api/v2/points/<int:point_id>", methods=["GET", "PATCH"])
     def v2_point_detail(point_id):
@@ -214,20 +241,32 @@ def register_v2_routes(app, state, json_response):
             return json_response(_point_to_dict(p))
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
-        try:
+
+        def _mutate():
+            result = p
             if "enabled" in data:
-                p = repo.set_enabled(point_id, bool(data["enabled"]))
+                result = repo.set_enabled(point_id, bool(data["enabled"]))
             if "archived" in data and data["archived"]:
-                p = repo.archive(point_id)
+                result = repo.archive(point_id)
             if any(k in data for k in ("name", "description", "installation_note")):
-                p = repo.update_fields(
+                result = repo.update_fields(
                     point_id, name=data.get("name"),
                     description=data.get("description"),
                     installation_note=data.get("installation_note"))
+            return result
+
+        try:
+            _, new_rev = with_revision_check(
+                db, data.get("expected_revision"), _mutate,
+                touched=[("metering_point", point_id)])
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e, ids=[point_id])
         except ValueError as e:
             body, status = _err("bad_request", str(e), 400)
             return json_response(body, status)
-        return json_response(_point_to_dict(repo.get_by_id(point_id)))
+        out = _point_to_dict(repo.get_by_id(point_id))
+        out["configuration_revision"] = new_rev
+        return json_response(out)
 
     @app.route("/api/v2/points/<int:point_id>/bindings", methods=["GET"])
     def v2_point_bindings(point_id):
@@ -258,12 +297,17 @@ def register_v2_routes(app, state, json_response):
 
         bindings = _binding_repo()
         try:
-            new_binding = bindings.replace_meter(
-                point_id, meter_source_id,
-                at=data.get("at"),
-                channel_profile=data.get("channel_profile"),
-                replacement_note=data.get("replacement_note"),
-            )
+            new_binding, new_rev = with_revision_check(
+                db, data.get("expected_revision"),
+                lambda: bindings.replace_meter(
+                    point_id, meter_source_id,
+                    at=data.get("at"),
+                    channel_profile=data.get("channel_profile"),
+                    replacement_note=data.get("replacement_note"),
+                ),
+                touched=[("metering_point", point_id), ("meter_source", meter_source_id)])
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e, ids=[point_id, meter_source_id])
         except BindingConflict as e:
             body, status = _err(
                 "double_counting", str(e), 409, ids=[point_id, meter_source_id])
@@ -271,7 +315,9 @@ def register_v2_routes(app, state, json_response):
         except ValueError as e:
             body, status = _err("bad_request", str(e), 400)
             return json_response(body, status)
-        return json_response(_binding_to_dict(new_binding), 200)
+        out = _binding_to_dict(new_binding)
+        out["configuration_revision"] = new_rev
+        return json_response(out, 200)
 
     # ---------------------------------------------------------- locations
 
@@ -285,15 +331,20 @@ def register_v2_routes(app, state, json_response):
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
         try:
-            l = repo.add(
-                name=data.get("name"), kind=data.get("kind"),
-                parent_id=data.get("parent_id"), code=data.get("code"),
-                sort_order=data.get("sort_order", 0),
-            )
+            l, new_rev = bump_revision(
+                db,
+                lambda: repo.add(
+                    name=data.get("name"), kind=data.get("kind"),
+                    parent_id=data.get("parent_id"), code=data.get("code"),
+                    sort_order=data.get("sort_order", 0),
+                ),
+                touched=[("location", "new")])
         except ValueError as e:
             body, status = _err("bad_request", str(e), 400, fields=["name", "kind"])
             return json_response(body, status)
-        return json_response(_location_to_dict(l), 201)
+        out = _location_to_dict(l)
+        out["configuration_revision"] = new_rev
+        return json_response(out, 201)
 
     @app.route("/api/v2/locations/<int:location_id>", methods=["GET", "PATCH"])
     def v2_location_detail(location_id):
@@ -307,17 +358,29 @@ def register_v2_routes(app, state, json_response):
             return json_response(_location_to_dict(l))
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
-        try:
+
+        def _mutate():
+            result = l
             if "parent_id" in data:
-                l = repo.set_parent(location_id, data["parent_id"])
+                result = repo.set_parent(location_id, data["parent_id"])
             if data.get("archived"):
-                l = repo.archive(location_id)
+                result = repo.archive(location_id)
+            return result
+
+        try:
+            _, new_rev = with_revision_check(
+                db, data.get("expected_revision"), _mutate,
+                touched=[("location", location_id)])
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e, ids=[location_id])
         except ValueError as e:
             code = "cycle_conflict" if "цикл" in str(e).lower() else "bad_request"
             status = 409 if code == "cycle_conflict" else 400
             body, status2 = _err(code, str(e), status, ids=[location_id])
             return json_response(body, status2)
-        return json_response(_location_to_dict(repo.get_by_id(location_id)))
+        out = _location_to_dict(repo.get_by_id(location_id))
+        out["configuration_revision"] = new_rev
+        return json_response(out)
 
     # -------------------------------------------------------------- groups
     # ТЗ §4.4 — см. group_repo_v2.GroupRepoV2 для правил (категория,
@@ -346,10 +409,13 @@ def register_v2_routes(app, state, json_response):
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
         try:
-            g = repo.add(
-                name=data.get("name"), category=data.get("category"),
-                parent_id=data.get("parent_id"), color=data.get("color"),
-            )
+            g, new_rev = bump_revision(
+                db,
+                lambda: repo.add(
+                    name=data.get("name"), category=data.get("category"),
+                    parent_id=data.get("parent_id"), color=data.get("color"),
+                ),
+                touched=[("group", "new")])
         except ValueError as e:
             msg = str(e).lower()
             if "цикл" in msg:
@@ -360,7 +426,9 @@ def register_v2_routes(app, state, json_response):
                 code, status = "bad_request", 400
             body, status2 = _err(code, str(e), status, fields=["name", "parent_id"])
             return json_response(body, status2)
-        return json_response(_group_to_dict(g), 201)
+        out = _group_to_dict(g)
+        out["configuration_revision"] = new_rev
+        return json_response(out, 201)
 
     @app.route("/api/v2/groups/<int:group_id>", methods=["GET", "PATCH"])
     def v2_group_detail(group_id):
@@ -374,9 +442,19 @@ def register_v2_routes(app, state, json_response):
             return json_response(_group_to_dict(g))
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
-        try:
+
+        def _mutate():
+            result = g
             if "parent_id" in data:
-                g = repo.set_parent(group_id, data["parent_id"])
+                result = repo.set_parent(group_id, data["parent_id"])
+            return result
+
+        try:
+            _, new_rev = with_revision_check(
+                db, data.get("expected_revision"), _mutate,
+                touched=[("group", group_id)])
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e, ids=[group_id])
         except ValueError as e:
             msg = str(e).lower()
             if "цикл" in msg:
@@ -387,7 +465,9 @@ def register_v2_routes(app, state, json_response):
                 code, status = "bad_request", 400
             body, status2 = _err(code, str(e), status, ids=[group_id])
             return json_response(body, status2)
-        return json_response(_group_to_dict(repo.get_by_id(group_id)))
+        out = _group_to_dict(repo.get_by_id(group_id))
+        out["configuration_revision"] = new_rev
+        return json_response(out)
 
     @app.route("/api/v2/groups/<int:group_id>/members", methods=["GET", "POST"])
     def v2_group_members(group_id):
@@ -407,7 +487,12 @@ def register_v2_routes(app, state, json_response):
             body, status = _err("bad_request", "требуется point_id", 400, fields=["point_id"])
             return json_response(body, status)
         try:
-            m = repo.add_member(group_id, point_id, valid_from=data.get("valid_from"))
+            m, new_rev = with_revision_check(
+                db, data.get("expected_revision"),
+                lambda: repo.add_member(group_id, point_id, valid_from=data.get("valid_from")),
+                touched=[("group", group_id), ("metering_point", point_id)])
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e, ids=[group_id, point_id])
         except ValueError as e:
             msg = str(e).lower()
             if "не найд" in msg:
@@ -418,7 +503,9 @@ def register_v2_routes(app, state, json_response):
                 code, status = "bad_request", 400
             body, status2 = _err(code, str(e), status, ids=[group_id, point_id])
             return json_response(body, status2)
-        return json_response(_membership_to_dict(m), 201)
+        out = _membership_to_dict(m)
+        out["configuration_revision"] = new_rev
+        return json_response(out, 201)
 
     @app.route("/api/v2/groups/<int:group_id>/members/<int:point_id>", methods=["DELETE"])
     def v2_group_member_detail(group_id, point_id):
@@ -433,15 +520,24 @@ def register_v2_routes(app, state, json_response):
                     "bad_request", "at должен быть unix-временем (целое число секунд)",
                     400, fields=["at"])
                 return json_response(body, status)
+        # DELETE обычно без тела — expected_revision принимается и из
+        # query-параметра (как "at" выше), и из JSON-тела, если он есть.
+        body_data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        expected_revision = request.args.get("expected_revision", body_data.get("expected_revision"))
         try:
-            repo.remove_member(group_id, point_id, at=at)
+            _, new_rev = with_revision_check(
+                db, expected_revision,
+                lambda: repo.remove_member(group_id, point_id, at=at),
+                touched=[("group", group_id), ("metering_point", point_id)])
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e, ids=[group_id, point_id])
         except ValueError as e:
             msg = str(e).lower()
             code = "not_found" if "не найд" in msg or "не состоит" in msg else "bad_request"
             status = 404 if code == "not_found" else 400
             body, status2 = _err(code, str(e), status, ids=[group_id, point_id])
             return json_response(body, status2)
-        return ("", 204)
+        return ("", 204, {"X-Configuration-Revision": str(new_rev)})
 
     @app.route("/api/v2/groups/<int:group_id>/effective-members", methods=["GET"])
     def v2_group_effective_members(group_id):
@@ -502,14 +598,19 @@ def register_v2_routes(app, state, json_response):
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
         try:
-            n = repo.add(
-                code=data.get("code"), name=data.get("name"),
-                kind=data.get("kind"), location_id=data.get("location_id"),
-            )
+            n, new_rev = bump_revision(
+                db,
+                lambda: repo.add(
+                    code=data.get("code"), name=data.get("name"),
+                    kind=data.get("kind"), location_id=data.get("location_id"),
+                ),
+                touched=[("electrical_node", "new")])
         except ValueError as e:
             body, status = _err("bad_request", str(e), 400, fields=["code", "name", "kind"])
             return json_response(body, status)
-        return json_response(_node_to_dict(n), 201)
+        out = _node_to_dict(n)
+        out["configuration_revision"] = new_rev
+        return json_response(out, 201)
 
     @app.route("/api/v2/topology/nodes/<int:node_id>", methods=["GET", "PATCH"])
     def v2_topology_node_detail(node_id):
@@ -524,10 +625,18 @@ def register_v2_routes(app, state, json_response):
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
         if data.get("archived"):
             try:
-                n = repo.archive(node_id)
+                _, new_rev = with_revision_check(
+                    db, data.get("expected_revision"),
+                    lambda: repo.archive(node_id),
+                    touched=[("electrical_node", node_id)])
+            except GlobalRevisionConflict as e:
+                return _revision_conflict(e, ids=[node_id])
             except ValueError as e:
                 body, status = _err("conflict", str(e), 409, ids=[node_id])
                 return json_response(body, status)
+            out = _node_to_dict(repo.get_by_id(node_id))
+            out["configuration_revision"] = new_rev
+            return json_response(out)
         return json_response(_node_to_dict(repo.get_by_id(node_id)))
 
     @app.route("/api/v2/topology/edges", methods=["GET", "POST"])
@@ -543,20 +652,25 @@ def register_v2_routes(app, state, json_response):
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
         try:
-            e = repo.add_draft(
-                from_node_id=data.get("from_node_id"),
-                to_node_id=data.get("to_node_id"),
-                code=data.get("code"), name=data.get("name"),
-                primary_point_id=data.get("primary_point_id"),
-                phase_count=data.get("phase_count"),
-                rated_current_a=data.get("rated_current_a"),
-                cable_note=data.get("cable_note"),
-            )
+            e, new_rev = bump_revision(
+                db,
+                lambda: repo.add_draft(
+                    from_node_id=data.get("from_node_id"),
+                    to_node_id=data.get("to_node_id"),
+                    code=data.get("code"), name=data.get("name"),
+                    primary_point_id=data.get("primary_point_id"),
+                    phase_count=data.get("phase_count"),
+                    rated_current_a=data.get("rated_current_a"),
+                    cable_note=data.get("cable_note"),
+                ),
+                touched=[("electrical_edge", "new")])
         except ValueError as e2:
             body, status = _err(
                 "bad_request", str(e2), 400, fields=["from_node_id", "to_node_id"])
             return json_response(body, status)
-        return json_response(_edge_to_dict(e), 201)
+        out = _edge_to_dict(e)
+        out["configuration_revision"] = new_rev
+        return json_response(out, 201)
 
     @app.route("/api/v2/topology/edges/<int:edge_id>", methods=["GET", "PATCH"])
     def v2_topology_edge_detail(edge_id):
@@ -571,10 +685,18 @@ def register_v2_routes(app, state, json_response):
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
         if data.get("retire"):
             try:
-                e = repo.retire_edge(edge_id, at=data.get("at"))
+                _, new_rev = with_revision_check(
+                    db, data.get("expected_revision"),
+                    lambda: repo.retire_edge(edge_id, at=data.get("at")),
+                    touched=[("electrical_edge", edge_id)])
+            except GlobalRevisionConflict as e2:
+                return _revision_conflict(e2, ids=[edge_id])
             except ValueError as e2:
                 body, status = _err("bad_request", str(e2), 400, ids=[edge_id])
                 return json_response(body, status)
+            out = _edge_to_dict(repo.get_by_id(edge_id))
+            out["configuration_revision"] = new_rev
+            return json_response(out)
         return json_response(_edge_to_dict(repo.get_by_id(edge_id)))
 
     def _violations_to_json(violations):
@@ -600,18 +722,29 @@ def register_v2_routes(app, state, json_response):
     @app.route("/api/v2/topology/publish", methods=["POST"])
     def v2_topology_publish():
         """§9.2: "Публикация сети принимает draft_id, expected_configuration_
-        revision, effective_from". draft_id здесь — edge_ids (список ID
-        черновиков), проверка expected_configuration_revision не
-        реализована (см. модульный docstring)."""
+        revision, effective_from" — партия 2, задача 1: реализовано.
+        draft_id здесь — edge_ids (список ID черновиков).
+        expected_configuration_revision обязателен — устаревшая/
+        отсутствующая ревизия отклоняется 409 ДО публикации (топология не
+        меняется, см. RevisionConflict)."""
         data = request.get_json(silent=True) or {}
         edge_ids = data.get("edge_ids") or data.get("draft_id") or []
         if isinstance(edge_ids, int):
             edge_ids = [edge_ids]
         effective_from = data.get("effective_from")
+        expected_revision = data.get("expected_configuration_revision")
 
         repo = _edge_repo()
         try:
-            published = repo.publish_edges(edge_ids, at=effective_from)
+            published, new_rev = with_revision_check(
+                db, expected_revision,
+                lambda: repo.publish_edges(edge_ids, at=effective_from),
+                touched=[("electrical_edge", eid) for eid in edge_ids])
+        except GlobalRevisionConflict as e:
+            body, status = _err(
+                "revision_conflict", str(e), 409,
+                fields=["expected_configuration_revision"])
+            return json_response(body, status)
         except TopologyConflict as e:
             violations = repo.validate_edges(edge_ids) if edge_ids else []
             body, status = _err(
@@ -621,7 +754,9 @@ def register_v2_routes(app, state, json_response):
         except ValueError as e:
             body, status = _err("bad_request", str(e), 400)
             return json_response(body, status)
-        return json_response({"edges": [_edge_to_dict(e) for e in published]}, 200)
+        return json_response(
+            {"edges": [_edge_to_dict(e) for e in published],
+             "configuration_revision": new_rev}, 200)
 
     # ----------------------------------------------------- balance-scopes
 
@@ -655,9 +790,13 @@ def register_v2_routes(app, state, json_response):
                 c.execute(
                     "INSERT INTO balance_members (scope_id, point_id, side, valid_from, created_at) "
                     "VALUES (?, ?, 'output', ?, ?)", (scope_id, pid, now, now))
+            new_rev = create_revision(c, db.current_schema_version(),
+                                       touched=[("balance_scope", "new")])
         with db.read() as c:
             row = c.execute("SELECT * FROM balance_scopes WHERE id = ?", (scope_id,)).fetchone()
-        return json_response(dict(row), 201)
+        out = dict(row)
+        out["configuration_revision"] = new_rev
+        return json_response(out, 201)
 
     @app.route("/api/v2/balance-scopes/<int:scope_id>", methods=["GET", "PATCH"])
     def v2_balance_scope_detail(scope_id):
@@ -683,34 +822,42 @@ def register_v2_routes(app, state, json_response):
         # (тот же принцип, что и в других *_bindings таблицах этапа B).
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
         now = int(time.time())
-        with db.transaction() as c:
-            current = c.execute(
-                "SELECT * FROM balance_members WHERE scope_id = ? AND valid_to IS NULL",
-                (scope_id,)).fetchall()
-            wanted = []
-            if "input_point_ids" in data:
-                wanted += [(pid, "input") for pid in data["input_point_ids"]]
-            if "output_point_ids" in data:
-                wanted += [(pid, "output") for pid in data["output_point_ids"]]
-            wanted_set = set(wanted)
-            current_set = {(m["point_id"], m["side"]) for m in current}
+        try:
+            with db.transaction() as c:
+                check_expected_revision(c, data.get("expected_revision"))
 
-            if "input_point_ids" in data or "output_point_ids" in data:
-                for m in current:
-                    if (m["point_id"], m["side"]) not in wanted_set:
+                current = c.execute(
+                    "SELECT * FROM balance_members WHERE scope_id = ? AND valid_to IS NULL",
+                    (scope_id,)).fetchall()
+                wanted = []
+                if "input_point_ids" in data:
+                    wanted += [(pid, "input") for pid in data["input_point_ids"]]
+                if "output_point_ids" in data:
+                    wanted += [(pid, "output") for pid in data["output_point_ids"]]
+                wanted_set = set(wanted)
+                current_set = {(m["point_id"], m["side"]) for m in current}
+
+                if "input_point_ids" in data or "output_point_ids" in data:
+                    for m in current:
+                        if (m["point_id"], m["side"]) not in wanted_set:
+                            c.execute(
+                                "UPDATE balance_members SET valid_to = ? WHERE id = ?",
+                                (now, m["id"]))
+                    for pid, side in wanted_set - current_set:
                         c.execute(
-                            "UPDATE balance_members SET valid_to = ? WHERE id = ?",
-                            (now, m["id"]))
-                for pid, side in wanted_set - current_set:
+                            "INSERT INTO balance_members "
+                            "(scope_id, point_id, side, valid_from, created_at) "
+                            "VALUES (?, ?, ?, ?, ?)", (scope_id, pid, side, now, now))
+                if "name" in data or "description" in data:
                     c.execute(
-                        "INSERT INTO balance_members "
-                        "(scope_id, point_id, side, valid_from, created_at) "
-                        "VALUES (?, ?, ?, ?, ?)", (scope_id, pid, side, now, now))
-            if "name" in data or "description" in data:
-                c.execute(
-                    "UPDATE balance_scopes SET name = COALESCE(?, name), "
-                    "description = COALESCE(?, description), updated_at = ? WHERE id = ?",
-                    (data.get("name"), data.get("description"), now, scope_id))
+                        "UPDATE balance_scopes SET name = COALESCE(?, name), "
+                        "description = COALESCE(?, description), updated_at = ? WHERE id = ?",
+                        (data.get("name"), data.get("description"), now, scope_id))
+
+                new_rev = create_revision(c, db.current_schema_version(),
+                                           touched=[("balance_scope", scope_id)])
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e, ids=[scope_id])
 
         with db.read() as c:
             row2 = c.execute("SELECT * FROM balance_scopes WHERE id = ?", (scope_id,)).fetchone()
@@ -720,6 +867,7 @@ def register_v2_routes(app, state, json_response):
         d = dict(row2)
         d["input_point_ids"] = [m["point_id"] for m in members2 if m["side"] == "input"]
         d["output_point_ids"] = [m["point_id"] for m in members2 if m["side"] == "output"]
+        d["configuration_revision"] = new_rev
         return json_response(d)
 
     # -------------------------------------------------------- metrics/query
@@ -734,11 +882,31 @@ def register_v2_routes(app, state, json_response):
                 pass
         raise ValueError(f"поле {field_name} должно быть unix-временем или датой")
 
+    def _tag_result(result, revision_id):
+        """Партия 2, задача 1 (A43): проставляет ревизию/as_of, зафиксированные
+        ОДИН раз в начале запроса (см. v2_metrics_query), на готовый
+        MetricResult — контракт (accounting_contract.py) уже несёт эти поля,
+        считать их должен вызывающий HTTP-слой, а не сам расчётный сервис."""
+        result.configuration_revision_id = revision_id
+        result.configuration_revision_ids = [revision_id]
+        result.as_of = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        return result
+
     @app.route("/api/v2/metrics/query", methods=["POST"])
     def v2_metrics_query():
+        """A43 (ТЗ §13/§6.1, партия 2 задача 1): "внутри запроса один снимок,
+        даже если внутри несколько обращений к репозиториям". Реализовано
+        через ОДИН внешний `with db.read()` на весь расчёт (не по одному на
+        репозиторий, как раньше) — `Database` в этом проекте держит
+        единственное соединение под общим `threading.RLock()`
+        (см. db.py), поэтому пока этот блок не завершится, ни одна
+        конкурентная запись (`db.transaction()`, та же блокировка) не
+        может вклиниться между двумя внутренними чтениями расчёта; ревизия
+        фиксируется первой инструкцией внутри блока и используется на всё
+        время вычисления."""
         data = request.get_json(silent=True) or {}
         mode = data.get("mode")
-        timezone = data.get("timezone", "UTC")
+        timezone_name = data.get("timezone", "UTC")
 
         try:
             ts_from = _parse_ts(data.get("from"), "from")
@@ -751,73 +919,99 @@ def register_v2_routes(app, state, json_response):
             body, status = _err("bad_request", "to должно быть позже from", 400, fields=["from", "to"])
             return json_response(body, status)
 
+        requested_revision = data.get("configuration_revision_id")
+
         binding_repo = _binding_repo()
         aggregates_repo = _aggregates_repo()
         source_repo = _source_repo()
         edge_repo = _edge_repo()
 
-        try:
-            if mode == "measured":
-                point_ids = data.get("point_ids") or []
-                if len(point_ids) != 1:
+        # A43: держим ОДИН read-контекст (== одну блокировку) на весь
+        # расчёт, а не по одному на repo-вызов внутри measured/sum/balance —
+        # см. докстринг метода.
+        with db.read() as c:
+            if requested_revision is not None:
+                try:
+                    requested_revision = int(requested_revision)
+                except (TypeError, ValueError):
                     body, status = _err(
-                        "bad_request", "measured требует ровно один point_ids", 400,
-                        fields=["point_ids"])
+                        "bad_request", "configuration_revision_id должен быть целым числом",
+                        400, fields=["configuration_revision_id"])
                     return json_response(body, status)
-                result = measured_point(binding_repo, aggregates_repo, source_repo,
-                                         point_ids[0], ts_from, ts_to, timezone)
-                return json_response(result.to_dict())
-
-            elif mode == "sum":
-                point_ids = data.get("point_ids") or []
-                if not point_ids:
-                    body, status = _err("bad_request", "sum требует point_ids", 400,
-                                         fields=["point_ids"])
+                if not revision_exists(c, requested_revision):
+                    body, status = _err(
+                        "not_found", f"Ревизия конфигурации {requested_revision} не найдена",
+                        404, ids=[requested_revision])
                     return json_response(body, status)
-                result = sum_points(binding_repo, aggregates_repo, source_repo, edge_repo,
-                                     point_ids, ts_from, ts_to, timezone)
-                return json_response(result.to_dict())
-
-            elif mode == "balance":
-                scope_id = data.get("scope")
-                if scope_id is None:
-                    body, status = _err("bad_request", "balance требует scope (id границы)",
-                                         400, fields=["scope"])
-                    return json_response(body, status)
-                result = balance(db, binding_repo, aggregates_repo, source_repo, edge_repo,
-                                  scope_id, ts_from, ts_to, timezone)
-                return json_response(result.to_dict())
-
-            elif mode == "comparison":
-                point_ids = data.get("point_ids") or []
-                if not point_ids:
-                    body, status = _err("bad_request", "comparison требует point_ids", 400,
-                                         fields=["point_ids"])
-                    return json_response(body, status)
-                results = comparison(binding_repo, aggregates_repo, source_repo,
-                                      point_ids, ts_from, ts_to, timezone)
-                return json_response({str(pid): r.to_dict() for pid, r in results.items()})
-
+                pinned_revision = requested_revision
             else:
-                body, status = _err(
-                    "bad_request",
-                    f"неизвестный mode={mode!r}, допустимые: measured|sum|balance|comparison",
-                    400, fields=["mode"])
-                return json_response(body, status)
+                pinned_revision = current_revision_id(c)
 
-        except AccountingConflict as e:
-            body, status = _err("double_counting", str(e), 409)
-            return json_response(body, status)
-        except ContractViolation as e:
-            # не должно происходить при корректном коде сервиса — если
-            # случилось, это внутренняя ошибка формирования результата,
-            # не ошибка запроса клиента.
-            log.exception("ContractViolation при metrics/query: %s", e)
-            body, status = _err("internal", "внутренняя ошибка формирования результата", 500)
-            return json_response(body, status)
-        except ValueError as e:
-            body, status = _err("bad_request", str(e), 400)
-            return json_response(body, status)
+            try:
+                if mode == "measured":
+                    point_ids = data.get("point_ids") or []
+                    if len(point_ids) != 1:
+                        body, status = _err(
+                            "bad_request", "measured требует ровно один point_ids", 400,
+                            fields=["point_ids"])
+                        return json_response(body, status)
+                    result = measured_point(binding_repo, aggregates_repo, source_repo,
+                                             point_ids[0], ts_from, ts_to, timezone_name)
+                    return json_response(_tag_result(result, pinned_revision).to_dict())
+
+                elif mode == "sum":
+                    point_ids = data.get("point_ids") or []
+                    if not point_ids:
+                        body, status = _err("bad_request", "sum требует point_ids", 400,
+                                             fields=["point_ids"])
+                        return json_response(body, status)
+                    result = sum_points(binding_repo, aggregates_repo, source_repo, edge_repo,
+                                         point_ids, ts_from, ts_to, timezone_name)
+                    return json_response(_tag_result(result, pinned_revision).to_dict())
+
+                elif mode == "balance":
+                    scope_id = data.get("scope")
+                    if scope_id is None:
+                        body, status = _err("bad_request", "balance требует scope (id границы)",
+                                             400, fields=["scope"])
+                        return json_response(body, status)
+                    result = balance(db, binding_repo, aggregates_repo, source_repo, edge_repo,
+                                      scope_id, ts_from, ts_to, timezone_name)
+                    return json_response(_tag_result(result, pinned_revision).to_dict())
+
+                elif mode == "comparison":
+                    point_ids = data.get("point_ids") or []
+                    if not point_ids:
+                        body, status = _err("bad_request", "comparison требует point_ids", 400,
+                                             fields=["point_ids"])
+                        return json_response(body, status)
+                    results = comparison(binding_repo, aggregates_repo, source_repo,
+                                          point_ids, ts_from, ts_to, timezone_name)
+                    return json_response({
+                        str(pid): _tag_result(r, pinned_revision).to_dict()
+                        for pid, r in results.items()
+                    })
+
+                else:
+                    body, status = _err(
+                        "bad_request",
+                        f"неизвестный mode={mode!r}, допустимые: measured|sum|balance|comparison",
+                        400, fields=["mode"])
+                    return json_response(body, status)
+
+            except AccountingConflict as e:
+                body, status = _err("double_counting", str(e), 409)
+                return json_response(body, status)
+            except ContractViolation as e:
+                # не должно происходить при корректном коде сервиса — если
+                # случилось, это внутренняя ошибка формирования результата,
+                # не ошибка запроса клиента.
+                log.exception("ContractViolation при metrics/query: %s", e)
+                body, status = _err("internal", "внутренняя ошибка формирования результата", 500)
+                return json_response(body, status)
+            except ValueError as e:
+                body, status = _err("bad_request", str(e), 400)
+                return json_response(body, status)
 
     # ----------------------------------------------------------- snapshot
     # Этап E (ТЗ §8.2 «Обзор», §9.2/§10): пакет ТЕКУЩИХ значений для

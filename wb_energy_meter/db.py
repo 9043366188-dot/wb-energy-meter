@@ -145,14 +145,34 @@ class Database:
 
     @contextmanager
     def transaction(self):
+        """Атомарная транзакция записи. Реентрантна в пределах одного потока:
+        вложенный `with db.transaction()` (например репозиторий, вызванный
+        изнутри сервиса ревизий — см. revision_service.py) присоединяется к
+        уже открытой транзакции вместо попытки открыть вторую (SQLite не
+        допускает вложенный BEGIN на одном соединении) — BEGIN/COMMIT/ROLLBACK
+        выполняет только самый внешний вызов. Это то, что позволяет
+        revision_service.with_revision_check() держать проверку
+        expected_revision, доменную запись и создание новой
+        configuration_revisions СТРОГО в одной транзакции (ТЗ §6.1:
+        "закрытие старой версии и создание новой выполняются в одной
+        транзакции под блокировкой записи"), не трогая сами репозитории."""
         with self._lock:
             c = self.conn()
-            c.execute("BEGIN")
-            try: yield c
+            depth = getattr(self, "_txn_depth", 0)
+            if depth == 0:
+                c.execute("BEGIN")
+            self._txn_depth = depth + 1
+            try:
+                yield c
             except Exception:
-                c.execute("ROLLBACK"); raise
+                self._txn_depth = depth
+                if depth == 0:
+                    c.execute("ROLLBACK")
+                raise
             else:
-                c.execute("COMMIT")
+                self._txn_depth = depth
+                if depth == 0:
+                    c.execute("COMMIT")
 
     @contextmanager
     def read(self):

@@ -28,6 +28,14 @@ from wb_energy_meter.aggregates_repo import AggregateRepo, HourlyAggregate
 HOUR = 3600
 
 
+def current_rev(client):
+    """Партия 2, задача 1 (ТЗ §6.1/§9.2): текущая глобальная ревизия
+    конфигурации — точка отсчёта для expected_revision в PATCH/публикации."""
+    r = client.get("/api/v2/revision")
+    assert r.status_code == 200, r.get_json()
+    return r.get_json()["configuration_revision"]
+
+
 def make_client():
     fd, path = tempfile.mkstemp(suffix=".sqlite3")
     os.close(fd)
@@ -62,8 +70,10 @@ def test_points_crud():
         r = client.get("/api/v2/points")
         assert r.status_code == 200 and len(r.get_json()) == 1
 
-        r = client.patch(f"/api/v2/points/{point_id}", json={"enabled": False})
+        r = client.patch(f"/api/v2/points/{point_id}",
+                          json={"enabled": False, "expected_revision": current_rev(client)})
         assert r.status_code == 200 and r.get_json()["enabled"] is False
+        assert isinstance(r.get_json()["configuration_revision"], int)
 
         r = client.get("/api/v2/points/999999")
         assert r.status_code == 404
@@ -85,7 +95,8 @@ def test_locations_crud_and_cycle_409():
                                                      "parent_id": a_id})
         b_id = r.get_json()["id"]
 
-        r = client.patch(f"/api/v2/locations/{a_id}", json={"parent_id": b_id})
+        r = client.patch(f"/api/v2/locations/{a_id}",
+                          json={"parent_id": b_id, "expected_revision": current_rev(client)})
         assert r.status_code == 409, r.get_json()
         assert r.get_json()["code"] == "cycle_conflict"
         print("[OK] locations: перенос в собственного потомка -> 409 cycle_conflict")
@@ -118,7 +129,8 @@ def test_topology_publish_cycle_409_and_structure_unchanged():
         assert any(v["kind"] == "cycle" for v in body["violations"])
 
         r = client.post("/api/v2/topology/publish",
-                         json={"edge_ids": [e1["id"], e2["id"], e3["id"]]})
+                         json={"edge_ids": [e1["id"], e2["id"], e3["id"]],
+                               "expected_configuration_revision": current_rev(client)})
         assert r.status_code == 409, r.get_json()
         assert r.get_json()["code"] == "topology_conflict"
         assert "path" in r.get_json()
@@ -129,8 +141,11 @@ def test_topology_publish_cycle_409_and_structure_unchanged():
               "структура не изменилась")
 
         # теперь публикуем валидное дерево A->B, B->C
-        r = client.post("/api/v2/topology/publish", json={"edge_ids": [e1["id"], e2["id"]]})
+        r = client.post("/api/v2/topology/publish",
+                         json={"edge_ids": [e1["id"], e2["id"]],
+                               "expected_configuration_revision": current_rev(client)})
         assert r.status_code == 200, r.get_json()
+        assert isinstance(r.get_json()["configuration_revision"], int)
         r = client.get("/api/v2/topology/edges?state=published")
         assert len(r.get_json()) == 2
         print("[OK] topology/publish валидного набора -> 200, связи активны")
@@ -175,7 +190,9 @@ def test_metrics_query_sum_overlap_409():
         e2 = client.post("/api/v2/topology/edges",
                           json={"from_node_id": nb["id"], "to_node_id": nd["id"],
                                 "primary_point_id": p_d.id}).get_json()
-        r = client.post("/api/v2/topology/publish", json={"edge_ids": [e1["id"], e2["id"]]})
+        r = client.post("/api/v2/topology/publish",
+                         json={"edge_ids": [e1["id"], e2["id"]],
+                               "expected_configuration_revision": current_rev(client)})
         assert r.status_code == 200, r.get_json()
 
         aggregates.upsert(HourlyAggregate(

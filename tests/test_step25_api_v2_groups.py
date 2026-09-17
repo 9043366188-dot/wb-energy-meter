@@ -52,6 +52,14 @@ def add_point(client, code, name):
     return r.get_json()["id"]
 
 
+def current_rev(client):
+    """Партия 2, задача 1 (ТЗ §6.1/§9.2): текущая глобальная ревизия
+    конфигурации — точка отсчёта для expected_revision в PATCH/членстве."""
+    r = client.get("/api/v2/revision")
+    assert r.status_code == 200, r.get_json()
+    return r.get_json()["configuration_revision"]
+
+
 def test_groups_crud_and_list_filters():
     client, db, path = make_client()
     try:
@@ -127,7 +135,8 @@ def test_group_set_parent_cycle_409():
         a = client.post("/api/v2/groups", json={"name": "A"}).get_json()["id"]
         b = client.post("/api/v2/groups", json={"name": "B", "parent_id": a}).get_json()["id"]
 
-        r = client.patch(f"/api/v2/groups/{a}", json={"parent_id": b})
+        r = client.patch(f"/api/v2/groups/{a}",
+                          json={"parent_id": b, "expected_revision": current_rev(client)})
         assert r.status_code == 409, r.get_json()
         assert r.get_json()["code"] == "cycle_conflict"
 
@@ -146,9 +155,11 @@ def test_group_set_parent_success():
         b = client.post("/api/v2/groups", json={"name": "B"}).get_json()["id"]
         c = client.post("/api/v2/groups", json={"name": "C", "parent_id": a}).get_json()["id"]
 
-        r = client.patch(f"/api/v2/groups/{c}", json={"parent_id": b})
+        r = client.patch(f"/api/v2/groups/{c}",
+                          json={"parent_id": b, "expected_revision": current_rev(client)})
         assert r.status_code == 200, r.get_json()
         assert r.get_json()["parent_id"] == b
+        assert isinstance(r.get_json()["configuration_revision"], int)
         print("[OK] test_group_set_parent_success")
     finally:
         db.close(); os.unlink(path)
@@ -167,9 +178,13 @@ def test_group_members_crud():
         # открытии и закрытии в один и тот же реальный момент (та же
         # секунда) она обоснованно откажет, так же как и у
         # PointBindingRepo.close_binding.
-        r = client.post(f"/api/v2/groups/{g}/members", json={"point_id": p1, "valid_from": 1000})
+        r = client.post(f"/api/v2/groups/{g}/members",
+                         json={"point_id": p1, "valid_from": 1000,
+                               "expected_revision": current_rev(client)})
         assert r.status_code == 201, r.get_json()
-        r = client.post(f"/api/v2/groups/{g}/members", json={"point_id": p2, "valid_from": 1000})
+        r = client.post(f"/api/v2/groups/{g}/members",
+                         json={"point_id": p2, "valid_from": 1000,
+                               "expected_revision": current_rev(client)})
         assert r.status_code == 201, r.get_json()
 
         r = client.get(f"/api/v2/groups/{g}/members")
@@ -178,8 +193,10 @@ def test_group_members_crud():
         r = client.get(f"/api/v2/points/{p1}/groups")
         assert [m["group_id"] for m in r.get_json()] == [g]
 
-        r = client.delete(f"/api/v2/groups/{g}/members/{p1}?at=2000")
+        r = client.delete(
+            f"/api/v2/groups/{g}/members/{p1}?at=2000&expected_revision={current_rev(client)}")
         assert r.status_code == 204, r.get_json()
+        assert r.headers.get("X-Configuration-Revision")
 
         r = client.get(f"/api/v2/groups/{g}/members")
         assert {m["point_id"] for m in r.get_json()} == {p2}
@@ -196,9 +213,11 @@ def test_group_member_duplicate_conflict_409():
     try:
         g = client.post("/api/v2/groups", json={"name": "Группа"}).get_json()["id"]
         p1 = add_point(client, "p1", "Точка 1")
-        client.post(f"/api/v2/groups/{g}/members", json={"point_id": p1})
+        client.post(f"/api/v2/groups/{g}/members",
+                    json={"point_id": p1, "expected_revision": current_rev(client)})
 
-        r = client.post(f"/api/v2/groups/{g}/members", json={"point_id": p1})
+        r = client.post(f"/api/v2/groups/{g}/members",
+                         json={"point_id": p1, "expected_revision": current_rev(client)})
         assert r.status_code == 409, r.get_json()
         assert r.get_json()["code"] == "conflict"
         print("[OK] test_group_member_duplicate_conflict_409")
@@ -210,7 +229,8 @@ def test_group_member_missing_point_404():
     client, db, path = make_client()
     try:
         g = client.post("/api/v2/groups", json={"name": "Группа"}).get_json()["id"]
-        r = client.post(f"/api/v2/groups/{g}/members", json={"point_id": 99999})
+        r = client.post(f"/api/v2/groups/{g}/members",
+                         json={"point_id": 99999, "expected_revision": current_rev(client)})
         assert r.status_code == 404, r.get_json()
         assert r.get_json()["code"] == "not_found"
         print("[OK] test_group_member_missing_point_404")
@@ -223,7 +243,8 @@ def test_group_remove_member_without_membership_404():
     try:
         g = client.post("/api/v2/groups", json={"name": "Группа"}).get_json()["id"]
         p1 = add_point(client, "p1", "Точка 1")
-        r = client.delete(f"/api/v2/groups/{g}/members/{p1}")
+        r = client.delete(
+            f"/api/v2/groups/{g}/members/{p1}?expected_revision={current_rev(client)}")
         assert r.status_code == 404, r.get_json()
         print("[OK] test_group_remove_member_without_membership_404")
     finally:
@@ -240,9 +261,12 @@ def test_group_effective_members_dedup_via_http():
         p1 = add_point(client, "p1", "Точка 1")
         p2 = add_point(client, "p2", "Точка 2")
 
-        client.post(f"/api/v2/groups/{root}/members", json={"point_id": p1})
-        client.post(f"/api/v2/groups/{child}/members", json={"point_id": p1})
-        client.post(f"/api/v2/groups/{child}/members", json={"point_id": p2})
+        client.post(f"/api/v2/groups/{root}/members",
+                    json={"point_id": p1, "expected_revision": current_rev(client)})
+        client.post(f"/api/v2/groups/{child}/members",
+                    json={"point_id": p1, "expected_revision": current_rev(client)})
+        client.post(f"/api/v2/groups/{child}/members",
+                    json={"point_id": p2, "expected_revision": current_rev(client)})
 
         r = client.get(f"/api/v2/groups/{root}/effective-members")
         assert r.status_code == 200, r.get_json()
