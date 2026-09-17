@@ -117,6 +117,27 @@ class Database:
     @property
     def path(self): return self._path
 
+    def backup_to(self, dest_path: str) -> None:
+        """Безопасная копия БД через SQLite Online Backup API.
+
+        Используется перед разовыми необратимыми по сути операциями на
+        реальных данных (например migrate_meters_and_groups,
+        legacy_migration.py) — НЕ через shutil.copy2/copyfile: обычное
+        копирование файла поверх WAL-режима (см. `open()`) может
+        захватить несогласованный набор страниц (часть изменений ещё в
+        -wal, а не в основном файле) и дать битую копию. Backup API сам
+        обеспечивает консистентный снимок постранично, не блокируя
+        читателей/писателей на всё время копирования.
+        """
+        with self._lock:
+            dest_dir = os.path.dirname(dest_path)
+            if dest_dir: os.makedirs(dest_dir, exist_ok=True)
+            dest_conn = sqlite3.connect(dest_path)
+            try:
+                self.conn().backup(dest_conn)
+            finally:
+                dest_conn.close()
+
     def conn(self):
         if self._conn is None:
             raise RuntimeError("Database is not opened")

@@ -31,6 +31,8 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from . import domain_generation
+
 log = logging.getLogger(__name__)
 
 VALID_NODE_KINDS = ("source", "panel", "junction", "load")
@@ -263,6 +265,12 @@ class ElectricalNodeRepo:
                     raise ValueError(f"Узел с кодом {code!r} уже существует") from None
                 raise
             node_id = cur.lastrowid
+
+            # docs/migration-plan-v2.md §7 п.2: первая предметная запись
+            # через доменную модель v2 отмечается В ТОЙ ЖЕ транзакции —
+            # см. domain_generation.py. Идемпотентно (не переставляет
+            # маркер на повторных вызовах).
+            domain_generation.mark_v2_domain_write(c)
         return self.get_by_id(node_id)
 
     def archive(self, node_id, at=None):
@@ -375,6 +383,12 @@ class ElectricalEdgeRepo:
                  rated_current_a, cable_note, now, now),
             )
             edge_id = cur.lastrowid
+
+            # docs/migration-plan-v2.md §7 п.2: первая предметная запись
+            # через доменную модель v2 отмечается В ТОЙ ЖЕ транзакции —
+            # см. domain_generation.py. Идемпотентно (не переставляет
+            # маркер на повторных вызовах).
+            domain_generation.mark_v2_domain_write(c)
         return self.get_by_id(edge_id)
 
     def _compute_candidate(self, c, edge_ids):

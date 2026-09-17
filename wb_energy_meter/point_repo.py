@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from . import domain_generation
+
 log = logging.getLogger(__name__)
 
 CODE_MAX_LEN = 64
@@ -293,6 +295,12 @@ class MeteringPointRepo:
                 "VALUES (?, 1, ?, NULL, NULL, ?)",
                 (point_id, now, now)
             )
+
+            # docs/migration-plan-v2.md §7 п.2: первая предметная запись
+            # через доменную модель v2 отмечается В ТОЙ ЖЕ транзакции —
+            # см. domain_generation.py. Идемпотентно (не переставляет
+            # маркер на повторных вызовах).
+            domain_generation.mark_v2_domain_write(c)
 
         log.info("Создана точка учёта: %s (id=%d)", code, point_id)
         return self.get_by_id(point_id)

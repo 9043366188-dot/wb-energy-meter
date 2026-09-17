@@ -49,11 +49,24 @@ STATUS_FILE="${STATUS_FILE:?STATUS_FILE не задан}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/wb-energy-meter}"
 HTTP_PORT="${HTTP_PORT:-8080}"
 
+# docs/migration-plan-v2.md §2/§7: та же конвенция путей, что и
+# scripts/install.sh (DATA_DIR/DB_PATH) — self-update.sh их не задаёт
+# сам, поэтому должен совпадать буква в букву, иначе резервная копия
+# БД будет молча снимать пустое место. Каталог изображений плана —
+# сиблинг state.db (см. wb_energy_meter/plan_repo.py::plans_dir()).
+DATA_DIR="${DATA_DIR:-/mnt/data/var/lib/wb-energy-meter}"
+DB_PATH="${DB_PATH:-$DATA_DIR/state.db}"
+PLANS_DIR="${PLANS_DIR:-$DATA_DIR/plans}"
+
 LOCK_DIR="${LOCK_DIR:-/run/lock}"
 LOCK_FILE="$LOCK_DIR/wb-energy-meter-update.lock"
 LOG_DIR="${LOG_DIR:-/var/log/wb-energy-meter}"
 LOG_FILE="$LOG_DIR/update.log"
 ROLLBACK_DIR="${INSTALL_DIR}.rollback"
+# БД/картинки плана бэкапятся отдельно от кода, но внутри того же
+# каталога — он и так целиком создаётся заново в backup_current() и
+# целиком удаляется при успехе (см. main()), значит и уборка бесплатная.
+DATA_BACKUP_DIR="$ROLLBACK_DIR/_data_backup"
 
 STAGE="init"
 HAVE_LOCK=0
@@ -66,6 +79,11 @@ NEW_VERSION=""
 # а конкретный список файлов, которые не отдались.
 SELFCHECK_STATE=""
 SELFCHECK_DETAILS=""
+# Версия схемы БД ДО этого запуска (backup_data(), до install_new_code())
+# — verify_schema_version() сверяет с версией ПОСЛЕ, миграции необратимы,
+# поэтому "после" меньше "до" может значить только подмену/повреждение
+# БД (docs/migration-plan-v2.md §7 п.5).
+SCHEMA_VERSION_BEFORE=""
 
 # ---------------------------------------------------------------------
 # Утилиты
@@ -264,6 +282,90 @@ backup_current() {
   log_line "Резервная копия рабочего каталога создана: $ROLLBACK_DIR"
 }
 
+# docs/migration-plan-v2.md §2/§7 п.4: state.db бэкапится ЧЕРЕЗ Online
+# Backup API (sqlite3.Connection.backup), НЕ простым cp — простой cp
+# поверх файла, открытого демоном в WAL-режиме, может снять рваный,
+# несогласованный снимок (см. докстринг модуля §2). Сервис на этом шаге
+# ещё работает (его останавливают только install.sh/systemctl stop
+# внутри install_new_code() — до этого момента мы ещё не дошли), поэтому
+# именно Online Backup API, а не файловый cp, здесь обязателен.
+#
+# Зависимостей от пакета wb_energy_meter здесь нет намеренно — та же
+# причина, что у _write_status_py() выше: этот шаг обязан отработать,
+# даже если пакет уже частично удалён install.sh.
+backup_data() {
+  mkdir -p "$DATA_BACKUP_DIR"
+
+  if [[ -f "$DB_PATH" ]]; then
+    SCHEMA_VERSION_BEFORE="$(python3 -c '
+import sqlite3, sys
+try:
+    conn = sqlite3.connect(sys.argv[1])
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type=\"table\" AND name=\"schema_migrations\""
+    ).fetchone()
+    if row is None:
+        print(0)
+    else:
+        row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+        print(row[0] if row and row[0] is not None else 0)
+    conn.close()
+except sqlite3.Error:
+    print(0)
+' "$DB_PATH" 2>>"$LOG_FILE")"
+    if [[ -z "$SCHEMA_VERSION_BEFORE" || ! "$SCHEMA_VERSION_BEFORE" =~ ^[0-9]+$ ]]; then
+      SCHEMA_VERSION_BEFORE=0
+    fi
+    log_line "Версия схемы БД до обновления: $SCHEMA_VERSION_BEFORE"
+
+    if ! python3 -c '
+import os, sqlite3, sys, tempfile
+
+src_path, dst_path = sys.argv[1], sys.argv[2]
+d = os.path.dirname(os.path.abspath(dst_path)) or "."
+os.makedirs(d, exist_ok=True)
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".state-backup-", suffix=".sqlite3")
+os.close(fd)
+os.unlink(tmp)
+try:
+    src = sqlite3.connect(src_path)
+    try:
+        dst = sqlite3.connect(tmp)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    os.replace(tmp, dst_path)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+' "$DB_PATH" "$DATA_BACKUP_DIR/state.db" >>"$LOG_FILE" 2>&1; then
+      log_line "ОШИБКА: не удалось создать резервную копию БД ($DB_PATH -> $DATA_BACKUP_DIR/state.db)"
+      return 1
+    fi
+    log_line "Резервная копия БД создана через Online Backup API: $DATA_BACKUP_DIR/state.db"
+  else
+    SCHEMA_VERSION_BEFORE=0
+    log_line "backup_data: $DB_PATH ещё не существует (первый запуск на этом контроллере до первого старта сервиса) — резервную копию БД пропускаю"
+  fi
+
+  if [[ -d "$PLANS_DIR" ]]; then
+    rm -rf "$DATA_BACKUP_DIR/plans"
+    if ! cp -a "$PLANS_DIR" "$DATA_BACKUP_DIR/plans" 2>>"$LOG_FILE"; then
+      log_line "ОШИБКА: не удалось скопировать каталог изображений плана $PLANS_DIR"
+      return 1
+    fi
+    log_line "Резервная копия каталога изображений плана создана: $DATA_BACKUP_DIR/plans"
+  else
+    log_line "backup_data: каталог изображений плана $PLANS_DIR отсутствует (планов ещё нет) — пропускаю"
+  fi
+}
+
 install_new_code() {
   log_line "Запускаю install.sh из $SRC_DIR (SKIP_APT=1, SOURCE_SHA=$EXPECTED_SHA)"
   local rc=0
@@ -364,6 +466,118 @@ for item in (data.get("failed") or []):
   return 1
 }
 
+verify_schema_version() {
+  # docs/migration-plan-v2.md §7 п.5. Миграции необратимы (§6:
+  # "версии <= current пропускаются") — версия схемы после установки
+  # обязана быть >= версии до неё. Меньше — значит не тот файл БД,
+  # повреждение, либо кто-то подменил $DB_PATH вручную между шагами;
+  # в любом случае доверять только что установленному коду в такой
+  # ситуации нельзя.
+  local version_after
+  version_after="$(python3 -c '
+import sqlite3, sys
+try:
+    conn = sqlite3.connect(sys.argv[1])
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type=\"table\" AND name=\"schema_migrations\""
+    ).fetchone()
+    if row is None:
+        print(0)
+    else:
+        row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+        print(row[0] if row and row[0] is not None else 0)
+    conn.close()
+except sqlite3.Error:
+    print(0)
+' "$DB_PATH" 2>>"$LOG_FILE")"
+
+  if [[ -z "$version_after" || ! "$version_after" =~ ^[0-9]+$ ]]; then
+    log_line "ОШИБКА verify_schema_version: не удалось прочитать версию схемы БД после установки ($DB_PATH)"
+    return 1
+  fi
+
+  log_line "Версия схемы БД после обновления: $version_after (была: ${SCHEMA_VERSION_BEFORE:-0})"
+
+  if [[ "$version_after" -lt "${SCHEMA_VERSION_BEFORE:-0}" ]]; then
+    log_line "ОШИБКА verify_schema_version: версия схемы УМЕНЬШИЛАСЬ (${SCHEMA_VERSION_BEFORE:-0} -> $version_after) — миграции необратимы, это не должно происходить"
+    return 1
+  fi
+  return 0
+}
+
+verify_control_calculation() {
+  # docs/migration-plan-v2.md §7 п.5: "контрольный расчёт на одной
+  # существующей точке" — /health и /api/selfcheck проверяют, что
+  # сервис жив и отдаёт статику, но не то, что расчётный путь /api/v2
+  # (accounting_service, "сердце ТЗ") реально считает поверх ЭТОЙ БД на
+  # ЭТОЙ версии кода. Если точек ещё нет (свежая установка до первой
+  # миграции) — это не провал, считать не на чем, пропускаем.
+  local points_body point_id http_code calc_body py_out
+
+  points_body="$(mktemp)"
+  if ! curl -sS --max-time 5 -o "$points_body" "http://127.0.0.1:${HTTP_PORT}/api/v2/points" 2>>"$LOG_FILE"; then
+    log_line "verify_control_calculation: не удалось получить список точек — пропускаю (не провал, /health и /api/selfcheck уже подтвердили, что сервис жив)"
+    rm -f "$points_body"
+    return 0
+  fi
+
+  point_id="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception:
+    print("")
+    sys.exit(0)
+items = data.get("items") if isinstance(data, dict) else data
+if not items:
+    print("")
+    sys.exit(0)
+first = items[0]
+print(first.get("id", "") if isinstance(first, dict) else "")
+' "$points_body" 2>>"$LOG_FILE")"
+  rm -f "$points_body"
+
+  if [[ -z "$point_id" ]]; then
+    log_line "verify_control_calculation: точек учёта ещё нет — контрольный расчёт пропущен (не провал)"
+    return 0
+  fi
+
+  calc_body="$(mktemp)"
+  local now_ts from_ts
+  now_ts="$(date +%s)"
+  from_ts="$((now_ts - 3600))"
+
+  if ! http_code="$(curl -sS --max-time 5 -o "$calc_body" -w '%{http_code}' \
+      -X POST -H 'Content-Type: application/json' \
+      -d "{\"mode\":\"measured\",\"point_ids\":[${point_id}],\"from\":${from_ts},\"to\":${now_ts}}" \
+      "http://127.0.0.1:${HTTP_PORT}/api/v2/metrics/query" 2>>"$LOG_FILE")"; then
+    log_line "verify_control_calculation: запрос к /api/v2/metrics/query не удался (curl, point_id=$point_id)"
+    rm -f "$calc_body"
+    return 1
+  fi
+
+  py_out="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as f:
+        data = json.load(f)
+except Exception as e:
+    print("PARSE_ERROR: " + str(e))
+    sys.exit(0)
+print("value=" + str(data.get("value")) + " availability=" + str(data.get("availability")))
+' "$calc_body" 2>>"$LOG_FILE")"
+  rm -f "$calc_body"
+
+  if [[ "$http_code" != "200" ]]; then
+    log_line "ОШИБКА verify_control_calculation: /api/v2/metrics/query (point_id=$point_id) вернул HTTP $http_code вместо 200: $py_out"
+    return 1
+  fi
+
+  log_line "verify_control_calculation: контрольный расчёт для точки $point_id прошёл ($py_out)"
+  return 0
+}
+
 verify_after_install() {
   if ! wait_for_health; then
     log_line "Сервис не поднялся за 90 секунд после установки"
@@ -371,16 +585,166 @@ verify_after_install() {
   fi
   log_line "Проверка после установки: сервис активен, /health отвечает"
 
-  if run_selfcheck; then
-    if [[ "$SELFCHECK_STATE" == "unavailable" ]]; then
-      log_line "Проверка после установки прошла (самопроверка интерфейса недоступна, полагаюсь на /health)"
-    else
-      log_line "Проверка после установки прошла успешно (/health и /api/selfcheck в порядке)"
-    fi
+  if ! verify_schema_version; then
+    log_line "Проверка после установки провалена: версия схемы БД после установки некорректна"
+    return 1
+  fi
+
+  if ! run_selfcheck; then
+    log_line "Проверка после установки провалена самопроверкой интерфейса"
+    return 1
+  fi
+  if [[ "$SELFCHECK_STATE" == "unavailable" ]]; then
+    log_line "Самопроверка интерфейса недоступна, полагаюсь на /health"
+  else
+    log_line "Самопроверка интерфейса прошла (/health и /api/selfcheck в порядке)"
+  fi
+
+  if ! verify_control_calculation; then
+    log_line "Проверка после установки провалена контрольным расчётом"
+    return 1
+  fi
+
+  log_line "Проверка после установки прошла полностью (/health, версия схемы, /api/selfcheck, контрольный расчёт)"
+  return 0
+}
+
+check_rollback_generation() {
+  # docs/migration-plan-v2.md §7 п.3: ДО того, как трогать
+  # $INSTALL_DIR/wb_energy_meter — проверить, не окажется ли
+  # откатываемый код (поколение из $ROLLBACK_DIR/wb_energy_meter/
+  # __init__.py::__code_generation__) младше minimum_reader_generation,
+  # уже объявленного в БД, которая будет восстановлена вместе с ним
+  # (см. restore_data_backup() — та же самая $DATA_BACKUP_DIR/state.db).
+  # Именно снимок, а не текущая рабочая $DB_PATH: после успешного
+  # отката старый код увидит РОВНО этот снимок, не более свежее
+  # состояние, которое могло возникнуть уже во время этого (неудачного)
+  # запуска self-update.sh.
+  local db_for_check="$DATA_BACKUP_DIR/state.db"
+  if [[ ! -f "$db_for_check" ]]; then
+    log_line "check_rollback_generation: снимок БД ($db_for_check) отсутствует — проверяю по рабочей БД ($DB_PATH) как более слабую замену"
+    db_for_check="$DB_PATH"
+  fi
+
+  if [[ ! -f "$ROLLBACK_DIR/wb_energy_meter/__init__.py" ]]; then
+    # Кода для отката нет вовсе — остальной attempt_rollback это уже
+    # логирует отдельно (backup_current не успел/не смог отработать).
+    log_line "check_rollback_generation: $ROLLBACK_DIR/wb_energy_meter/__init__.py отсутствует, пропускаю проверку поколения"
     return 0
   fi
-  log_line "Проверка после установки провалена самопроверкой интерфейса"
-  return 1
+
+  local rollback_code_gen
+  rollback_code_gen="$(grep -m1 '__code_generation__' \
+      "$ROLLBACK_DIR/wb_energy_meter/__init__.py" 2>/dev/null \
+      | sed -E 's/.*__code_generation__[[:space:]]*=[[:space:]]*([0-9]+).*/\1/')"
+  if [[ -z "$rollback_code_gen" || ! "$rollback_code_gen" =~ ^[0-9]+$ ]]; then
+    # Бэкап кода старше введения этой константы (её там ещё не было) —
+    # по определению domain_generation.py::LEGACY_GENERATION это 1.
+    rollback_code_gen=1
+  fi
+
+  if [[ ! -f "$db_for_check" ]]; then
+    log_line "check_rollback_generation: БД для проверки не найдена нигде — откат кода разрешён (БД ещё не было ни разу)"
+    return 0
+  fi
+
+  local db_min_reader_gen
+  db_min_reader_gen="$(python3 -c '
+import json, sqlite3, sys
+
+try:
+    conn = sqlite3.connect(sys.argv[1])
+    row = conn.execute(
+        "SELECT value FROM kv WHERE key = ?", ("minimum_reader_generation",)
+    ).fetchone()
+    conn.close()
+except sqlite3.Error:
+    print(1)
+    sys.exit(0)
+if not row:
+    print(1)
+    sys.exit(0)
+try:
+    print(int(json.loads(row[0])))
+except (TypeError, ValueError, json.JSONDecodeError):
+    print(1)
+' "$db_for_check" 2>>"$LOG_FILE")"
+
+  if [[ -z "$db_min_reader_gen" || ! "$db_min_reader_gen" =~ ^[0-9]+$ ]]; then
+    db_min_reader_gen=1
+  fi
+
+  log_line "check_rollback_generation: код отката поколения $rollback_code_gen, БД ($db_for_check) требует минимум $db_min_reader_gen"
+
+  if [[ "$rollback_code_gen" -lt "$db_min_reader_gen" ]]; then
+    log_line "ОТКАТ ЗАБЛОКИРОВАН: код отката (поколение $rollback_code_gen) не умеет читать эту БД (minimum_reader_generation=$db_min_reader_gen, docs/migration-plan-v2.md §7 п.3)"
+    return 1
+  fi
+  return 0
+}
+
+restore_data_backup() {
+  # docs/migration-plan-v2.md §7 п.4: код и БД — совместимая пара.
+  # Вызывается ПОСЛЕ check_rollback_generation() (уже подтвердил, что
+  # откатываемый код умеет читать этот снимок) и ПОСЛЕ восстановления
+  # кода, ПЕРЕД перезапуском сервиса.
+  if [[ ! -f "$DATA_BACKUP_DIR/state.db" ]]; then
+    log_line "restore_data_backup: снимок БД ($DATA_BACKUP_DIR/state.db) отсутствует — БД не трогаю (бэкап от версии self-update.sh до появления этого шага, либо БД впервые появилась уже после backup_data())"
+    return 0
+  fi
+
+  if [[ -f "$DB_PATH" ]]; then
+    cp -a "$DB_PATH" "${DB_PATH}.pre-rollback-$(date +%Y%m%d-%H%M%S)" 2>>"$LOG_FILE" || true
+  fi
+
+  # Восстанавливаем тоже ЧЕРЕЗ Online Backup API (snapshot -> рабочий
+  # путь), во временный файл + атомарный os.replace — та же защита от
+  # рваного состояния, что и в backup_data(), плюс не оставляем рабочую
+  # БД без файла, если процесс восстановления прервётся на середине.
+  if python3 -c '
+import os, sqlite3, sys, tempfile
+
+backup_path, dst_path = sys.argv[1], sys.argv[2]
+d = os.path.dirname(os.path.abspath(dst_path)) or "."
+os.makedirs(d, exist_ok=True)
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".state-restore-", suffix=".sqlite3")
+os.close(fd)
+os.unlink(tmp)
+try:
+    src = sqlite3.connect(backup_path)
+    try:
+        dst = sqlite3.connect(tmp)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    os.replace(tmp, dst_path)
+    for suffix in ("-wal", "-shm"):
+        stale = dst_path + suffix
+        if os.path.exists(stale):
+            os.unlink(stale)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+' "$DATA_BACKUP_DIR/state.db" "$DB_PATH" >>"$LOG_FILE" 2>&1; then
+    log_line "restore_data_backup: БД восстановлена из $DATA_BACKUP_DIR/state.db"
+  else
+    log_line "ОШИБКА restore_data_backup: не удалось восстановить БД из $DATA_BACKUP_DIR/state.db — рабочая БД оставлена как есть (см. ${DB_PATH}.pre-rollback-* при наличии)"
+  fi
+
+  if [[ -d "$DATA_BACKUP_DIR/plans" ]]; then
+    rm -rf "$PLANS_DIR" 2>>"$LOG_FILE" || true
+    if cp -a "$DATA_BACKUP_DIR/plans" "$PLANS_DIR" 2>>"$LOG_FILE"; then
+      log_line "restore_data_backup: каталог изображений плана восстановлен из $DATA_BACKUP_DIR/plans"
+    else
+      log_line "ОШИБКА restore_data_backup: не удалось восстановить каталог изображений плана"
+    fi
+  fi
 }
 
 attempt_rollback() {
@@ -393,6 +757,24 @@ attempt_rollback() {
   if [[ -n "$SELFCHECK_DETAILS" ]]; then
     reason="Самопроверка интерфейса не прошла: ${SELFCHECK_DETAILS}. Выполняется откат на предыдущую версию"
   fi
+
+  # docs/migration-plan-v2.md §7 п.3: генерационная проверка — ДО того,
+  # как вообще что-либо восстанавливать. Используем существующий,
+  # уже терминальный для UI (index.html: updIsTerminal проверяет ровно
+  # ['success','rolled_back','failed']) статус "failed" — заводить новый
+  # "rollback_blocked" означало бы ещё и править фронтенд, а без этого
+  # UI навсегда завис бы на "идёт откат" (тот самый класс бага, из-за
+  # которого вообще появился STAGE=="done"-guard в on_error, см. коммент
+  # у main "$@" в конце файла).
+  if ! check_rollback_generation; then
+    finish_status "failed" \
+      "Откат заблокирован: БД уже содержит данные новой доменной модели, старый код их не понимает" \
+      error "Установка $EXPECTED_SHA не прошла проверку (код $rc), но автоматический откат кода заблокирован: БД уже помечена как принадлежащая более новому поколению домена, чем откатываемый код (docs/migration-plan-v2.md §7). Сервис остаётся на новой (неисправной) версии — автоматический откат в этой ситуации может незаметно скрыть часть данных от старого интерфейса. Нужен ручной вход по SSH: journalctl -u wb-energy-meter -n 100, разбор причины провала, ручное решение по коду/БД."
+    log_line "ОТКАТ ЗАБЛОКИРОВАН генерационной проверкой — сервис остаётся на новом (нерабочем) коде, статус завершён как 'failed' с пояснением, требуется ручное вмешательство"
+    FINISHED=1
+    return 0
+  fi
+
   step_status "rolling_back" "Не удалось поднять сервис после обновления, откатываюсь…" \
     error "$reason"
   log_line "ОТКАТ: восстанавливаю $INSTALL_DIR/wb_energy_meter из $ROLLBACK_DIR"
@@ -412,6 +794,8 @@ attempt_rollback() {
   if [[ -d "$ROLLBACK_DIR/scripts" ]]; then
     cp -a "$ROLLBACK_DIR/scripts/." "$INSTALL_DIR/scripts/" 2>>"$LOG_FILE" || true
   fi
+
+  restore_data_backup
 
   systemctl daemon-reload >>"$LOG_FILE" 2>&1 || true
   systemctl start wb-energy-meter.service >>"$LOG_FILE" 2>&1 || true
@@ -536,6 +920,7 @@ main() {
   STAGE="backup"
   step_status "downloading" "Резервное копирование текущей версии…"
   backup_current
+  backup_data
 
   STAGE="install"
   step_status "installing" "Установка новой версии…"

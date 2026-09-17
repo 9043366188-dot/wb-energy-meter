@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from . import domain_generation
+
 log = logging.getLogger(__name__)
 
 VALID_KINDS = ("object", "building", "floor", "room", "zone", "installation_point")
@@ -146,6 +148,12 @@ class LocationRepo:
                     "VALUES (?, ?, ?, NULL, NULL, ?)",
                     (loc_id, parent_id, now, now),
                 )
+
+                # docs/migration-plan-v2.md §7 п.2: первая предметная запись
+                # через доменную модель v2 отмечается В ТОЙ ЖЕ транзакции —
+                # см. domain_generation.py. Идемпотентно (не переставляет
+                # маркер на повторных вызовах).
+                domain_generation.mark_v2_domain_write(c)
         except sqlite3.IntegrityError as e:
             if "code" in str(e).lower():
                 raise ValueError(f"Место с кодом {code!r} уже существует") from None

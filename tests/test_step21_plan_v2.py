@@ -601,6 +601,114 @@ def test_layout_frontend_payload_shape_waypoints_drawing():
         db.close(); os.unlink(path)
 
 
+def test_admin_migrate_legacy_endpoint():
+    """Тест admin API endpoint POST /api/v2/admin/migrate-legacy: перенос
+    легаси meters/meter_groups в v2 (metering_points/meter_sources/
+    point_bindings/group_memberships). Проверяет:
+    1. Отклонение 400 без {"confirm": true}
+    2. Успешный 200 с валидным бэкапом на диске (SQLite Online Backup API)
+    3. Миграция создаёт одну point per meter, в том числе отключённые приборы
+    4. Идемпотентность: повторный вызов skips уже мигрированные, не плодит дубли
+    5. GET /api/v2/points возвращает ровно столько же точек после каждого вызова
+    """
+    import sqlite3
+
+    client, db, path, plans_dir = make_client()
+    try:
+        # Seed legacy meters and groups
+        gr = GroupRepo(db)
+        mr = MeterRepo(db, gr)
+        m1 = mr.add(device_id="wb-map3e_10", display_name="Счётчик 10", group="Цех 1")
+        m2 = mr.add(device_id="wb-map3e_11", display_name="Счётчик 11")  # no group
+        m3_temp = mr.add(device_id="wb-map3e_12", display_name="Счётчик 12 (архивный)", group="Цех 1")
+        m3 = mr.update(device_id="wb-map3e_12", enabled=False)  # archive it
+
+        # --- 1. POST without {"confirm": true} -> 400 ---
+        r = client.post("/api/v2/admin/migrate-legacy", json={})
+        assert r.status_code == 400, (r.status_code, r.get_json())
+        body = r.get_json()
+        assert body["code"] == "bad_request"
+        assert "confirm" in body.get("fields", [])
+
+        r = client.post("/api/v2/admin/migrate-legacy", json={"confirm": False})
+        assert r.status_code == 400, (r.status_code, r.get_json())
+
+        # --- 2. POST with {"confirm": true} -> 200 ---
+        r = client.post("/api/v2/admin/migrate-legacy", json={"confirm": True})
+        assert r.status_code == 200, (r.status_code, r.get_json())
+        result1 = r.get_json()
+
+        # Verify response fields
+        assert "backup_path" in result1
+        assert "migrated_points" in result1
+        assert "skipped_points" in result1
+        assert "recovered_points" in result1
+        assert "memberships_created" in result1
+        assert "warnings" in result1
+
+        backup_path = result1["backup_path"]
+
+        # --- 3. Verify backup file exists and is non-empty on disk ---
+        assert os.path.exists(backup_path), f"backup_path {backup_path} does not exist"
+        assert os.path.getsize(backup_path) > 0, f"backup_path {backup_path} is empty"
+
+        # --- 4. Verify backup is a valid SQLite database ---
+        try:
+            backup_conn = sqlite3.connect(backup_path)
+            backup_cursor = backup_conn.cursor()
+            # Simple sanity check: count rows in legacy meters table
+            backup_cursor.execute("SELECT COUNT(*) FROM meters")
+            meter_count = backup_cursor.fetchone()[0]
+            assert meter_count == 3, f"Expected 3 meters in backup, got {meter_count}"
+            backup_conn.close()
+        except Exception as e:
+            raise AssertionError(f"backup file is not a valid SQLite database: {e}")
+
+        # --- 5. Verify migration results ---
+        # 3 meters were seeded, so all should be migrated in first call
+        assert len(result1["migrated_points"]) == 3, result1["migrated_points"]
+        assert len(result1["skipped_points"]) == 0, result1["skipped_points"]
+        assert len(result1["recovered_points"]) == 0, result1["recovered_points"]
+        # m1 and m3 belong to "Цех 1" group, m2 has no group
+        assert result1["memberships_created"] == 2, result1["memberships_created"]
+
+        # --- 6. Verify GET /api/v2/points returns one point per meter ---
+        r = client.get("/api/v2/points")
+        assert r.status_code == 200
+        points1 = r.get_json()
+        assert len(points1) == 3, f"Expected 3 points after first migration, got {len(points1)}"
+
+        # Verify the points have expected codes (legacy:device_id pattern)
+        codes_created = {p["code"] for p in points1}
+        expected_codes = {"legacy:wb-map3e_10", "legacy:wb-map3e_11", "legacy:wb-map3e_12"}
+        assert codes_created == expected_codes, f"got {codes_created}, expected {expected_codes}"
+
+        # --- 7. Idempotency: call migration again ---
+        r = client.post("/api/v2/admin/migrate-legacy", json={"confirm": True})
+        assert r.status_code == 200, (r.status_code, r.get_json())
+        result2 = r.get_json()
+
+        # Second call: all 3 meters should be in skipped_points, none in migrated_points
+        assert len(result2["migrated_points"]) == 0, result2["migrated_points"]
+        assert len(result2["skipped_points"]) == 3, result2["skipped_points"]
+        assert set(result2["skipped_points"]) == {m1.id, m2.id, m3.id}
+        assert len(result2["recovered_points"]) == 0, result2["recovered_points"]
+
+        # --- 8. No duplicates: GET /api/v2/points still returns 3 points ---
+        r = client.get("/api/v2/points")
+        assert r.status_code == 200
+        points2 = r.get_json()
+        assert len(points2) == 3, f"Expected 3 points after idempotent re-call, got {len(points2)}"
+
+        # Same point codes as before
+        codes_after = {p["code"] for p in points2}
+        assert codes_after == expected_codes, f"codes changed after idempotent call: {codes_after}"
+
+        print("[OK] /api/v2/admin/migrate-legacy: перенос, бэкап, идемпотентность (Stage F)")
+    finally:
+        db.close(); os.unlink(path)
+
+
 if __name__ == "__main__":
     test_floor_and_single_line_plan_create()
     test_plan_items_geometry_validation()
@@ -612,4 +720,5 @@ if __name__ == "__main__":
     test_waypoints_out_of_bounds_rejected()
     test_layout_frontend_payload_shape()
     test_layout_frontend_payload_shape_waypoints_drawing()
+    test_admin_migrate_legacy_endpoint()
     print("\nВсе тесты plan v2 (Шаг 21) пройдены.")

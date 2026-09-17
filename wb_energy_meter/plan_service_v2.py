@@ -40,7 +40,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from . import plan_geo_v2
+from . import domain_generation, plan_geo_v2
 from .image_meta import parse_image_size, ImageFormatError
 from .plan_repo import (
     MAX_UPLOAD_BYTES, PlanError,
@@ -391,6 +391,12 @@ class PlanItemRepo:
             except sqlite3.IntegrityError as e:
                 raise PlanError(f"Не удалось создать элемент плана: {e}") from None
             item_id = cur.lastrowid
+
+            # docs/migration-plan-v2.md §7 п.2: первая предметная запись
+            # через доменную модель v2 отмечается В ТОЙ ЖЕ транзакции —
+            # см. domain_generation.py. Идемпотентно (не переставляет
+            # маркер на повторных вызовах).
+            domain_generation.mark_v2_domain_write(c)
         return self.get_by_id(item_id)
 
     def update_geometry(self, item_id: int, geometry: Any,
@@ -527,6 +533,12 @@ class PlanEdgeViewRepo:
                  json.dumps(waypoints) if waypoints is not None else None,
                  view_kind, confirmed_at, now, now))
             view_id = cur.lastrowid
+
+            # docs/migration-plan-v2.md §7 п.2: первая предметная запись
+            # через доменную модель v2 отмечается В ТОЙ ЖЕ транзакции —
+            # см. domain_generation.py. Идемпотентно (не переставляет
+            # маркер на повторных вызовах).
+            domain_generation.mark_v2_domain_write(c)
         return self.get_by_id(view_id)
 
     def remove(self, view_id: int) -> bool:
