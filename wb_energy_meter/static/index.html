@@ -650,6 +650,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         </div>
       </template>
       <template x-if="overviewV2Problems().length>0">
+        <div>
         <div class="section-title">Требует внимания</div>
         <div style="margin-bottom:24px">
           <template x-for="prob in overviewV2Problems()" :key="prob.point.point_id">
@@ -667,8 +668,10 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             </div>
           </template>
         </div>
+        </div>
       </template>
       <template x-if="overviewV2Snapshot && overviewV2Snapshot.points.length>0">
+        <div>
         <div class="section-title">Все точки учёта</div>
         <table class="rep-table">
           <thead><tr>
@@ -703,6 +706,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             </template>
           </tbody>
         </table>
+        </div>
       </template>
     </div>
   </template>

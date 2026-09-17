@@ -196,6 +196,70 @@ def test_index_html_tag_balance():
     print("[OK] баланс HTML-тегов index.html — 0 ошибок")
 
 
+def test_x_if_templates_have_single_root():
+    """У `<template x-if>` должен быть РОВНО ОДИН корневой элемент.
+
+    Alpine разворачивает `x-if` только с единственным корнем. Если внутри
+    два соседних элемента, блок молча не рендерится — ни ошибки в
+    консоли, ни пустого места с подсказкой, просто нет содержимого.
+    Диагностируется так же плохо, как незакрытый `<template>`, с которого
+    начиналась история белого экрана.
+
+    17.09.2026 так были сломаны два блока на вкладке «Обзор»
+    («Требует внимания» и «Все точки учёта»): разметка присутствовала,
+    тесты и баланс тегов проходили, а на экране этих разделов не было.
+
+    Считаем прямых детей каждого `<template x-if>` настоящим стековым
+    разбором. Наивный подсчёт «тегов до закрывающего» здесь не работает:
+    он сбивается на вложенности и даёт десятки ложных срабатываний.
+    """
+    src = _load_static("index.html")
+    blank = lambda m: re.sub(r"[^\n]", "", m.group(0))
+    # Комментарии — ПЕРВЫМИ: слово <script> внутри комментария иначе
+    # съедает кусок разметки вместе с настоящим скриптом.
+    clean = re.sub(r"<!--.*?-->", blank, src, flags=re.S)
+    clean = re.sub(r"<script\b.*?</script>", blank, clean, flags=re.S | re.I)
+    clean = re.sub(r"<style\b.*?</style>", blank, clean, flags=re.S | re.I)
+
+    void = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+            "link", "meta", "param", "source", "track", "wbr"}
+    tag_re = re.compile(
+        r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)"
+        r"((?:[^<>\"']|\"[^\"]*\"|'[^']*')*?)(/?)>", re.S)
+
+    stack = []
+    broken = []
+    for m in tag_re.finditer(clean):
+        line = clean[:m.start()].count("\n") + 1
+        closing, tag, attrs, selfclose = (m.group(1), m.group(2).lower(),
+                                          m.group(3), m.group(4))
+        is_void = tag in void or selfclose == "/"
+        if not closing:
+            if stack:
+                stack[-1][3] += 1          # прямой ребёнок текущего узла
+            if not is_void:
+                stack.append(
+                    [tag, line, tag == "template" and "x-if=" in attrs, 0])
+        else:
+            if is_void:
+                continue
+            for k in range(len(stack) - 1, -1, -1):
+                if stack[k][0] == tag:
+                    node = stack[k]
+                    if node[2] and node[3] != 1:
+                        broken.append((node[1], node[3]))
+                    del stack[k:]
+                    break
+
+    assert not broken, (
+        "у <template x-if> должен быть ровно один корневой элемент, иначе "
+        "Alpine молча не отрисует блок:\n" + "\n".join(
+            "  строка %d: корневых элементов %d" % (ln, n)
+            for ln, n in broken))
+    total = len(re.findall(r"<template[^>]*\bx-if=", clean))
+    print("[OK] все %d <template x-if> имеют ровно один корень" % total)
+
+
 def test_ci_workflow_is_valid_yaml():
     """CI не должен быть сломан незаметно.
 
@@ -236,5 +300,6 @@ if __name__ == "__main__":
     test_ui_has_dashboard_and_consumption()
     test_ui_has_overview_v2_branch_table()
     test_index_html_tag_balance()
+    test_x_if_templates_have_single_root()
     test_ci_workflow_is_valid_yaml()
     print("\nВсе тесты Шага 6 (web UI) пройдены.")
