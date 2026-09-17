@@ -20,17 +20,33 @@ B/C (BindingConflict/TopologyConflict/AccountingConflict/ValueError) в
   эффективный состав с дедупликацией/происхождением через
   group_repo_v2.GroupRepoV2 — см. v2_group_effective_members).
 
+  Партия 2: глобальный протокол ревизий конфигурации (§6.1/§9.2 —
+  `expected_revision`/409, см. revision_service.py) на ВСЕХ доменных
+  изменяющих маршрутах выше; `GET /api/v2/revision`;
+  `POST /api/v2/overview/summary` (§8.2 «Обзор» — итог объекта только
+  через назначенный ввод, ветви, небаланс отдельной строкой, A03/A04/
+  A08/A10/A11 — см. v2_overview_summary); `POST /api/v2/reports/query`
+  (§8.4 «Отчёты» — срезы point/branch/group/balance_scope поверх того
+  же accounting_service, что и Обзор/metrics/query, режимы состава
+  группы as_was/current и сравнение периодов A21/A22 — см.
+  v2_reports_query). metrics/query, overview/summary и reports/query
+  держат ОДИН db.read() на весь расчёт (A43 — согласованный снимок
+  конфигурации внутри запроса), см. докстринги этих функций.
+
   НЕ РЕАЛИЗОВАНО (сознательно отложено — вне этой задачи):
   metrics/jobs (долгие расчёты/подписки); plans/items/layout (это стадия D
   плана — редактор плана v2); validation (сводка непривязанных/неразмещённых
-  объектов); migration/status. Полный `expected_revision`/`configuration_revision`
-  протокол конфликта версий (409 при устаревшей ревизии) тоже не реализован —
-  данные читаются/пишутся без проверки ревизии; это тоже отдельная,
-  бóльшая задача (интеграция с `configuration_revisions`).
+  объектов); migration/status; инспектор объекта/однолинейная схема как
+  второй канвас; мастер миграции legacy-подключений; провижининг новых
+  приборов (§8.5/responsive — сознательно отложено, см. отчёт по партии 2).
+  Протокол ревизий не хранит и не восстанавливает историческую
+  электрическую топологию "как было на ревизии N" (см. ограничение в
+  revision_service.py) и не пишет change_log.
 
 Ответ на ошибку — единый envelope §9.2: {"code", "message", "fields",
 "ids", "path"}. 400 — неверный запрос/тип; 404 — неизвестный ID; 409 —
-конфликт (двойной счёт, пересечение интервалов, топология).
+конфликт (двойной счёт, пересечение интервалов, топология, устаревшая
+ревизия конфигурации).
 """
 
 from __future__ import annotations
@@ -1319,6 +1335,284 @@ def register_v2_routes(app, state, json_response):
             "branches": branches,
             "ungrouped_point_ids": ungrouped_ids,
         })
+
+    # ------------------------------------------------------------ reports
+    # Партия 2, задача 3 (ТЗ §8.4, docs/TZ-batch2-overview-reports-revisions.md):
+    # новые срезы отчёта (точка/ветвь/группа/граница баланса) поверх ТОГО
+    # ЖЕ расчётного слоя v2 (accounting_service), что и Обзор и
+    # metrics/query — числа совпадают по построению (не пересчитываются
+    # заново отдельной формулой в CSV/JS, ТЗ §5: "не реализовывать разные
+    # формулы в дашборде, отчётах и JavaScript"). Существующие отчёты (v1,
+    # api.py + клиентский JS в index.html) не трогаются — это ДОБАВЛЕНИЕ
+    # нового маршрута, см. §9.2 запрет менять существующие форматы ответа.
+    #
+    # A21/A22 — раздельные режимы состава группы для отчёта за прошлый
+    # период:
+    #   composition_mode="as_was" (по умолчанию) — эффективный состав
+    #   группы резолвится НА МОМЕНТ начала запрошенного периода
+    #   (group_repo.resolve_effective_members(gid, at=ts_from)) — перевод
+    #   точки в другую группу ПОСЛЕ периода не меняет уже посчитанный
+    #   прошлый отчёт (A21: "перенос точки из арендатора А в Б с 15
+    #   числа — отчёт за прошлый месяц не меняется").
+    #   composition_mode="current" — состав группы на сейчас, но приборы
+    #   всё равно резолвятся исторически верно: measured_point() всегда
+    #   сегментирует период по истории привязок точки независимо от
+    #   composition_mode (A22: "текущие группы, но исторически правильные
+    #   физические приборы").
+    # Оба режима явно возвращаются в ответе (`composition_mode`) —
+    # фронтенд обязан подписать выбранный режим и на экране, и в CSV,
+    # чтобы никогда не выдавать один набор чисел за другой молча.
+    def _reports_resolve_group_points(group_repo, group_id, composition_mode, ts_from):
+        at = ts_from if composition_mode == "as_was" else None
+        return [m["point_id"] for m in group_repo.resolve_effective_members(group_id, at=at)]
+
+    def _reports_row_result(dimension, point_ids, binding_repo, aggregates_repo,
+                             source_repo, edge_repo, ts_from, ts_to, timezone_name):
+        """Точка — measured_point по единственному id; ветвь/группа —
+        sum_points по составу. A04: подтверждённое электрическое
+        пересечение НЕ схлопывает всю выгрузку — только эта строка
+        получает conflict_reason и result=None, остальные строки
+        считаются как обычно (в отличие от Обзора, здесь без отката в
+        comparison — отчёт технический, конфликт должен быть виден и
+        устранён в топологии, а не молча подменён поточной раскладкой)."""
+        if dimension == "point":
+            if not point_ids:
+                return None, "точка не найдена"
+            result = measured_point(binding_repo, aggregates_repo, source_repo,
+                                     point_ids[0], ts_from, ts_to, timezone_name)
+            return result, None
+        if not point_ids:
+            return None, None
+        try:
+            result = sum_points(binding_repo, aggregates_repo, source_repo, edge_repo,
+                                 point_ids, ts_from, ts_to, timezone_name)
+            return result, None
+        except AccountingConflict as e:
+            return None, str(e)
+
+    @app.route("/api/v2/reports/query", methods=["POST"])
+    def v2_reports_query():
+        """Тело: {"dimension": "point"|"branch"|"group"|"balance_scope",
+        "scope_ids"?: [...] (обязателен для point/group/balance_scope;
+        для branch игнорируется — берутся все ветви верхнего уровня группы,
+        как в Обзоре), "from", "to", "timezone"?,
+        "configuration_revision_id"?, "composition_mode"?: "as_was"|
+        "current" (по умолчанию as_was, A21/A22 — см. комментарий выше),
+        "compare"?: {"from","to"} — второй период, чтобы явно раскрыть
+        отличие состава/замены между периодами (A21/A22), а не молча
+        показать несравнимые числа рядом.
+
+        A43: один db.read() на весь расчёт — тот же приём, что и в
+        metrics/query и overview/summary (см. их докстринги)."""
+        data = request.get_json(silent=True) or {}
+        dimension = data.get("dimension")
+        if dimension not in ("point", "branch", "group", "balance_scope"):
+            body, status = _err(
+                "bad_request",
+                f"dimension={dimension!r} — допустимые: point|branch|group|balance_scope",
+                400, fields=["dimension"])
+            return json_response(body, status)
+
+        composition_mode = data.get("composition_mode", "as_was")
+        if composition_mode not in ("as_was", "current"):
+            body, status = _err(
+                "bad_request", "composition_mode — допустимые: as_was|current", 400,
+                fields=["composition_mode"])
+            return json_response(body, status)
+
+        timezone_name = data.get("timezone", "UTC")
+        try:
+            ts_from = _parse_ts(data.get("from"), "from")
+            ts_to = _parse_ts(data.get("to"), "to")
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400, fields=["from", "to"])
+            return json_response(body, status)
+        if ts_to <= ts_from:
+            body, status = _err("bad_request", "to должно быть позже from", 400, fields=["from", "to"])
+            return json_response(body, status)
+
+        compare = data.get("compare")
+        cmp_ts_from = cmp_ts_to = None
+        if compare is not None:
+            if not isinstance(compare, dict):
+                body, status = _err("bad_request", "compare должен быть объектом {from,to}", 400,
+                                     fields=["compare"])
+                return json_response(body, status)
+            try:
+                cmp_ts_from = _parse_ts(compare.get("from"), "compare.from")
+                cmp_ts_to = _parse_ts(compare.get("to"), "compare.to")
+            except ValueError as e:
+                body, status = _err("bad_request", str(e), 400, fields=["compare"])
+                return json_response(body, status)
+            if cmp_ts_to <= cmp_ts_from:
+                body, status = _err("bad_request", "compare.to должно быть позже compare.from",
+                                     400, fields=["compare"])
+                return json_response(body, status)
+
+        scope_ids = data.get("scope_ids")
+        if dimension != "branch":
+            if not scope_ids or not isinstance(scope_ids, list):
+                body, status = _err(
+                    "bad_request", f"dimension={dimension} требует непустой scope_ids", 400,
+                    fields=["scope_ids"])
+                return json_response(body, status)
+
+        requested_revision = data.get("configuration_revision_id")
+
+        binding_repo = _binding_repo()
+        aggregates_repo = _aggregates_repo()
+        source_repo = _source_repo()
+        edge_repo = _edge_repo()
+        group_repo = _group_repo_v2()
+        point_repo = _point_repo()
+
+        with db.read() as c:
+            if requested_revision is not None:
+                try:
+                    requested_revision = int(requested_revision)
+                except (TypeError, ValueError):
+                    body, status = _err(
+                        "bad_request", "configuration_revision_id должен быть целым числом",
+                        400, fields=["configuration_revision_id"])
+                    return json_response(body, status)
+                if not revision_exists(c, requested_revision):
+                    body, status = _err(
+                        "not_found", f"Ревизия конфигурации {requested_revision} не найдена",
+                        404, ids=[requested_revision])
+                    return json_response(body, status)
+                pinned_revision = requested_revision
+            else:
+                pinned_revision = current_revision_id(c)
+
+            try:
+                targets = []  # (id, name, point_ids | None для balance_scope)
+                if dimension == "point":
+                    for pid in scope_ids:
+                        p = point_repo.get_by_id(pid)
+                        if p is None:
+                            body, status = _err("not_found", f"Точка {pid} не найдена", 404, ids=[pid])
+                            return json_response(body, status)
+                        targets.append((p.id, p.name, [p.id]))
+                elif dimension == "branch":
+                    for g in group_repo.list_children(None):
+                        pts = _reports_resolve_group_points(group_repo, g.id, composition_mode, ts_from)
+                        targets.append((g.id, g.name, pts))
+                elif dimension == "group":
+                    for gid in scope_ids:
+                        g = group_repo.get_by_id(gid)
+                        if g is None:
+                            body, status = _err("not_found", f"Группа {gid} не найдена", 404, ids=[gid])
+                            return json_response(body, status)
+                        pts = _reports_resolve_group_points(group_repo, gid, composition_mode, ts_from)
+                        targets.append((g.id, g.name, pts))
+                else:  # balance_scope
+                    for sid in scope_ids:
+                        row = c.execute(
+                            "SELECT * FROM balance_scopes WHERE id = ?", (sid,)).fetchone()
+                        if row is None:
+                            body, status = _err("not_found", f"Граница баланса {sid} не найдена",
+                                                 404, ids=[sid])
+                            return json_response(body, status)
+                        targets.append((row["id"], row["name"], None))
+
+                rows = []
+                for scope_id, name, point_ids in targets:
+                    if dimension == "balance_scope":
+                        result = balance(db, binding_repo, aggregates_repo, source_repo, edge_repo,
+                                          scope_id, ts_from, ts_to, timezone_name)
+                        conflict_reason = None
+                        member_ids = (result.explanation.get("input_point_ids", [])
+                                      + result.explanation.get("output_point_ids", []))
+                    else:
+                        result, conflict_reason = _reports_row_result(
+                            dimension, point_ids, binding_repo, aggregates_repo, source_repo,
+                            edge_repo, ts_from, ts_to, timezone_name)
+                        member_ids = point_ids
+
+                    if result is not None:
+                        _tag_result(result, pinned_revision)
+
+                    row = {
+                        "dimension": dimension,
+                        "id": scope_id,
+                        "name": name,
+                        "member_point_ids": member_ids,
+                        "result": result.to_dict() if result is not None else None,
+                        "conflict_reason": conflict_reason,
+                    }
+
+                    if compare is not None:
+                        if dimension in ("branch", "group"):
+                            cmp_point_ids = _reports_resolve_group_points(
+                                group_repo, scope_id, composition_mode, cmp_ts_from)
+                        else:
+                            cmp_point_ids = point_ids
+
+                        if dimension == "balance_scope":
+                            cmp_result = balance(db, binding_repo, aggregates_repo, source_repo,
+                                                  edge_repo, scope_id, cmp_ts_from, cmp_ts_to,
+                                                  timezone_name)
+                            cmp_conflict = None
+                            cmp_member_ids = (cmp_result.explanation.get("input_point_ids", [])
+                                              + cmp_result.explanation.get("output_point_ids", []))
+                        else:
+                            cmp_result, cmp_conflict = _reports_row_result(
+                                dimension, cmp_point_ids, binding_repo, aggregates_repo,
+                                source_repo, edge_repo, cmp_ts_from, cmp_ts_to, timezone_name)
+                            cmp_member_ids = cmp_point_ids
+
+                        if cmp_result is not None:
+                            _tag_result(cmp_result, pinned_revision)
+
+                        # A21/A22: явно раскрываем отличие состава между
+                        # периодами, а не молча публикуем разницу чисел,
+                        # посчитанных по разному составу точек. В режиме
+                        # composition_mode="current" состав в обоих
+                        # периодах резолвится "на сейчас" (at=None) — по
+                        # определению одинаков, composition_changed всегда
+                        # False (это и есть смысл режима "current").
+                        composition_changed = (
+                            sorted(member_ids or []) != sorted(cmp_member_ids or [])
+                            if dimension in ("branch", "group") else False
+                        )
+
+                        delta_value = None
+                        if (result is not None and cmp_result is not None
+                                and result.value is not None and cmp_result.value is not None):
+                            delta_value = round(result.value - cmp_result.value, 6)
+                        delta_pct, delta_pct_reason = resolve_percentage(
+                            delta_value, cmp_result.value if cmp_result is not None else None)
+
+                        row["compare_member_point_ids"] = cmp_member_ids
+                        row["compare_result"] = cmp_result.to_dict() if cmp_result is not None else None
+                        row["compare_conflict_reason"] = cmp_conflict
+                        row["composition_changed"] = composition_changed
+                        row["delta_value"] = delta_value
+                        row["delta_percentage"] = delta_pct
+                        row["delta_percentage_reason"] = delta_pct_reason
+
+                    rows.append(row)
+
+            except ContractViolation as e:
+                log.exception("ContractViolation при reports/query: %s", e)
+                body, status = _err("internal", "внутренняя ошибка формирования результата", 500)
+                return json_response(body, status)
+            except ValueError as e:
+                body, status = _err("bad_request", str(e), 400)
+                return json_response(body, status)
+
+        response = {
+            "configuration_revision_id": pinned_revision,
+            "as_of": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "dimension": dimension,
+            "composition_mode": composition_mode,
+            "period": {"from": str(ts_from), "to": str(ts_to), "timezone": timezone_name},
+            "rows": rows,
+        }
+        if compare is not None:
+            response["compare_period"] = {
+                "from": str(cmp_ts_from), "to": str(cmp_ts_to), "timezone": timezone_name}
+        return json_response(response)
 
     # -------------------------------------------------------------- plans
     # Стадия D (ТЗ §7): план помещений/однолинейная схема поверх
