@@ -87,6 +87,52 @@ jobs:
       - name: Run unit tests (самопроверка интерфейса + заглушка)
         run: python tests/test_step12_selfcheck.py
 
+      # Кавычки обязательны везде ниже, где в имени шага есть ": " —
+      # незакавыченное значение с ": " внутри делает YAML невалидным, и
+      # GitHub Actions молча не запускает workflow ЦЕЛИКОМ (см. пример
+      # выше про test_step11 — так CI простоял сломанным весь v0.11.0).
+      - name: "Run unit tests (доменная модель v2: контракт учёта)"
+        run: python tests/test_step13_accounting_contract.py
+
+      - name: "Run unit tests (доменная модель v2: легаси-сценарии)"
+        run: python tests/test_step13_legacy_scenarios.py
+
+      - name: "Run unit tests (v2: точки учёта и места)"
+        run: python tests/test_step14_point_location_repo.py
+
+      - name: "Run unit tests (v2: привязка счётчиков к точкам)"
+        run: python tests/test_step15_binding_service.py
+
+      - name: "Run unit tests (v2: электросеть/топология)"
+        run: python tests/test_step16_topology_service.py
+
+      - name: "Run unit tests (v2: расчёт баланса)"
+        run: python tests/test_step17_accounting_service.py
+
+      - name: "Run unit tests (v2: HTTP-слой /api/v2)"
+        run: python tests/test_step18_api_v2.py
+
+      - name: "Run unit tests (v2: перенос легаси-данных)"
+        run: python tests/test_step19_legacy_migration.py
+
+      - name: "Run unit tests (v2: carry-forward для no_data)"
+        run: python tests/test_step20_carry_forward.py
+
+      - name: "Run unit tests (v2: план объекта)"
+        run: python tests/test_step21_plan_v2.py
+
+      - name: "Run unit tests (v2: генерация домена/откат)"
+        run: python tests/test_step22_domain_generation.py
+
+      - name: "Run unit tests (v2: снимок текущих значений)"
+        run: python tests/test_step23_snapshot.py
+
+      - name: "Run unit tests (v2: группы верхнего уровня)"
+        run: python tests/test_step24_group_repo_v2.py
+
+      - name: "Run unit tests (v2: HTTP-слой /api/v2/groups)"
+        run: python tests/test_step25_api_v2_groups.py
+
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
 
@@ -151,6 +197,20 @@ jobs:
           python tests/test_step10_wbserial.py
           python tests/test_step11_plan.py
           python tests/test_step12_selfcheck.py
+          python tests/test_step13_accounting_contract.py
+          python tests/test_step13_legacy_scenarios.py
+          python tests/test_step14_point_location_repo.py
+          python tests/test_step15_binding_service.py
+          python tests/test_step16_topology_service.py
+          python tests/test_step17_accounting_service.py
+          python tests/test_step18_api_v2.py
+          python tests/test_step19_legacy_migration.py
+          python tests/test_step20_carry_forward.py
+          python tests/test_step21_plan_v2.py
+          python tests/test_step22_domain_generation.py
+          python tests/test_step23_snapshot.py
+          python tests/test_step24_group_repo_v2.py
+          python tests/test_step25_api_v2_groups.py
 
   lint:
     name: Basic checks
