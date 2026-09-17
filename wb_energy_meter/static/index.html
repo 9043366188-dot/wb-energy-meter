@@ -434,16 +434,22 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     <span x-text="mqtt.connected?'MQTT online':'MQTT offline'"></span>
   </div>
   <nav>
-    <button :class="{active:tab=='dash'}" @click="tab='dash'">Дашборд</button>
-    <button :class="{active:tab=='overviewv2'}" @click="tab='overviewv2';openOverviewV2Tab()">Обзор</button>
-    <button :class="{active:tab=='plan'}" @click="tab='plan';openPlanTab()">План</button>
-    <button :class="{active:tab=='planv2'}" @click="tab='planv2';openPlanV2Tab()">План v2</button>
-    <button :class="{active:tab=='consumption'}" @click="tab='consumption';loadConsumption()">Расход</button>
-    <button :class="{active:tab=='settings'}" @click="tab='settings';loadSettings();initUpdatePanel()">Настройки</button>
-    <button :class="{active:tab=='reports'}" @click="tab='reports';initReports()">Отчёты</button>
+    <!-- Классический набор (см. константу UI_SET_TABS / DEFAULT_UI_SET в
+         основном script-блоке ниже — она же решает, какой набор открыт по
+         умолчанию). -->
+    <button x-show="uiSet=='classic'" :class="{active:tab=='dash'}" @click="tab='dash'">Дашборд</button>
+    <button x-show="uiSet=='classic'" :class="{active:tab=='plan'}" @click="tab='plan';openPlanTab()">План</button>
+    <button x-show="uiSet=='classic'" :class="{active:tab=='consumption'}" @click="tab='consumption';loadConsumption()">Расход</button>
+    <button x-show="uiSet=='classic'" :class="{active:tab=='settings'}" @click="tab='settings';loadSettings();initUpdatePanel()">Настройки</button>
+    <button x-show="uiSet=='classic'" :class="{active:tab=='reports'}" @click="tab='reports';initReports()">Отчёты</button>
+    <!-- Новый набор (ТЗ v2, этапы D/E не завершены — см. CHANGELOG.md). -->
+    <button x-show="uiSet=='v2'" :class="{active:tab=='overviewv2'}" @click="tab='overviewv2';openOverviewV2Tab()">Обзор</button>
+    <button x-show="uiSet=='v2'" :class="{active:tab=='planv2'}" @click="tab='planv2';openPlanV2Tab()">План v2</button>
   </nav>
   <div class="spacer"></div>
   <span class="muted mono" x-text="version?'v'+version:''"></span>
+  <button class="ico-btn" @click="toggleUiSet()" x-text="uiSet=='v2'?'Классический':'Новый интерфейс'"
+          title="Переключить набор вкладок: классический интерфейс или новый (ТЗ v2, в разработке — см. CHANGELOG.md)"></button>
   <button class="ico-btn" @click="toggleTheme()" x-text="theme=='dark'?'☀ Светлая':'🌙 Тёмная'"></button>
   <button class="ico-btn" @click="refresh()">⟳ Обновить</button>
 </header>
@@ -589,7 +595,18 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         <div class="empty" style="color:var(--err)" x-text="overviewV2Error"></div>
       </template>
       <template x-if="!overviewV2Loading && overviewV2Snapshot && overviewV2Snapshot.points.length===0">
-        <div class="empty">Нет точек учёта. Перенесите легаси-данные на вкладке <b>Настройки</b> или создайте точки вручную.</div>
+        <div class="empty" style="text-align:left;line-height:1.5">
+          <b>Точек учёта пока нет.</b><br>
+          Новый интерфейс использует отдельную модель данных (точки учёта, места,
+          электросеть, группы) — она не заполняется автоматически, а старые счётчики
+          и группы из классического интерфейса в неё не попадают сами собой.
+          Перенесите их одной операцией (безопасно повторять, перед переносом
+          делается бэкап БД) — либо создайте точки вручную на вкладке «Настройки».
+          <div style="margin-top:12px">
+            <button class="btn btn-primary" @click="migrateLegacyConfirm=true"
+                    :disabled="migrateLegacyBusy">Перенести легаси-данные</button>
+          </div>
+        </div>
       </template>
       <template x-if="overviewV2Groups.length>0 || overviewV2GroupsError">
         <div style="margin-bottom:24px">
@@ -867,7 +884,17 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
        geoman уже используется в проекте для зон v1 — тот же приём. -->
   <div x-show="tab=='planv2'">
     <template x-if="!planV2Loading && planV2Plans.length===0">
-      <div class="plan-empty">Планов v2 пока нет.</div>
+      <div class="plan-empty" style="text-align:left;max-width:560px;margin:0 auto;line-height:1.5">
+        <b>Планов v2 пока нет.</b><br>
+        Создайте план ниже — но чтобы на нём можно было расставить точки учёта и узлы
+        сети, они сначала должны появиться в новой модели данных. Если легаси-данные
+        (счётчики, группы) ещё не переносились, справочник точек в редакторе плана
+        будет пуст: перенесите их на вкладке «Настройки», либо прямо отсюда.
+        <div style="margin-top:12px">
+          <button class="btn btn-primary" @click="migrateLegacyConfirm=true"
+                  :disabled="migrateLegacyBusy">Перенести легаси-данные</button>
+        </div>
+      </div>
     </template>
     <div x-show="planV2Plans.length>0">
       <div class="plan-toolbar">
@@ -2532,8 +2559,27 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 <script src="/static/vendor/leaflet-geoman.min.js"></script>
 <script src="/static/vendor/alpine.min.js" defer></script>
 <script>
+// Набор вкладок, который открывается по умолчанию (когда в localStorage ещё
+// ничего не сохранено — первый заход пользователя). ТЗ v2
+// (docs/TZ-metering-architecture-dashboard.md) реализовано только частично
+// (этапы A-C, часть D/F — см. CHANGELOG.md, «Известные ограничения» 0.12.0):
+// в новом наборе пока нет ведомости/профиля/сравнения/доступности/баланса —
+// вся эта работа только в старых «Отчётах». Поэтому сейчас по умолчанию
+// ОБЯЗАН открываться классический набор. Когда этапы D/E будут закончены,
+// для смены дефолта достаточно поменять одну эту строку на 'v2'.
+const DEFAULT_UI_SET = 'classic';
+// Какие вкладки относятся к какому набору — используется и для показа
+// нужных кнопок в <nav>, и чтобы при переключении набора активная вкладка
+// уехала на первую вкладку нового набора, а не осталась скрытой.
+const UI_SET_TABS = {
+  classic: ['dash', 'plan', 'consumption', 'settings', 'reports'],
+  v2: ['overviewv2', 'planv2'],
+};
+
 function app(){ return {
-  tab:'dash', theme:lsGet('theme','dark'), loading:true,
+  tab: (lsGet('wbem.uiSet', DEFAULT_UI_SET)=='v2') ? 'overviewv2' : 'dash',
+  uiSet: lsGet('wbem.uiSet', DEFAULT_UI_SET),
+  theme:lsGet('theme','dark'), loading:true,
   meters:[], byStatus:{}, mqtt:{connected:false,messages:0,errors:0},
   version:'', uptime:0, detail:null,
   // consumption
@@ -2653,6 +2699,12 @@ function app(){ return {
     this.refresh();
     this.loadChannelDictionary();
     this.reloadGroups();
+    // Если сохранённый выбор набора вкладок (localStorage, см. uiSet выше) —
+    // новый интерфейс, начальная вкладка уже выставлена на 'overviewv2' —
+    // догружаем её данные сразу, иначе экран будет пустым до первого тика
+    // 5-секундного таймера ниже.
+    if(this.tab=='overviewv2') this.openOverviewV2Tab();
+    if(this.tab=='planv2') this.openPlanV2Tab();
     this._timer=setInterval(()=>{
       if(this.tab=='dash') this.loadStatus();
       // План (ТЗ v0.11.0): та же частота 5с, что и дашборд. Обновляем
@@ -2675,6 +2727,26 @@ function app(){ return {
     // --err/--accent2) в момент отрисовки, не через var() внутри SVG —
     // после смены темы их нужно пересчитать явно.
     this.$nextTick(()=>{ if(typeof this._planApplyLiveStyles==='function') this._planApplyLiveStyles(); });
+  },
+  // Переключатель классический/новый интерфейс (UI_SET_TABS/DEFAULT_UI_SET
+  // объявлены в начале <script> выше). Выбор запоминается в localStorage —
+  // в приватных вкладках доступ к нему бросает исключение, поэтому try/catch.
+  toggleUiSet(){
+    this.uiSet = this.uiSet=='classic' ? 'v2' : 'classic';
+    try{ localStorage.setItem('wbem.uiSet', this.uiSet); }catch(e){}
+    // Активная вкладка принадлежала старому набору — она невидима в новом,
+    // переезжаем на первую вкладку набора, куда переключились, и догружаем
+    // для неё данные (та же логика, что и у клика по кнопке вкладки в nav).
+    const tabs = UI_SET_TABS[this.uiSet] || [];
+    if(tabs.indexOf(this.tab)===-1){
+      this.tab = tabs[0];
+      if(this.tab=='overviewv2') this.openOverviewV2Tab();
+      else if(this.tab=='planv2') this.openPlanV2Tab();
+      else if(this.tab=='plan') this.openPlanTab();
+      else if(this.tab=='consumption') this.loadConsumption();
+      else if(this.tab=='settings'){ this.loadSettings(); this.initUpdatePanel(); }
+      else if(this.tab=='reports') this.initReports();
+    }
   },
   refresh(){
     this.loadStatus();
@@ -3754,6 +3826,7 @@ function app(){ return {
   openZoneOnDashboard(groupId){
     const z=(this.zones||[]).find(g=>g.id===groupId);
     const name=z?z.name:null;
+    this.uiSet='classic'; // 'dash' — вкладка классического набора, см. UI_SET_TABS
     this.tab='dash';
     this.$nextTick(()=>{
       if(!name) return;
