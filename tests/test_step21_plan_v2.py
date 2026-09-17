@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import struct
 import sys
 import tempfile
 import time
@@ -18,8 +19,6 @@ import io
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
-from PIL import Image
-
 from wb_energy_meter.db import Database
 from wb_energy_meter.repo import GroupRepo, MeterRepo
 from wb_energy_meter.api import create_app, _AppState
@@ -27,6 +26,19 @@ from wb_energy_meter.model import MeterRegistry
 from wb_energy_meter.point_repo import MeteringPointRepo
 from wb_energy_meter.topology_service import ElectricalNodeRepo, ElectricalEdgeRepo
 from wb_energy_meter.plan_service_v2 import MAX_DECODED_LONG_SIDE, MAX_DECODED_MEGAPIXELS
+
+
+# Правило проекта: никаких новых зависимостей (Pillow запрещён, на
+# контроллере его нет). Минимальный валидный PNG-заголовок — сигнатура
+# + чанк IHDR — собираем вручную, ровно то, что умеет распарсить
+# image_meta.parse_image_size() (см. wb_energy_meter/image_meta.py);
+# дальше по IDAT/IEND код плана вообще не заглядывает. Тот же приём,
+# что и в tests/test_step11_plan.py::make_png().
+def make_png(width, height):
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr_data = struct.pack(">II", width, height) + b"\x08\x06\x00\x00\x00"
+    ihdr = struct.pack(">I", len(ihdr_data)) + b"IHDR" + ihdr_data + b"\x00\x00\x00\x00"
+    return sig + ihdr
 
 
 def make_client():
@@ -58,9 +70,7 @@ def test_floor_and_single_line_plan_create():
     client, db, path, plans_dir = make_client()
     try:
         # --- 1. create floor plan with image ---
-        buf = io.BytesIO()
-        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
-        png_bytes = buf.getvalue()
+        png_bytes = make_png(800, 600)
 
         r = client.post("/api/v2/plans", data={
             "name": "Этаж 1", "plan_kind": "floor",
@@ -100,9 +110,7 @@ def test_plan_items_geometry_validation():
     client, db, path, plans_dir = make_client()
     try:
         # Create floor plan with image
-        buf = io.BytesIO()
-        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
-        png_bytes = buf.getvalue()
+        png_bytes = make_png(800, 600)
 
         r = client.post("/api/v2/plans", data={
             "name": "Этаж 1", "plan_kind": "floor",
@@ -138,9 +146,7 @@ def test_edge_view_endpoint_validation():
     client, db, path, plans_dir = make_client()
     try:
         # Create floor plan
-        buf = io.BytesIO()
-        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
-        png_bytes = buf.getvalue()
+        png_bytes = make_png(800, 600)
 
         r = client.post("/api/v2/plans", data={
             "name": "Этаж 1", "plan_kind": "floor",
@@ -209,9 +215,7 @@ def test_layout_revision_conflict_a35():
     client, db, path, plans_dir = make_client()
     try:
         # Create floor plan
-        buf = io.BytesIO()
-        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
-        png_bytes = buf.getvalue()
+        png_bytes = make_png(800, 600)
 
         r = client.post("/api/v2/plans", data={
             "name": "Этаж 1", "plan_kind": "floor",
@@ -292,9 +296,7 @@ def test_plan_item_removal_preserves_entity():
     client, db, path, plans_dir = make_client()
     try:
         # Create floor plan
-        buf = io.BytesIO()
-        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
-        png_bytes = buf.getvalue()
+        png_bytes = make_png(800, 600)
 
         r = client.post("/api/v2/plans", data={
             "name": "Этаж 1", "plan_kind": "floor",
@@ -328,9 +330,7 @@ def test_plan_delete_cascade_and_404s():
     client, db, path, plans_dir = make_client()
     try:
         # Create two plans
-        buf = io.BytesIO()
-        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
-        png_bytes = buf.getvalue()
+        png_bytes = make_png(800, 600)
 
         r = client.post("/api/v2/plans", data={
             "name": "План 1", "plan_kind": "floor",
@@ -367,9 +367,7 @@ def test_image_size_limit_rejected():
     try:
         # Create image exceeding MAX_DECODED_LONG_SIDE
         oversized_width = MAX_DECODED_LONG_SIDE + 100
-        buf = io.BytesIO()
-        Image.new("RGB", (oversized_width, 100), (255, 0, 0)).save(buf, format="PNG")
-        png_bytes = buf.getvalue()
+        png_bytes = make_png(oversized_width, 100)
 
         r = client.post("/api/v2/plans", data={
             "name": "Огромный план", "plan_kind": "floor",
@@ -389,9 +387,7 @@ def test_waypoints_out_of_bounds_rejected():
     client, db, path, plans_dir = make_client()
     try:
         # Create floor plan
-        buf = io.BytesIO()
-        Image.new("RGB", (800, 600), (255, 0, 0)).save(buf, format="PNG")
-        png_bytes = buf.getvalue()
+        png_bytes = make_png(800, 600)
 
         r = client.post("/api/v2/plans", data={
             "name": "Этаж 1", "plan_kind": "floor",
