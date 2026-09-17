@@ -1,4 +1,4 @@
-__version__ = "0.11.1"
+__version__ = "0.12.0"
 __app_name__ = "wb-energy-meter"
 
 # Поколение домена, которое ПОНИМАЕТ этот код (docs/migration-plan-v2.md §7,
