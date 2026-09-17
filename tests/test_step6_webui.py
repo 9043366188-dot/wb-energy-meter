@@ -172,6 +172,20 @@ def test_ui_has_dashboard_and_consumption():
     print("[OK] UI contains dashboard + consumption + detail")
 
 
+def test_ui_has_overview_v2_branch_table():
+    """Обзор v2 (ТЗ §8.2) — таблица веток верхнего уровня поверх
+    GroupRepoV2.resolve_effective_members (Шаг 24/25). Регрессия на
+    случайное удаление разметки/методов при последующих правках index.html."""
+    content = _load_static("index.html")
+    assert "tab=='overviewv2'" in content
+    assert "overviewV2BranchRows" in content
+    assert "overviewV2GroupMembers" in content
+    assert "overviewV2UngroupedCount" in content
+    assert "/api/v2/groups?parent_id=null" in content
+    assert "effective-members" in content
+    print("[OK] UI contains Обзор v2 branch table (groups rollup)")
+
+
 def test_index_html_tag_balance():
     """Регрессия на незакрытый <template> (см. AGENTS.md) — самая дорогая
     ошибка в истории проекта: белый экран без единой ошибки в консоли."""
@@ -220,6 +234,7 @@ if __name__ == "__main__":
     test_static_loader_fallback()
     test_docs_still_works()
     test_ui_has_dashboard_and_consumption()
+    test_ui_has_overview_v2_branch_table()
     test_index_html_tag_balance()
     test_ci_workflow_is_valid_yaml()
     print("\nВсе тесты Шага 6 (web UI) пройдены.")

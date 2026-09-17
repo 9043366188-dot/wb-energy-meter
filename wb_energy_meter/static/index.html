@@ -435,6 +435,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   </div>
   <nav>
     <button :class="{active:tab=='dash'}" @click="tab='dash'">Дашборд</button>
+    <button :class="{active:tab=='overviewv2'}" @click="tab='overviewv2';openOverviewV2Tab()">Обзор</button>
     <button :class="{active:tab=='plan'}" @click="tab='plan';openPlanTab()">План</button>
     <button :class="{active:tab=='planv2'}" @click="tab='planv2';openPlanV2Tab()">План v2</button>
     <button :class="{active:tab=='consumption'}" @click="tab='consumption';loadConsumption()">Расход</button>
@@ -552,6 +553,140 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
       </div>
     </div>
   </template>
+    </div>
+  </template>
+
+  <!-- ОБЗОР v2 (ТЗ §8.2) -->
+  <template x-if="tab=='overviewv2'">
+    <div>
+      <div class="tiles">
+        <div class="tile">
+          <div class="lbl">Мощность сейчас</div>
+          <div class="val mono"><span x-text="overviewV2TotalPowerKw()!=null?fmt(overviewV2TotalPowerKw(),1):'—'"></span><small> кВт</small></div>
+          <div class="sub">сумма по точкам с данными</div>
+        </div>
+        <div class="tile">
+          <div class="lbl">Энергия (снимок)</div>
+          <div class="val mono"><span x-text="overviewV2TotalEnergyKwh()!=null?fmt(overviewV2TotalEnergyKwh(),1):'—'"></span><small> кВт·ч</small></div>
+          <div class="sub">сумма Total AP energy, не расчёт за период</div>
+        </div>
+        <div class="tile">
+          <div class="lbl">Требует внимания</div>
+          <div class="val mono" x-text="overviewV2Problems().length"></div>
+          <div class="sub" x-show="overviewV2Problems().length>0"
+               x-text="'не привязано: '+overviewV2Problems().filter(p=>p.kind==='unbound').length+' · нет связи: '+overviewV2Problems().filter(p=>p.kind==='no_connection').length+' · не подключалось: '+overviewV2Problems().filter(p=>p.kind==='never_seen').length+' · ошибка: '+overviewV2Problems().filter(p=>p.kind==='device_error').length"></div>
+        </div>
+        <div class="tile" x-show="overviewV2Snapshot">
+          <div class="lbl">Снимок на</div>
+          <div class="val mono" style="font-size:16px" x-text="overviewV2Snapshot?overviewV2Snapshot.as_of.split('T')[1].slice(0,8):'—'"></div>
+          <div class="sub" x-text="overviewV2Snapshot?overviewV2Snapshot.as_of.split('T')[0]:'—'"></div>
+        </div>
+      </div>
+      <template x-if="overviewV2Loading && !overviewV2Snapshot">
+        <div class="empty"><span class="spin"></span> загрузка…</div>
+      </template>
+      <template x-if="overviewV2Error">
+        <div class="empty" style="color:var(--err)" x-text="overviewV2Error"></div>
+      </template>
+      <template x-if="!overviewV2Loading && overviewV2Snapshot && overviewV2Snapshot.points.length===0">
+        <div class="empty">Нет точек учёта. Перенесите легаси-данные на вкладке <b>Настройки</b> или создайте точки вручную.</div>
+      </template>
+      <template x-if="overviewV2Groups.length>0 || overviewV2GroupsError">
+        <div style="margin-bottom:24px">
+          <div class="section-title">Ветки (группы верхнего уровня)</div>
+          <template x-if="overviewV2GroupsError">
+            <div class="empty" style="color:var(--err)" x-text="overviewV2GroupsError"></div>
+          </template>
+          <template x-if="!overviewV2GroupsError && overviewV2Groups.length>0">
+            <table class="rep-table">
+              <thead><tr>
+                <th>Ветвь</th>
+                <th class="num">P сейчас, кВт</th>
+                <th class="num">E (снимок), кВт·ч</th>
+                <th class="num">Точки</th>
+              </tr></thead>
+              <tbody>
+                <template x-for="row in overviewV2BranchRows()" :key="row.group.id">
+                  <tr>
+                    <td>
+                      <span style="display:inline-block;width:10px;height:10px;border-radius:3px;
+                                   margin-right:6px;vertical-align:middle"
+                            :style="`background:${row.group.color||'var(--txt3)'}`"></span>
+                      <span x-text="row.group.name"></span>
+                      <span class="muted" style="font-size:11px" x-show="row.group.category"
+                            x-text="'('+row.group.category+')'"></span>
+                    </td>
+                    <td class="num mono" x-text="row.power_kw!=null?fmt(row.power_kw,1):'—'"></td>
+                    <td class="num mono" x-text="row.energy_kwh!=null?fmt(row.energy_kwh,1):'—'"></td>
+                    <td class="num mono" x-text="row.knownCount+'/'+row.pointCount"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </template>
+          <div class="muted" style="font-size:11px;margin-top:6px" x-show="overviewV2UngroupedCount()>0"
+               x-text="overviewV2UngroupedCount()+' точек не входит ни в одну группу'"></div>
+          <div class="muted" style="font-size:11px;margin-top:4px">
+            Суммы по веткам — разбивка текущего снимка по составу группы, не проверенный итог объекта;
+            ветки могут пересекаться (точка вправе состоять в нескольких группах, ТЗ §4.4).
+          </div>
+        </div>
+      </template>
+      <template x-if="overviewV2Problems().length>0">
+        <div class="section-title">Требует внимания</div>
+        <div style="margin-bottom:24px">
+          <template x-for="prob in overviewV2Problems()" :key="prob.point.point_id">
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;
+                        background:var(--bg2);border:1px solid var(--line);margin-bottom:8px;
+                        border-radius:6px">
+              <span class="badge" :style="badgeStyle(prob.point.device_status)"
+                    x-text="prob.kind==='unbound'?'не привязана':statusLabel(prob.point.device_status)"></span>
+              <span style="flex:1">
+                <div style="font-weight:600" x-text="prob.point.name||prob.point.code"></div>
+                <div class="muted" style="font-size:11px" x-text="'('+prob.point.code+')'"></div>
+              </span>
+              <span class="muted" style="font-size:11px;text-align:right"
+                    x-text="prob.kind==='unbound'?'не привязана к прибору':(prob.kind==='no_connection'?'нет связи с устройством':prob.kind==='never_seen'?'устройство ещё не подключалось':'ошибка устройства')"></span>
+            </div>
+          </template>
+        </div>
+      </template>
+      <template x-if="overviewV2Snapshot && overviewV2Snapshot.points.length>0">
+        <div class="section-title">Все точки учёта</div>
+        <table class="rep-table">
+          <thead><tr>
+            <th>Код</th>
+            <th>Имя</th>
+            <th>Статус</th>
+            <th class="num">Мощность, кВт</th>
+            <th class="num">Энергия, кВт·ч</th>
+            <th class="num">U L1, В</th>
+            <th class="num">U L2, В</th>
+            <th class="num">U L3, В</th>
+            <th>Обновлено</th>
+          </tr></thead>
+          <tbody>
+            <template x-for="p in overviewV2Snapshot.points" :key="p.point_id">
+              <tr>
+                <td style="font-family:monospace;font-size:12px" x-text="p.code"></td>
+                <td x-text="p.name"></td>
+                <td>
+                  <span class="badge" :style="badgeStyle(p.binding_status==='unbound'?'unknown':p.device_status)"
+                        x-text="p.binding_status==='unbound'?'не привязана':statusLabel(p.device_status)"></span>
+                </td>
+                <td class="num mono" x-text="p.power_w!=null?fmt(p.power_w/1000,2):'—'"></td>
+                <td class="num mono" x-text="p.energy_total_kwh!=null?fmt(p.energy_total_kwh,1):'—'"></td>
+                <td class="num mono" x-text="p.voltage_v?fmt(p.voltage_v.L1,0):'—'"></td>
+                <td class="num mono" x-text="p.voltage_v?fmt(p.voltage_v.L2,0):'—'"></td>
+                <td class="num mono" x-text="p.voltage_v?fmt(p.voltage_v.L3,0):'—'"></td>
+                <td :class="updateAgeClass(p.last_update_age_s)">
+                  <span x-text="fmtAge(p.last_update_age_s)"></span>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </template>
     </div>
   </template>
 
@@ -1080,6 +1215,54 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               </div>
             </template>
           </div>
+        </template>
+      </div>
+
+      <!-- Перенос легаси-данных в новую модель точек учёта -->
+      <div class="settings-section">
+        <h2>Перенос легаси-данных</h2>
+        <div class="muted" style="margin-bottom:12px;line-height:1.5">
+          Переносит существующие счётчики и группы в новую модель точек учёта.
+          Без этого шага справочник точек учёта в редакторе плана будет пуст.
+          Действие безопасно повторять — уже перенесённые счётчики просто пропускаются.
+          Перед переносом автоматически делается бэкап базы данных.
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+          <button class="btn btn-primary" @click="migrateLegacyConfirm=true"
+                  :disabled="migrateLegacyBusy">Перенести легаси-данные</button>
+        </div>
+        <!-- Во время миграции -->
+        <template x-if="migrateLegacyBusy">
+          <div style="padding:12px;background:var(--bg3);border-radius:6px;
+                      display:flex;gap:8px;align-items:center;color:var(--txt2)">
+            <span class="spin"></span>
+            <span>Выполняется перенос…</span>
+          </div>
+        </template>
+        <!-- После успешной миграции -->
+        <template x-if="migrateLegacyResult && !migrateLegacyError">
+          <div class="upd-banner upd-banner-ok" style="line-height:1.5">
+            <b>Перенос завершён</b><br>
+            Перенесено точек: <b x-text="(migrateLegacyResult.migrated_points||[]).length"></b>,
+            пропущено (уже перенесены): <b x-text="(migrateLegacyResult.skipped_points||[]).length"></b>
+            <template x-if="(migrateLegacyResult.warnings||[]).length > 0">
+              <details style="margin-top:8px">
+                <summary style="cursor:pointer;font-size:13px">Предупреждения</summary>
+                <ul style="margin:4px 0 0 16px;padding:0">
+                  <template x-for="w in migrateLegacyResult.warnings" :key="w">
+                    <li style="font-size:12px;color:var(--txt2)" x-text="w"></li>
+                  </template>
+                </ul>
+              </details>
+            </template>
+            <div style="margin-top:8px;font-size:12px;color:var(--txt2);font-family:monospace;word-break:break-all">
+              Бэкап БД: <span x-text="migrateLegacyResult.backup_path||'—'"></span>
+            </div>
+          </div>
+        </template>
+        <!-- При ошибке миграции -->
+        <template x-if="migrateLegacyError">
+          <div class="upd-banner upd-banner-err" style="font-size:13px" x-text="migrateLegacyError"></div>
         </template>
       </div>
 
@@ -2318,6 +2501,22 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     </div>
   </template>
 
+  <!-- CONFIRM MIGRATE LEGACY DATA -->
+  <template x-if="migrateLegacyConfirm">
+    <div class="confirm-overlay">
+      <div class="confirm-box">
+        <h3>Перенести легаси-данные?</h3>
+        <p>Это действие переносит существующие счётчики и группы в новую модель точек учёта.
+           Перед переносом автоматически делается бэкап базы данных.
+           Действие изменяет данные контроллера, но может быть безопасно повторено.</p>
+        <div class="actions">
+          <button class="btn btn-secondary" @click="migrateLegacyConfirm=false">Отмена</button>
+          <button class="btn btn-danger" @click="runMigrateLegacy()">Перенести</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
   <!-- TOAST -->
   <template x-if="toast">
     <div class="toast" :class="toast.ok?'toast-ok':'toast-err'" x-text="toast.msg"></div>
@@ -2431,6 +2630,18 @@ function app(){ return {
   planV2DrawingEdgeKey:null, planV2HasPendingEdgeDraw:false,
   planV2PickersLoaded:false, planV2Points:[], planV2Locations:[],
   planV2Nodes:[], planV2Edges:[],
+  // перенос легаси-данных
+  migrateLegacyConfirm:false, migrateLegacyBusy:false,
+  migrateLegacyResult:null, migrateLegacyError:null,
+  // Обзор v2 (ТЗ §8.2)
+  overviewV2Inited:false, overviewV2Loading:false, overviewV2Error:null,
+  overviewV2Snapshot:null,
+  // ветки/группы на Обзоре (ТЗ §8.2 таблица веток, §4.4 GroupRepoV2) —
+  // состав групп меняется редко, поэтому загружается один раз при
+  // открытии вкладки, НЕ на каждом 5с тике вместе со снимком (тик
+  // пересчитывает суммы по уже загруженному составу против свежего
+  // overviewV2Snapshot — см. overviewV2BranchRows).
+  overviewV2Groups:[], overviewV2GroupMembers:{}, overviewV2GroupsError:null,
   // toast
   toast:null, _toastTimer:null,
   _timer:null,
@@ -2448,6 +2659,7 @@ function app(){ return {
       // только стили/попапы (_planApplyLiveStyles), слои не пересоздаём —
       // иначе открытый попап зоны закрывался бы на каждый тик.
       if(this.tab=='plan') this.loadPlanLive();
+      if(this.tab=='overviewv2') this.loadOverviewV2Snapshot();
     },5000);
   },
   async loadChannelDictionary(){
@@ -2624,6 +2836,31 @@ function app(){ return {
     this.uptimeBusy=false;
     await this.loadUptimeSummary();
   },
+  async runMigrateLegacy(){
+    this.migrateLegacyConfirm=false;
+    this.migrateLegacyBusy=true;
+    this.migrateLegacyError=null;
+    this.migrateLegacyResult=null;
+    try{
+      const r=await fetch('/api/v2/admin/migrate-legacy', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({confirm:true}),
+      });
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){
+        this.migrateLegacyError=(d.message||d.error||'Ошибка переноса');
+        if(this.showToast) this.showToast(this.migrateLegacyError, false);
+        return;
+      }
+      this.migrateLegacyResult=d;
+      if(this.showToast) this.showToast('Перенос завершён: '+(d.migrated_points||[]).length+' точек', true);
+    }catch(e){
+      this.migrateLegacyError='Ошибка сети: '+e;
+      if(this.showToast) this.showToast(this.migrateLegacyError, false);
+    }finally{
+      this.migrateLegacyBusy=false;
+    }
+  },
 
   async loadStatus(){
     try{
@@ -2708,12 +2945,12 @@ function app(){ return {
   statusColor(st){ return {
     ok:'var(--ok)',warning:'var(--warn)',no_measurement:'var(--idle)',
     incomplete:'var(--warn)',no_connection:'var(--err)',
-    device_error:'var(--err)',unknown:'var(--txt3)'}[st]||'var(--txt3)';
+    device_error:'var(--err)',unknown:'var(--txt3)',never_seen:'var(--txt3)'}[st]||'var(--txt3)';
   },
   statusLabel(st){ return {
     ok:'OK',warning:'Внимание',no_measurement:'Нет нагрузки',
     incomplete:'Нет фазы',no_connection:'Нет связи',
-    device_error:'Ошибка',unknown:'—'}[st]||st;
+    device_error:'Ошибка',unknown:'—',never_seen:'Не подключалось'}[st]||st;
   },
   badgeStyle(st){
     const c=this.statusColor(st);
@@ -3840,6 +4077,124 @@ function app(){ return {
     _planV2Map.on('pm:create', (e)=>this._planV2OnPmCreate(e));
     window.addEventListener('resize', ()=>{ if(_planV2Map) _planV2Map.invalidateSize(); });
   },
+
+  // ---- Overview v2 (ТЗ §8.2) ----
+  async openOverviewV2Tab(){
+    if(!this.overviewV2Inited){
+      this.overviewV2Inited=true;
+      await Promise.all([this.loadOverviewV2Snapshot(), this.loadOverviewV2Groups()]);
+    }
+  },
+  async loadOverviewV2Groups(){
+    // Корневые группы (parent_id=null) + их ЭФФЕКТИВНЫЙ состав
+    // (GroupRepoV2.resolve_effective_members на бэкенде -- сама группа +
+    // все дочерние, дедуплицировано по точке). Не критично для остального
+    // экрана: при ошибке просто не показываем таблицу веток, снимок и
+    // KPI-плитки работают независимо от групп.
+    try{
+      const r=await fetch('/api/v2/groups?parent_id=null');
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      const groups=await r.json();
+      const members={};
+      await Promise.all(groups.map(async g=>{
+        const rm=await fetch(`/api/v2/groups/${g.id}/effective-members`);
+        if(!rm.ok) throw new Error(`HTTP ${rm.status} (группа ${g.id})`);
+        const dm=await rm.json();
+        members[g.id]=new Set(dm.points.map(p=>p.point_id));
+      }));
+      this.overviewV2Groups=groups;
+      this.overviewV2GroupMembers=members;
+      this.overviewV2GroupsError=null;
+    }catch(e){
+      this.overviewV2Groups=[];
+      this.overviewV2GroupMembers={};
+      this.overviewV2GroupsError=`Не удалось загрузить группы: ${e.message}`;
+    }
+  },
+  overviewV2BranchRows(){
+    // ТЗ §8.2 "Распределение 1 уровня": по каждой корневой группе -- сумма
+    // ТЕКУЩЕГО снимка (не период-баланс) по её эффективному составу.
+    // ВАЖНО: это информационная разбивка по веткам, а не компоненты
+    // проверенного итога объекта -- ветки могут пересекаться по точкам
+    // (ТЗ §4.4 разрешает одной точке состоять в нескольких группах,
+    // например в дереве категории "арендаторы" И "производство"
+    // одновременно), поэтому сумма строк таблицы НЕ обязана и не должна
+    // совпадать с overviewV2TotalPowerKw()/overviewV2TotalEnergyKwh() --
+    // те считаются по ВСЕМ точкам снимка независимо от групп. Здесь та же
+    // null-vs-0 защита (A10), что и в overviewV2TotalPowerKw().
+    if(!this.overviewV2Snapshot || !this.overviewV2Snapshot.points) return [];
+    const byId={};
+    for(const p of this.overviewV2Snapshot.points) byId[p.point_id]=p;
+    return this.overviewV2Groups.map(g=>{
+      const memberIds=this.overviewV2GroupMembers[g.id]||new Set();
+      const pts=[...memberIds].map(id=>byId[id]).filter(Boolean);
+      const withPower=pts.filter(p=>p.power_w!=null);
+      const withEnergy=pts.filter(p=>p.energy_total_kwh!=null);
+      return {
+        group:g,
+        pointCount:pts.length,
+        knownCount:withPower.length,
+        power_kw: withPower.length>0 ? withPower.reduce((s,p)=>s+p.power_w,0)/1000 : null,
+        energy_kwh: withEnergy.length>0 ? withEnergy.reduce((s,p)=>s+p.energy_total_kwh,0) : null,
+      };
+    });
+  },
+  overviewV2UngroupedCount(){
+    // Точки снимка, не входящие НИ В ОДНУ корневую группу (по любому
+    // пути) -- индикатор полноты структуры, не "небаланс" (для него
+    // нужен проверенный balance-scope, не просто сумма по составу).
+    if(!this.overviewV2Snapshot || !this.overviewV2Snapshot.points) return 0;
+    const grouped=new Set();
+    for(const g of this.overviewV2Groups){
+      const ids=this.overviewV2GroupMembers[g.id];
+      if(ids) for(const id of ids) grouped.add(id);
+    }
+    return this.overviewV2Snapshot.points.filter(p=>!grouped.has(p.point_id)).length;
+  },
+  async loadOverviewV2Snapshot(){
+    const shouldShowLoading=!this.overviewV2Snapshot;
+    if(shouldShowLoading) this.overviewV2Loading=true;
+    try{
+      const r=await fetch('/api/v2/snapshot');
+      if(!r.ok){ throw new Error(`HTTP ${r.status}`); }
+      const d=await r.json();
+      this.overviewV2Snapshot=d;
+      this.overviewV2Error=null;
+    }catch(e){
+      this.overviewV2Error=`Не удалось загрузить снимок: ${e.message}`;
+    }finally{
+      this.overviewV2Loading=false;
+    }
+  },
+  overviewV2TotalPowerKw(){
+    // ТЗ A10: точка с настоящим нулевым чтением ("исправна, но нагрузки
+    // нет") — это 0, а не "нет данных". Отличаем по наличию хотя бы
+    // одного НЕ-null значения, а не по знаку суммы (сумма из одних
+    // истинных нулей тоже 0, и это не то же самое, что "нечего сложить").
+    if(!this.overviewV2Snapshot || !this.overviewV2Snapshot.points) return null;
+    const known=this.overviewV2Snapshot.points.filter(p=>p.power_w!=null);
+    if(known.length===0) return null;
+    return known.reduce((sum,p)=>sum+p.power_w, 0)/1000;
+  },
+  overviewV2TotalEnergyKwh(){
+    if(!this.overviewV2Snapshot || !this.overviewV2Snapshot.points) return null;
+    const known=this.overviewV2Snapshot.points.filter(p=>p.energy_total_kwh!=null);
+    if(known.length===0) return null;
+    return known.reduce((sum,p)=>sum+p.energy_total_kwh, 0);
+  },
+  overviewV2Problems(){
+    if(!this.overviewV2Snapshot || !this.overviewV2Snapshot.points) return [];
+    const probs=[];
+    for(const p of this.overviewV2Snapshot.points){
+      if(p.binding_status==='unbound'){
+        probs.push({point:p, kind:'unbound'});
+      }else if(['never_seen','no_connection','device_error'].includes(p.device_status)){
+        probs.push({point:p, kind:p.device_status});
+      }
+    }
+    return probs;
+  },
+
   async openPlanV2Tab(){
     if(!_planV2Map) this.initPlanV2Map();
     if(!this.planV2Inited){

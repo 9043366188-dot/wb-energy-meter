@@ -12,11 +12,15 @@ B/C (BindingConflict/TopologyConflict/AccountingConflict/ValueError) в
   РЕАЛИЗОВАНО: points (CRUD + bindings + replace-meter), locations (CRUD),
   topology/nodes, topology/edges (draft CRUD), topology/validate,
   topology/publish, balance-scopes (CRUD с версионируемым составом),
-  metrics/query (measured/sum/balance/comparison).
+  metrics/query (measured/sum/balance/comparison), snapshot (этап E,
+  ТЗ §8.2/§9.2 — текущие значения без исторических RPC, см. v2_snapshot),
+  groups (этап E/F, ТЗ §4.4 — CRUD + версионируемая иерархия с защитой
+  циклов и областью видимости категории, версионируемый состав точек
+  (одна точка может состоять в нескольких группах), рекурсивный
+  эффективный состав с дедупликацией/происхождением через
+  group_repo_v2.GroupRepoV2 — см. v2_group_effective_members).
 
-  НЕ РЕАЛИЗОВАНО (сознательно отложено — вне этой задачи): groups (нет
-  версионируемого group_repo v2 — group_parent_bindings/group_memberships
-  существуют в схеме, но CRUD-сервис для них ещё не написан); snapshot;
+  НЕ РЕАЛИЗОВАНО (сознательно отложено — вне этой задачи):
   metrics/jobs (долгие расчёты/подписки); plans/items/layout (это стадия D
   плана — редактор плана v2); validation (сводка непривязанных/неразмещённых
   объектов); migration/status. Полный `expected_revision`/`configuration_revision`
@@ -36,6 +40,8 @@ import time
 
 import os
 
+from datetime import datetime, timezone
+
 from flask import request, Response
 
 from .accounting_contract import ContractViolation
@@ -44,6 +50,7 @@ from .accounting_service import (
 )
 from .binding_service import BindingConflict, PointBindingRepo
 from .location_repo import LocationRepo
+from .model import PHASES
 from .point_repo import MeteringPointRepo, MeterSourceRepo
 from .topology_service import (
     ElectricalNodeRepo, ElectricalEdgeRepo, TopologyConflict,
@@ -55,6 +62,9 @@ from .plan_service_v2 import (
     SitePlanRepoV2, PlanItemRepo, PlanEdgeViewRepo,
     RevisionConflict, PlanError, save_plan_layout,
 )
+from .legacy_migration import migrate_meters_and_groups
+from .group_repo_v2 import GroupRepoV2
+from dataclasses import asdict as _dataclass_asdict
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +108,7 @@ def register_v2_routes(app, state, json_response):
     def _plan_repo_v2(): return SitePlanRepoV2(db, state.plans_dir)
     def _plan_item_repo(): return PlanItemRepo(db)
     def _plan_edge_view_repo(): return PlanEdgeViewRepo(db)
+    def _group_repo_v2(): return GroupRepoV2(db)
 
     def _point_to_dict(p):
         return {
@@ -145,6 +156,20 @@ def register_v2_routes(app, state, json_response):
             "valid_from": b.valid_from, "valid_to": b.valid_to,
             "replacement_note": b.replacement_note,
             "created_at": b.created_at,
+        }
+
+    def _group_to_dict(g):
+        return {
+            "id": g.id, "name": g.name, "category": g.category,
+            "parent_id": g.parent_id, "color": g.color,
+            "created_at": g.created_at,
+        }
+
+    def _membership_to_dict(m):
+        return {
+            "id": m.id, "group_id": m.group_id, "point_id": m.point_id,
+            "valid_from": m.valid_from, "valid_to": m.valid_to,
+            "created_at": m.created_at,
         }
 
     def _plan_or_404_v2(plan_id):
@@ -293,6 +318,177 @@ def register_v2_routes(app, state, json_response):
             body, status2 = _err(code, str(e), status, ids=[location_id])
             return json_response(body, status2)
         return json_response(_location_to_dict(repo.get_by_id(location_id)))
+
+    # -------------------------------------------------------------- groups
+    # ТЗ §4.4 — см. group_repo_v2.GroupRepoV2 для правил (категория,
+    # циклы, многогруппность точки, дедупликация эффективного состава).
+
+    @app.route("/api/v2/groups", methods=["GET", "POST"])
+    def v2_groups():
+        repo = _group_repo_v2()
+        if request.method == "GET":
+            parent_raw = request.args.get("parent_id")
+            if parent_raw is not None:
+                if parent_raw == "null":
+                    parent_id = None
+                else:
+                    try:
+                        parent_id = int(parent_raw)
+                    except ValueError:
+                        body, status = _err(
+                            "bad_request",
+                            "parent_id должен быть целым числом или 'null'",
+                            400, fields=["parent_id"])
+                        return json_response(body, status)
+                return json_response(
+                    [_group_to_dict(g) for g in repo.list_children(parent_id)])
+            return json_response([_group_to_dict(g) for g in repo.list_all()])
+
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        try:
+            g = repo.add(
+                name=data.get("name"), category=data.get("category"),
+                parent_id=data.get("parent_id"), color=data.get("color"),
+            )
+        except ValueError as e:
+            msg = str(e).lower()
+            if "цикл" in msg:
+                code, status = "cycle_conflict", 409
+            elif "категор" in msg:
+                code, status = "category_conflict", 409
+            else:
+                code, status = "bad_request", 400
+            body, status2 = _err(code, str(e), status, fields=["name", "parent_id"])
+            return json_response(body, status2)
+        return json_response(_group_to_dict(g), 201)
+
+    @app.route("/api/v2/groups/<int:group_id>", methods=["GET", "PATCH"])
+    def v2_group_detail(group_id):
+        repo = _group_repo_v2()
+        g = repo.get_by_id(group_id)
+        if g is None:
+            body, status = _err("not_found", f"Группа {group_id} не найдена", 404, ids=[group_id])
+            return json_response(body, status)
+
+        if request.method == "GET":
+            return json_response(_group_to_dict(g))
+
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        try:
+            if "parent_id" in data:
+                g = repo.set_parent(group_id, data["parent_id"])
+        except ValueError as e:
+            msg = str(e).lower()
+            if "цикл" in msg:
+                code, status = "cycle_conflict", 409
+            elif "категор" in msg:
+                code, status = "category_conflict", 409
+            else:
+                code, status = "bad_request", 400
+            body, status2 = _err(code, str(e), status, ids=[group_id])
+            return json_response(body, status2)
+        return json_response(_group_to_dict(repo.get_by_id(group_id)))
+
+    @app.route("/api/v2/groups/<int:group_id>/members", methods=["GET", "POST"])
+    def v2_group_members(group_id):
+        repo = _group_repo_v2()
+        if repo.get_by_id(group_id) is None:
+            body, status = _err("not_found", f"Группа {group_id} не найдена", 404, ids=[group_id])
+            return json_response(body, status)
+
+        if request.method == "GET":
+            include_closed = request.args.get("include_closed") == "1"
+            members = repo.list_members(group_id, include_closed=include_closed)
+            return json_response([_membership_to_dict(m) for m in members])
+
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        point_id = data.get("point_id")
+        if point_id is None:
+            body, status = _err("bad_request", "требуется point_id", 400, fields=["point_id"])
+            return json_response(body, status)
+        try:
+            m = repo.add_member(group_id, point_id, valid_from=data.get("valid_from"))
+        except ValueError as e:
+            msg = str(e).lower()
+            if "не найд" in msg:
+                code, status = "not_found", 404
+            elif "уже состоит" in msg:
+                code, status = "conflict", 409
+            else:
+                code, status = "bad_request", 400
+            body, status2 = _err(code, str(e), status, ids=[group_id, point_id])
+            return json_response(body, status2)
+        return json_response(_membership_to_dict(m), 201)
+
+    @app.route("/api/v2/groups/<int:group_id>/members/<int:point_id>", methods=["DELETE"])
+    def v2_group_member_detail(group_id, point_id):
+        repo = _group_repo_v2()
+        at_raw = request.args.get("at")
+        at = None
+        if at_raw:
+            try:
+                at = int(at_raw)
+            except ValueError:
+                body, status = _err(
+                    "bad_request", "at должен быть unix-временем (целое число секунд)",
+                    400, fields=["at"])
+                return json_response(body, status)
+        try:
+            repo.remove_member(group_id, point_id, at=at)
+        except ValueError as e:
+            msg = str(e).lower()
+            code = "not_found" if "не найд" in msg or "не состоит" in msg else "bad_request"
+            status = 404 if code == "not_found" else 400
+            body, status2 = _err(code, str(e), status, ids=[group_id, point_id])
+            return json_response(body, status2)
+        return ("", 204)
+
+    @app.route("/api/v2/groups/<int:group_id>/effective-members", methods=["GET"])
+    def v2_group_effective_members(group_id):
+        """ТЗ §4.4: "состав родителя... одинаковую точку, встретившуюся
+        несколькими путями, учитывать один раз и раскрывать происхождение
+        включения" — рекурсивный состав группы (сама группа + все
+        дочерние), дедуплицированный по точке, с provenance (via)."""
+        repo = _group_repo_v2()
+        if repo.get_by_id(group_id) is None:
+            body, status = _err("not_found", f"Группа {group_id} не найдена", 404, ids=[group_id])
+            return json_response(body, status)
+
+        at_raw = request.args.get("at")
+        at = None
+        if at_raw:
+            try:
+                at = int(at_raw)
+            except ValueError:
+                body, status = _err(
+                    "bad_request", "at должен быть unix-временем (целое число секунд)",
+                    400, fields=["at"])
+                return json_response(body, status)
+
+        result = repo.resolve_effective_members(group_id, at=at)
+        point_repo = _point_repo()
+        items = []
+        for r in result:
+            p = point_repo.get_by_id(r["point_id"])
+            items.append({
+                "point_id": r["point_id"],
+                "code": p.code if p else None,
+                "name": p.name if p else None,
+                "via": r["via"],
+            })
+        return json_response({
+            "group_id": group_id,
+            "as_of": at if at is not None else int(time.time()),
+            "points": items,
+        })
+
+    @app.route("/api/v2/points/<int:point_id>/groups", methods=["GET"])
+    def v2_point_groups(point_id):
+        if _point_repo().get_by_id(point_id) is None:
+            body, status = _err("not_found", f"Точка {point_id} не найдена", 404, ids=[point_id])
+            return json_response(body, status)
+        memberships = _group_repo_v2().list_groups_for_point(point_id)
+        return json_response([_membership_to_dict(m) for m in memberships])
 
     # --------------------------------------------------------- topology
 
@@ -623,6 +819,125 @@ def register_v2_routes(app, state, json_response):
             body, status = _err("bad_request", str(e), 400)
             return json_response(body, status)
 
+    # ----------------------------------------------------------- snapshot
+    # Этап E (ТЗ §8.2 «Обзор», §9.2/§10): пакет ТЕКУЩИХ значений для
+    # выбранного набора точек, БЕЗ обращения к исторической агрегации —
+    # источник для верхних KPI/таблицы ветвей "Обзора" на каждом
+    # live-тике (§10: "раз в 5 с одним пакетным запросом... никаких 100
+    # исторических RPC внутри live"). В отличие от /api/v2/metrics/query
+    # (считает через accounting_service поверх period_aggregates), здесь
+    # данные берутся из уже посчитанного в фоне `state.registry`
+    # (см. status.py::StatusEngine — отдельный поток, независимо и
+    # непрерывно классифицирует статус каждого устройства) — не тянет
+    # MQTT-историю по запросу.
+    def _point_snapshot(point, binding_repo, source_repo, registry):
+        result = {
+            "point_id": point.id, "code": point.code, "name": point.name,
+            "enabled": bool(point.enabled),
+            "binding_status": "unbound",
+            "device_status": None,
+            "device_status_reason": None,
+            "power_w": None, "energy_total_kwh": None,
+            "voltage_v": None, "current_a": None, "frequency_hz": None,
+            "last_update_age_s": None, "last_measurement_age_s": None,
+        }
+        binding = binding_repo.get_open_primary(point.id)
+        if binding is None:
+            # ТЗ §8.5: "Нет источника измерения — выбрать прибор" — нет
+            # открытой primary-привязки, дальше и смотреть не на что.
+            return result
+        result["binding_status"] = "bound"
+
+        source = source_repo.get_by_id(binding.meter_source_id)
+        if source is None:
+            # FK (point_bindings.meter_source_id -> meter_sources.id) не
+            # даёт этому случиться через обычные операции — но раз этот
+            # путь в принципе достижим (сырой SQL, ручное вмешательство),
+            # одна такая строка не должна валить весь снимок с 500.
+            result["device_status"] = "unknown"
+            result["device_status_reason"] = "Источник привязки не найден"
+            return result
+
+        meter = registry.get(source.device_id)
+        if meter is None:
+            # ТЗ A38: устройство зарегистрировано в БД как источник, но
+            # MQTT его ЕЩЁ НИ РАЗУ не видел с момента старта демона —
+            # отдельное состояние от "no_connection" (тот значит "видели
+            # раньше, сейчас недоступен").
+            result["device_status"] = "never_seen"
+            result["device_status_reason"] = "Устройство ещё не появлялось в MQTT"
+            return result
+
+        # meter.status уже посчитан фоновым StatusEngine — не пересчитываем
+        # здесь заново (единый источник классификации, см. status.py).
+        result["device_status"] = meter.status.value
+        result["device_status_reason"] = meter.status_reason
+        result["power_w"] = meter.get_float("Total P")
+        result["energy_total_kwh"] = meter.get_float("Total AP energy")
+        result["frequency_hz"] = meter.get_float("Frequency")
+
+        voltage = {ph: meter.get_float(f"Urms {ph}") for ph in PHASES}
+        if any(v is not None for v in voltage.values()):
+            result["voltage_v"] = voltage
+        current = {ph: meter.get_float(f"Irms {ph}") for ph in PHASES}
+        if any(v is not None for v in current.values()):
+            result["current_a"] = current
+
+        result["last_update_age_s"] = (
+            time.time() - meter.last_any_ts if meter.last_any_ts > 0 else None
+        )
+        result["last_measurement_age_s"] = (
+            time.time() - meter.last_measurement_ts
+            if meter.last_measurement_ts > 0 else None
+        )
+        return result
+
+    @app.route("/api/v2/snapshot", methods=["GET"])
+    def v2_snapshot():
+        registry = state.registry
+        point_repo = _point_repo()
+        binding_repo = _binding_repo()
+        source_repo = _source_repo()
+
+        raw_ids = request.args.get("point_ids")
+        if raw_ids:
+            try:
+                point_ids = [int(x) for x in raw_ids.split(",") if x.strip()]
+            except ValueError:
+                body, status = _err(
+                    "bad_request",
+                    "point_ids должен быть списком целых чисел через запятую",
+                    400, fields=["point_ids"])
+                return json_response(body, status)
+            points = []
+            missing_ids = []
+            for pid in point_ids:
+                p = point_repo.get_by_id(pid)
+                if p is None:
+                    missing_ids.append(pid)
+                else:
+                    points.append(p)
+            if missing_ids:
+                body, status = _err(
+                    "not_found", f"Точки не найдены: {missing_ids}", 404,
+                    ids=missing_ids)
+                return json_response(body, status)
+        else:
+            # По умолчанию — все НЕархивные точки; §5/§9: enabled=0
+            # исключает точку из активного состава, но она остаётся
+            # видимой (не пропадает из ответа) — архивные же в общий
+            # снимок молча не попадают, их нужно запросить явно по id.
+            points = point_repo.list_all(include_archived=False)
+
+        items = [
+            _point_snapshot(p, binding_repo, source_repo, registry)
+            for p in points
+        ]
+        return json_response({
+            "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "points": items,
+        })
+
     # -------------------------------------------------------------- plans
     # Стадия D (ТЗ §7): план помещений/однолинейная схема поверх
     # site_plans(plan_kind/canvas_*) — параллельно v1 /api/plans
@@ -866,3 +1181,60 @@ def register_v2_routes(app, state, json_response):
             body, status = _err("bad_request", str(e), 400, ids=[plan_id])
             return json_response(body, status)
         return json_response(_plan_to_dict_v2(updated))
+
+    # --- Разовый перенос легаси meters/meter_groups в v2 (Стадия F,
+    # docs/migration-plan-v2.md §5 п.1-2) --------------------------------
+    @app.route("/api/v2/admin/migrate-legacy", methods=["POST"])
+    def v2_admin_migrate_legacy():
+        """Переносит все строки `meters`/`meter_groups` в
+        metering_point/meter_source/point_binding/group_memberships (см.
+        legacy_migration.migrate_meters_and_groups). Без этого шага
+        справочники point/node в редакторе плана v2 пусты — точки учёта
+        физически ещё не существуют в новой модели.
+
+        Требует явного {"confirm": true} в теле — это прямое DML по
+        реальным производственным данным на контроллере, хотя сама
+        функция переноса идемпотентна и безопасна для повторного вызова
+        (см. её докстринг: уже перенесённые meters пропускаются, упавший
+        на середине прогон восстанавливается, а не плодит дубли).
+
+        Перед запуском ВСЕГДА снимается консистентный бэкап БД через
+        Database.backup_to() (SQLite Online Backup API — корректно
+        работает поверх WAL, в отличие от обычного копирования файла).
+        Если сам бэкап не удался — миграция не запускается вообще."""
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        if data.get("confirm") is not True:
+            body, status = _err(
+                "bad_request",
+                "требуется подтверждение: {\"confirm\": true} — перенос "
+                "меняет данные на контроллере (бэкап делается автоматически, "
+                "но подтверждение обязательно)",
+                400, fields=["confirm"])
+            return json_response(body, status)
+
+        backup_dir = os.path.join(os.path.dirname(db.path) or ".", "migration-backups")
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup_path = os.path.join(backup_dir, f"pre-legacy-migration-{stamp}.db")
+        try:
+            db.backup_to(backup_path)
+        except Exception as e:
+            log.exception("legacy_migration: не удалось сделать бэкап БД перед переносом")
+            body, status = _err(
+                "server_error",
+                f"не удалось сделать бэкап БД, перенос НЕ запущен: {e}",
+                500)
+            return json_response(body, status)
+
+        try:
+            report = migrate_meters_and_groups(db)
+        except Exception as e:
+            log.exception("legacy_migration: перенос meters/meter_groups упал")
+            body, status = _err(
+                "server_error",
+                f"перенос упал: {e}. Функция идемпотентна — можно "
+                f"безопасно повторить запрос после починки причины. "
+                f"Бэкап БД на момент до попытки: {backup_path}",
+                500)
+            return json_response(body, status)
+
+        return json_response({"backup_path": backup_path, **_dataclass_asdict(report)})
