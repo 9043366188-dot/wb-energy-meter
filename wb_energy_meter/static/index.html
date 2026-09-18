@@ -588,6 +588,112 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           <div class="sub" x-text="overviewV2Snapshot?overviewV2Snapshot.as_of.split('T')[0]:'—'"></div>
         </div>
       </div>
+
+      <!-- Итог объекта за период (ТЗ §8.2, партия 2 задача 2) —
+           /api/v2/overview/summary: ввод/ветви/небаланс через
+           accounting_service, ОТДЕЛЬНО от живого снимка выше (снимок —
+           "сейчас"; здесь — накопленный расход за выбранный период). -->
+      <div style="margin-top:20px;margin-bottom:24px;padding:16px;background:var(--bg2);
+                  border:1px solid var(--line);border-radius:8px">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+          <div class="section-title" style="margin:0">Итог объекта за период</div>
+          <div class="spacer"></div>
+          <label class="muted" style="font-size:12px">с
+            <input type="date" x-model="ovFrom" @change="loadOvSummary()"
+                   style="background:var(--bg);border:1px solid var(--line);color:var(--txt);
+                          border-radius:6px;padding:4px 8px;font-size:12px;margin-left:4px">
+          </label>
+          <label class="muted" style="font-size:12px">по
+            <input type="date" x-model="ovTo" @change="loadOvSummary()"
+                   style="background:var(--bg);border:1px solid var(--line);color:var(--txt);
+                          border-radius:6px;padding:4px 8px;font-size:12px;margin-left:4px">
+          </label>
+          <button class="btn" @click="loadOvSummary()" :disabled="ovLoading">Обновить</button>
+        </div>
+
+        <template x-if="ovLoading && !ovSummary">
+          <div class="empty"><span class="spin"></span> считаем…</div>
+        </template>
+        <template x-if="ovError">
+          <div class="empty" style="color:var(--err)" x-text="ovError"></div>
+        </template>
+
+        <template x-if="!ovLoading && ovSummary">
+          <div>
+            <template x-if="ovSummary.object_total">
+              <div style="margin-bottom:12px">
+                <div class="val mono" style="font-size:28px">
+                  <span x-text="fmt(ovSummary.object_total.value,1)"></span>
+                  <small x-text="ovSummary.object_total.unit"></small>
+                </div>
+                <div class="muted" style="font-size:12px;cursor:pointer" @click="ovToggleDisclosure('object')">
+                  <span x-text="ovDisclosureOpen.object?'▾':'▸'"></span> Из чего рассчитано
+                </div>
+                <div x-show="ovDisclosureOpen.object" style="font-size:12px;margin-top:4px" class="muted">
+                  Сумма назначенного ввода объекта (точки:
+                  <span x-text="(ovSummary.object_input_point_ids||[]).map(ovPointName).join(', ')||'—'"></span>)
+                </div>
+              </div>
+            </template>
+            <template x-if="!ovSummary.object_total && ovSummary.object_total_unavailable_reason==='no_input_assigned'">
+              <div style="margin-bottom:12px">
+                <div class="empty" style="text-align:left">
+                  Для объекта не назначен ввод — итог не может быть посчитан честно
+                  (сумма всех счётчиков подряд была бы неверной, если это не буквально
+                  весь ввод объекта).
+                  <div style="margin-top:8px">
+                    <button class="btn btn-primary" @click="ovGoConfigureBoundary()">Настроить границу объекта</button>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <template x-if="!ovSummary.object_total && ovSummary.object_total_unavailable_reason && ovSummary.object_total_unavailable_reason!=='no_input_assigned'">
+              <div class="empty" style="color:var(--err);text-align:left;margin-bottom:12px"
+                   x-text="ovSummary.object_total_unavailable_reason"></div>
+            </template>
+
+            <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:12px;padding:8px 0;
+                        border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
+              <span class="muted" style="font-size:12px">Небаланс:</span>
+              <span class="mono" :style="ovSummary.imbalance_value==null?'':(ovSummary.imbalance_value<0?'color:var(--err)':'color:var(--ok)')"
+                    x-text="ovSummary.imbalance_value!=null?(ovSummary.imbalance_value>0?'+':'')+fmt(ovSummary.imbalance_value,1)+' кВт·ч':'не определён (не все ветви известны)'"></span>
+            </div>
+
+            <table class="rep-table" x-show="(ovSummary.branches||[]).length>0">
+              <thead><tr>
+                <th>Ветвь</th><th class="num">кВт·ч</th><th class="num">% объекта</th><th>Статус</th>
+              </tr></thead>
+              <tbody>
+                <template x-for="b in (ovSummary.branches||[])" :key="b.group_id">
+                  <tr>
+                    <td x-text="b.name"></td>
+                    <td class="num mono" x-text="b.mode==='sum'&&b.result?fmt(b.result.value,1):'—'"></td>
+                    <td class="num mono" x-text="b.percentage_of_object!=null?fmt(b.percentage_of_object,1)+'%':'—'"></td>
+                    <td class="muted" style="font-size:11px"
+                        x-text="b.mode==='comparison'?'электрическое пересечение — точки ниже':(b.result?'':'нет данных')"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+
+            <template x-for="b in (ovSummary.branches||[]).filter(x=>x.mode==='comparison')" :key="'cmp_'+b.group_id">
+              <div style="margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px">
+                <div class="muted" x-text="b.name+' — '+(b.conflict_reason||'подтверждённое электрическое пересечение')"></div>
+                <template x-for="pid in Object.keys(b.points||{})" :key="pid">
+                  <div style="display:flex;justify-content:space-between;padding:2px 0">
+                    <span x-text="ovPointName(pid)"></span>
+                    <span class="mono" x-text="b.points[pid].value!=null?fmt(b.points[pid].value,1)+' кВт·ч':'нет данных'"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <div class="muted" style="font-size:11px;margin-top:6px" x-show="(ovSummary.ungrouped_point_ids||[]).length>0"
+                 x-text="(ovSummary.ungrouped_point_ids||[]).length+' точек не входит ни в одну ветвь'"></div>
+          </div>
+        </template>
+      </div>
+
       <template x-if="overviewV2Loading && !overviewV2Snapshot">
         <div class="empty"><span class="spin"></span> загрузка…</div>
       </template>
@@ -2692,6 +2798,10 @@ function app(){ return {
   // пересчитывает суммы по уже загруженному составу против свежего
   // overviewV2Snapshot — см. overviewV2BranchRows).
   overviewV2Groups:[], overviewV2GroupMembers:{}, overviewV2GroupsError:null,
+  // Итог объекта за период (ТЗ §8.2, партия 2 задача 2) — см. блок
+  // "Итог объекта за период" в разметке и loadOvSummary() ниже.
+  ovFrom:null, ovTo:null, ovLoading:false, ovError:null, ovSummary:null,
+  ovPointNames:{}, ovDisclosureOpen:{},
   // toast
   toast:null, _toastTimer:null,
   _timer:null,
@@ -4169,7 +4279,8 @@ function app(){ return {
   async openOverviewV2Tab(){
     if(!this.overviewV2Inited){
       this.overviewV2Inited=true;
-      await Promise.all([this.loadOverviewV2Snapshot(), this.loadOverviewV2Groups()]);
+      await Promise.all([this.loadOverviewV2Snapshot(), this.loadOverviewV2Groups(),
+                          this.initOvAccounting()]);
     }
   },
   async loadOverviewV2Groups(){
@@ -4280,6 +4391,69 @@ function app(){ return {
       }
     }
     return probs;
+  },
+
+  // ---- Итог объекта за период (ТЗ §8.2, партия 2 задача 2) ----
+  _ovDefaultDates(){
+    // По умолчанию — с начала текущего месяца по сегодня (без сегодняшнего
+    // дня целиком, т.к. `to` — конец полуоткрытого периода [from,to)).
+    const today=new Date();
+    const first=new Date(today.getFullYear(), today.getMonth(), 1);
+    const fmt=d=>d.toISOString().slice(0,10);
+    return {from: fmt(first), to: fmt(today)};
+  },
+  async initOvAccounting(){
+    if(!this.ovFrom || !this.ovTo){
+      const d=this._ovDefaultDates();
+      this.ovFrom=d.from; this.ovTo=d.to;
+    }
+    await this._loadOvPointNames();
+    await this.loadOvSummary();
+  },
+  async _loadOvPointNames(){
+    // Имена точек для disclosure/раздельных строк при конфликте (A04) —
+    // не критично для остального блока, при ошибке просто покажем "#id".
+    if(Object.keys(this.ovPointNames).length>0) return;
+    try{
+      const r=await fetch('/api/v2/points');
+      if(!r.ok) return;
+      const pts=await r.json();
+      const names={};
+      (pts||[]).forEach(p=>{ names[p.id]=p.name||p.code; });
+      this.ovPointNames=names;
+    }catch(e){ /* необязательно */ }
+  },
+  ovPointName(id){ return this.ovPointNames[id] || ('#'+id); },
+  async loadOvSummary(){
+    // Даты <input type=date> ("YYYY-MM-DD") принимаются backend'ом
+    // напрямую (periods.py::parse_user_datetime) — конвертация в unix
+    // делается на сервере, здесь не нужна.
+    if(!this.ovFrom || !this.ovTo) return;
+    this.ovLoading=true; this.ovError=null;
+    try{
+      const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
+      const r=await fetch('/api/v2/overview/summary', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({from:this.ovFrom, to:this.ovTo, timezone:tz}),
+      });
+      const d=await r.json();
+      if(!r.ok){ throw new Error(d.message||`HTTP ${r.status}`); }
+      this.ovSummary=d;
+    }catch(e){
+      this.ovError=`Не удалось посчитать итог за период: ${e.message}`;
+      this.ovSummary=null;
+    }finally{
+      this.ovLoading=false;
+    }
+  },
+  ovToggleDisclosure(key){
+    this.ovDisclosureOpen={...this.ovDisclosureOpen, [key]: !this.ovDisclosureOpen[key]};
+  },
+  ovGoConfigureBoundary(){
+    // §8.2: "без назначенного ввода — действие 'Настроить границу
+    // объекта'" — ведёт на редактор электросети (План v2/топология),
+    // где назначается primary_point_id связи от узла kind=source.
+    this.tab='planv2'; this.openPlanV2Tab();
   },
 
   async openPlanV2Tab(){
