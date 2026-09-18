@@ -37,11 +37,16 @@ B/C (BindingConflict/TopologyConflict/AccountingConflict/ValueError) в
   `meter_sources`) прямо внутри `replace-meter` — тело `{"new_meter":
   {"controller_key":.., "device_id":.., "display_name":..}}` вместо
   готового `meter_source_id` (§5.4, задача 3, см. v2_point_replace_meter).
+  `GET /api/v2/validation` (§8.2/§13, задача 4) — сводка незавершённой
+  настройки: точки без прибора/места/группы/плана, узлы без связей,
+  связи без измерения; точка ввода не считается проблемой в "без группы"
+  (см. v2_validation).
 
   НЕ РЕАЛИЗОВАНО (сознательно отложено — вне этой задачи):
   metrics/jobs (долгие расчёты/подписки); plans/items/layout (это стадия D
   плана — редактор плана v2); migration/status; инспектор объекта/
-  однолинейная схема как второй канвас; адаптивная вёрстка (§8.5).
+  однолинейная схема как второй канвас; мастер миграции legacy-связей;
+  адаптивная вёрстка (§8.5).
   Протокол ревизий не хранит и не восстанавливает историческую
   электрическую топологию "как было на ревизии N" (см. ограничение в
   revision_service.py) и не пишет change_log.
@@ -1208,6 +1213,127 @@ def register_v2_routes(app, state, json_response):
         return json_response({
             "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "points": items,
+        })
+
+    # ---------------------------------------- validation (партия 3, задача 4)
+    # ТЗ §8.2/§13, docs/TZ-batch3 задача 4: "на ста точках без него
+    # невозможно найти забытое". Только чтение — ничего не изменяет и не
+    # требует expected_revision. Один db.read() на весь расчёт (тот же
+    # принцип согласованного снимка A43, что и у overview/reports, хотя
+    # формально сюда не входит протокол ревизий — это не предметная
+    # запись).
+    #
+    # "Влияние", а не алфавит (§8.2): не оценка серьёзности каждой
+    # конкретной проблемы (это отдельная, более крупная задача), а
+    # фиксированный порядок категорий по тому, что они означают для
+    # расчёта — от "данных не существует вообще" до "не заведено на
+    # плане" (чисто навигационное неудобство). Внутри категории —
+    # по id (стабильно, не по имени).
+    _VALIDATION_IMPACT_RANK = {
+        "no_meter": 1,               # точка есть, измерять нечем
+        "edge_without_measurement": 2,  # связь есть, чем измерена — нет
+        "no_location": 3,
+        "no_group": 4,
+        "no_plan": 5,
+        "node_without_edges": 6,     # узел висит в воздухе, ни к чему не относится
+    }
+
+    @app.route("/api/v2/validation", methods=["GET"])
+    def v2_validation():
+        point_repo = _point_repo()
+        binding_repo = _binding_repo()
+        node_repo = _node_repo()
+        edge_repo = _edge_repo()
+
+        with db.read() as c:
+            points = point_repo.list_all(include_archived=False)
+            nodes = node_repo.list_all(include_archived=False)
+            published_edges = edge_repo.list_active_published()
+
+            group_point_ids = {
+                row["point_id"] for row in c.execute(
+                    "SELECT DISTINCT point_id FROM group_memberships "
+                    "WHERE valid_to IS NULL").fetchall()
+            }
+            plan_point_ids = {
+                row["point_id"] for row in c.execute(
+                    "SELECT DISTINCT point_id FROM plan_items "
+                    "WHERE kind = 'point' AND point_id IS NOT NULL "
+                    "AND archived_at IS NULL").fetchall()
+            }
+
+        # §8.2 (задача 4, известное поведение): точка ввода не обязана
+        # состоять в ветвях/группах — это не забытая настройка, а
+        # нормальное свойство ввода. Тот же список, что уже считает
+        # overview/summary для "не входит ни в одну ветвь" (см. выше).
+        input_point_ids = set(_resolve_object_input_point_ids(node_repo, edge_repo))
+
+        nodes_with_edge = set()
+        for e in published_edges:
+            nodes_with_edge.add(e.from_node_id)
+            nodes_with_edge.add(e.to_node_id)
+
+        points_without_meter = []
+        points_without_location = []
+        points_without_group = []
+        points_without_plan = []
+        for p in points:
+            if binding_repo.get_open_primary(p.id) is None:
+                points_without_meter.append(p)
+            if p.installation_location_id is None:
+                points_without_location.append(p)
+            if p.id not in group_point_ids and p.id not in input_point_ids:
+                points_without_group.append(p)
+            if p.id not in plan_point_ids:
+                points_without_plan.append(p)
+
+        nodes_without_edges = [n for n in nodes if n.id not in nodes_with_edge]
+        edges_without_measurement = [
+            e for e in published_edges if e.primary_point_id is None]
+
+        def _point_ref(p):
+            return {"point_id": p.id, "code": p.code, "name": p.name}
+
+        def _node_ref(n):
+            return {"node_id": n.id, "code": n.code, "name": n.name}
+
+        def _edge_ref(e):
+            return {"edge_id": e.id, "code": e.code, "name": e.name,
+                    "from_node_id": e.from_node_id, "to_node_id": e.to_node_id}
+
+        issues = []
+        for p in points_without_meter:
+            issues.append({"kind": "no_meter", "entity_type": "point",
+                            "entity_id": p.id, "label": p.name, "code": p.code})
+        for e in edges_without_measurement:
+            issues.append({"kind": "edge_without_measurement", "entity_type": "edge",
+                            "entity_id": e.id, "label": e.name or e.code or f"#{e.id}",
+                            "code": e.code})
+        for p in points_without_location:
+            issues.append({"kind": "no_location", "entity_type": "point",
+                            "entity_id": p.id, "label": p.name, "code": p.code})
+        for p in points_without_group:
+            issues.append({"kind": "no_group", "entity_type": "point",
+                            "entity_id": p.id, "label": p.name, "code": p.code})
+        for p in points_without_plan:
+            issues.append({"kind": "no_plan", "entity_type": "point",
+                            "entity_id": p.id, "label": p.name, "code": p.code})
+        for n in nodes_without_edges:
+            issues.append({"kind": "node_without_edges", "entity_type": "node",
+                            "entity_id": n.id, "label": n.name, "code": n.code})
+        issues.sort(key=lambda it: (
+            _VALIDATION_IMPACT_RANK.get(it["kind"], 99), it["entity_id"]))
+
+        return json_response({
+            "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "points_without_meter": [_point_ref(p) for p in points_without_meter],
+            "points_without_location": [_point_ref(p) for p in points_without_location],
+            "points_without_group": [_point_ref(p) for p in points_without_group],
+            "points_without_plan": [_point_ref(p) for p in points_without_plan],
+            "nodes_without_edges": [_node_ref(n) for n in nodes_without_edges],
+            "edges_without_measurement": [_edge_ref(e) for e in edges_without_measurement],
+            "issues": issues,
+            "total_issues": len(issues),
         })
 
     # ------------------------------------------------- overview (задача 2)
