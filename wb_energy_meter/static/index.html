@@ -445,6 +445,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     <!-- Новый набор (ТЗ v2, этапы D/E не завершены — см. CHANGELOG.md). -->
     <button x-show="uiSet=='v2'" :class="{active:tab=='overviewv2'}" @click="tab='overviewv2';openOverviewV2Tab()">Обзор</button>
     <button x-show="uiSet=='v2'" :class="{active:tab=='planv2'}" @click="tab='planv2';openPlanV2Tab()">План v2</button>
+    <button x-show="uiSet=='v2'" :class="{active:tab=='reportsv2'}" @click="tab='reportsv2';openReportsV2Tab()">Отчёты</button>
   </nav>
   <div class="spacer"></div>
   <span class="muted mono" x-text="version?'v'+version:''"></span>
@@ -812,6 +813,124 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             </template>
           </tbody>
         </table>
+        </div>
+      </template>
+    </div>
+  </template>
+
+  <!-- ОТЧЁТЫ v2 (ТЗ §8.4, партия 2 задача 3): срезы point/branch/group/
+       balance_scope поверх /api/v2/reports/query — тот же расчётный
+       слой, что и Обзор/metrics-query. Существующая классическая
+       вкладка "Отчёты" (v1, tab=='reports' ниже) не тронута. -->
+  <template x-if="tab=='reportsv2'">
+    <div>
+      <div class="section-title">Отчёты (§8.4)</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
+        <label class="muted" style="font-size:12px;display:block">Срез
+          <select x-model="rv2Dimension" @change="rv2ScopeIds=[]; rv2Result=null; rv2Error=null"
+                  style="display:block;background:var(--bg2);border:1px solid var(--line);color:var(--txt);
+                         border-radius:6px;padding:6px 10px;font-size:13px;margin-top:2px">
+            <option value="point">Точка</option>
+            <option value="branch">Ветвь (все верхнего уровня)</option>
+            <option value="group">Группа</option>
+            <option value="balance_scope">Граница баланса</option>
+          </select>
+        </label>
+        <label class="muted" style="font-size:12px;display:block" x-show="rv2Dimension!=='branch'">
+          Состав (Ctrl/Cmd — несколько)
+          <select multiple x-model="rv2ScopeIds" size="4"
+                  style="display:block;background:var(--bg2);border:1px solid var(--line);color:var(--txt);
+                         border-radius:6px;padding:6px 10px;font-size:13px;margin-top:2px;min-width:180px">
+            <template x-for="opt in rv2ScopeOptions()" :key="opt.id">
+              <option :value="opt.id" x-text="opt.label"></option>
+            </template>
+          </select>
+        </label>
+        <label class="muted" style="font-size:12px">с
+          <input type="date" x-model="rv2From" style="display:block;margin-top:2px;background:var(--bg2);
+                 border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:6px 10px;font-size:13px">
+        </label>
+        <label class="muted" style="font-size:12px">по
+          <input type="date" x-model="rv2To" style="display:block;margin-top:2px;background:var(--bg2);
+                 border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:6px 10px;font-size:13px">
+        </label>
+        <label class="muted" style="font-size:12px" x-show="rv2Dimension==='branch'||rv2Dimension==='group'">
+          Состав группы
+          <select x-model="rv2CompositionMode" style="display:block;margin-top:2px;background:var(--bg2);
+                  border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:6px 10px;font-size:13px">
+            <option value="as_was">как было на начало периода (A21)</option>
+            <option value="current">текущий (A22)</option>
+          </select>
+        </label>
+        <label class="muted" style="font-size:12px">
+          <input type="checkbox" x-model="rv2CompareEnabled"> Сравнить с периодом
+        </label>
+        <template x-if="rv2CompareEnabled">
+          <div style="display:flex;gap:8px">
+            <label class="muted" style="font-size:12px">с
+              <input type="date" x-model="rv2CompareFrom" style="display:block;margin-top:2px;background:var(--bg2);
+                     border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:6px 10px;font-size:13px">
+            </label>
+            <label class="muted" style="font-size:12px">по
+              <input type="date" x-model="rv2CompareTo" style="display:block;margin-top:2px;background:var(--bg2);
+                     border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:6px 10px;font-size:13px">
+            </label>
+          </div>
+        </template>
+        <button class="btn btn-primary" @click="runRv2Query()" :disabled="rv2Loading">Показать</button>
+        <button class="btn" @click="downloadRv2Csv()" :disabled="!rv2Result">⬇ Скачать CSV</button>
+      </div>
+
+      <template x-if="rv2Loading">
+        <div class="empty"><span class="spin"></span> считаем…</div>
+      </template>
+      <template x-if="rv2Error">
+        <div class="empty" style="color:var(--err)" x-text="rv2Error"></div>
+      </template>
+      <template x-if="!rv2Loading && rv2Result">
+        <div>
+          <div class="muted" style="font-size:11px;margin-bottom:8px">
+            Ревизия конфигурации: <span x-text="rv2Result.configuration_revision_id"></span> ·
+            режим состава: <span x-text="rv2Result.composition_mode==='as_was'?'как было на начало периода':'текущий'"></span>
+          </div>
+          <table class="rep-table">
+            <thead><tr>
+              <th>Название</th><th class="num">Значение</th><th>Ед.</th><th>Доступность</th>
+              <th>Флаги / конфликт</th><th>Состав</th>
+              <template x-if="rv2Result.compare_period"><th class="num">Сравнение</th></template>
+              <template x-if="rv2Result.compare_period"><th class="num">Изменение</th></template>
+              <template x-if="rv2Result.compare_period"><th class="num">Изменение %</th></template>
+              <template x-if="rv2Result.compare_period"><th>Состав менялся</th></template>
+            </tr></thead>
+            <tbody>
+              <template x-for="row in rv2Result.rows" :key="row.dimension+'_'+row.id">
+                <tr>
+                  <td x-text="row.name"></td>
+                  <td class="num mono" x-text="row.result&&row.result.value!=null?fmt(row.result.value,3):'—'"></td>
+                  <td x-text="row.result?row.result.unit:''"></td>
+                  <td x-text="row.result?row.result.availability:'—'"></td>
+                  <td class="muted" style="font-size:11px" x-text="row.conflict_reason||(row.result?(row.result.quality_flags||[]).join(', '):'нет данных')"></td>
+                  <td class="muted" style="font-size:11px" x-text="(row.member_point_ids||[]).length+' точ.'"></td>
+                  <template x-if="rv2Result.compare_period">
+                    <td class="num mono" x-text="row.compare_result&&row.compare_result.value!=null?fmt(row.compare_result.value,3):'—'"></td>
+                  </template>
+                  <template x-if="rv2Result.compare_period">
+                    <td class="num mono" x-text="row.delta_value!=null?fmt(row.delta_value,3):'—'"></td>
+                  </template>
+                  <template x-if="rv2Result.compare_period">
+                    <td class="num mono" x-text="row.delta_percentage!=null?fmt(row.delta_percentage,1)+'%':'—'"></td>
+                  </template>
+                  <template x-if="rv2Result.compare_period">
+                    <td x-text="row.composition_changed===true?'да':(row.composition_changed===false?'нет':'—')"></td>
+                  </template>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+          <div class="muted" style="font-size:11px;margin-top:8px">
+            Числа взяты как есть из accounting_service (та же формула, что и в Обзоре и metrics/query) —
+            округление на экране (3 знака) и в CSV (тоже 3 знака) согласовано.
+          </div>
         </div>
       </template>
     </div>
@@ -2683,7 +2802,7 @@ const DEFAULT_UI_SET = 'classic';
 // уехала на первую вкладку нового набора, а не осталась скрытой.
 const UI_SET_TABS = {
   classic: ['dash', 'plan', 'consumption', 'settings', 'reports'],
-  v2: ['overviewv2', 'planv2'],
+  v2: ['overviewv2', 'planv2', 'reportsv2'],
 };
 
 function app(){ return {
@@ -2802,6 +2921,12 @@ function app(){ return {
   // "Итог объекта за период" в разметке и loadOvSummary() ниже.
   ovFrom:null, ovTo:null, ovLoading:false, ovError:null, ovSummary:null,
   ovPointNames:{}, ovDisclosureOpen:{},
+  // Отчёты v2 (ТЗ §8.4, партия 2 задача 3) — /api/v2/reports/query.
+  rv2Inited:false, rv2Dimension:'branch', rv2ScopeIds:[],
+  rv2From:null, rv2To:null, rv2CompositionMode:'as_was',
+  rv2CompareEnabled:false, rv2CompareFrom:null, rv2CompareTo:null,
+  rv2Loading:false, rv2Error:null, rv2Result:null,
+  rv2Points:[], rv2Groups:[], rv2BalanceScopes:[], rv2OptionsLoaded:false,
   // toast
   toast:null, _toastTimer:null,
   _timer:null,
@@ -2856,6 +2981,7 @@ function app(){ return {
       this.tab = tabs[0];
       if(this.tab=='overviewv2') this.openOverviewV2Tab();
       else if(this.tab=='planv2') this.openPlanV2Tab();
+      else if(this.tab=='reportsv2') this.openReportsV2Tab();
       else if(this.tab=='plan') this.openPlanTab();
       else if(this.tab=='consumption') this.loadConsumption();
       else if(this.tab=='settings'){ this.loadSettings(); this.initUpdatePanel(); }
@@ -4454,6 +4580,110 @@ function app(){ return {
     // объекта'" — ведёт на редактор электросети (План v2/топология),
     // где назначается primary_point_id связи от узла kind=source.
     this.tab='planv2'; this.openPlanV2Tab();
+  },
+
+  // ---- Отчёты v2 (ТЗ §8.4, партия 2 задача 3) ----
+  async openReportsV2Tab(){
+    if(!this.rv2From || !this.rv2To){
+      const d=this._ovDefaultDates();  // тот же дефолт периода, что и у "Итог объекта за период"
+      this.rv2From=d.from; this.rv2To=d.to;
+    }
+    await this._loadOvPointNames();  // имена точек для колонки "Состав" и CSV
+    if(!this.rv2OptionsLoaded){
+      this.rv2OptionsLoaded=true;
+      await this._loadRv2Options();
+    }
+  },
+  async _loadRv2Options(){
+    // Списки для пикера состава (точка/группа/граница баланса) —
+    // необязательно для самого расчёта, при ошибке пикеры просто пустые.
+    try{
+      const [pr, gr, br] = await Promise.all([
+        fetch('/api/v2/points'), fetch('/api/v2/groups'), fetch('/api/v2/balance-scopes')]);
+      this.rv2Points = pr.ok ? await pr.json() : [];
+      this.rv2Groups = gr.ok ? await gr.json() : [];
+      this.rv2BalanceScopes = br.ok ? await br.json() : [];
+    }catch(e){ /* необязательно */ }
+  },
+  rv2ScopeOptions(){
+    if(this.rv2Dimension==='point') return this.rv2Points.map(p=>({id:p.id, label:(p.name||p.code)}));
+    if(this.rv2Dimension==='group') return this.rv2Groups.map(g=>({id:g.id, label:g.name}));
+    if(this.rv2Dimension==='balance_scope') return this.rv2BalanceScopes.map(s=>({id:s.id, label:s.name}));
+    return [];
+  },
+  async runRv2Query(){
+    if(!this.rv2From || !this.rv2To) return;
+    if(this.rv2Dimension!=='branch' && this.rv2ScopeIds.length===0){
+      this.rv2Error='Выберите хотя бы один элемент состава'; this.rv2Result=null; return;
+    }
+    this.rv2Loading=true; this.rv2Error=null;
+    try{
+      const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
+      const body={
+        dimension:this.rv2Dimension, from:this.rv2From, to:this.rv2To, timezone:tz,
+        composition_mode:this.rv2CompositionMode,
+      };
+      if(this.rv2Dimension!=='branch') body.scope_ids=this.rv2ScopeIds.map(Number);
+      if(this.rv2CompareEnabled && this.rv2CompareFrom && this.rv2CompareTo){
+        body.compare={from:this.rv2CompareFrom, to:this.rv2CompareTo};
+      }
+      const r=await fetch('/api/v2/reports/query', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+      const d=await r.json();
+      if(!r.ok) throw new Error(d.message||`HTTP ${r.status}`);
+      this.rv2Result=d;
+    }catch(e){
+      this.rv2Error=`Не удалось получить отчёт: ${e.message}`;
+      this.rv2Result=null;
+    }finally{
+      this.rv2Loading=false;
+    }
+  },
+  downloadRv2Csv(){
+    // A45: csvCell() уже нейтрализует префиксы формул (=+-@) — те же
+    // правила, что и в существующих выгрузках v1. Числа НЕ идут через
+    // csvCell (пишутся как есть, округлённые до 3 знаков — то же
+    // округление, что и на экране, см. таблицу выше).
+    if(!this.rv2Result) return;
+    const d=this.rv2Result;
+    const hasCmp = !!d.compare_period;
+    const r3=v=>v!=null?Math.round(v*1000)/1000:'';
+    const head=['Срез','ID','Название','Точки состава','Значение','Известная частичная сумма',
+      'Единица','Доступность','Флаги качества','Ожидалось часов','Валидно часов',
+      'С','По','Часовой пояс','Ревизия конфигурации','Режим состава','Конфликт'];
+    if(hasCmp) head.push('Сравнение: с','Сравнение: по','Значение сравнения','Изменение',
+      'Изменение %','Состав изменился','Конфликт сравнения');
+    const lines=['﻿', `wb-energy-meter — Отчёт v2 (${d.dimension}, состав: ${d.composition_mode})`,
+      '', head.join(';')];
+    (d.rows||[]).forEach(row=>{
+      const res=row.result;
+      const names=(row.member_point_ids||[]).map(id=>this.ovPointName(id)).join(', ');
+      const cells=[
+        this.csvCell(row.dimension), row.id, this.csvCell(row.name), this.csvCell(names),
+        r3(res?res.value:null), r3(res?res.known_value:null),
+        this.csvCell(res?res.unit:''), this.csvCell(res?res.availability:''),
+        this.csvCell(res?(res.quality_flags||[]).join('|'):''),
+        res?res.expected_count:'', res?res.valid_count:'',
+        this.csvCell(d.period.from), this.csvCell(d.period.to), this.csvCell(d.period.timezone),
+        d.configuration_revision_id, this.csvCell(d.composition_mode),
+        this.csvCell(row.conflict_reason||''),
+      ];
+      if(hasCmp){
+        const cr=row.compare_result;
+        cells.push(
+          this.csvCell(d.compare_period.from), this.csvCell(d.compare_period.to),
+          r3(cr?cr.value:null), r3(row.delta_value), row.delta_percentage!=null?row.delta_percentage:'',
+          row.composition_changed===true?'да':(row.composition_changed===false?'нет':''),
+          this.csvCell(row.compare_conflict_reason||''),
+        );
+      }
+      lines.push(cells.join(';'));
+    });
+    const blob=new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=`report_v2_${d.dimension}_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
   },
 
   async openPlanV2Tab(){
