@@ -345,6 +345,32 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 .plan-legend .ll-swatch{width:16px;height:3px;border-radius:2px;display:inline-block}
 .plan-pill{font-size:10px;font-weight:700;text-transform:uppercase;
   letter-spacing:.3px;padding:2px 7px;border-radius:5px;background:var(--accent);color:#fff}
+/* Структура/инспектор (ТЗ §8.3, партия 3, задача 1) — три колонки:
+   дерево+поиск / список детей с метриками / инспектор, тем же визуальным
+   языком, что и .plan-side (панель) и .rep-table (таблицы). */
+.structure-layout{display:grid;grid-template-columns:260px 1fr 340px;gap:16px;
+  align-items:start}
+.structure-col{background:var(--bg2);border:1px solid var(--line);border-radius:10px;
+  padding:14px;max-height:calc(100vh - 220px);overflow:auto}
+.structure-search input[type=text]{width:100%;box-sizing:border-box;
+  background:var(--bg3);border:1px solid var(--line);color:var(--txt);
+  padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit;margin-bottom:10px}
+.structure-tree-row{display:flex;align-items:center;gap:6px;padding:6px 8px;
+  border-radius:6px;font-size:13px;cursor:pointer}
+.structure-tree-row:hover{background:var(--bg3)}
+.structure-tree-row.active{background:var(--bg3);color:var(--accent2);font-weight:600}
+.structure-tree-row .stc{color:var(--txt3);font-size:11px;margin-left:auto}
+.structure-list-row{display:flex;align-items:center;gap:10px;padding:8px 10px;
+  border-radius:6px;font-size:13px;cursor:pointer}
+.structure-list-row:hover{background:var(--bg3)}
+.structure-list-row.active{background:var(--bg3);color:var(--accent2)}
+.structure-field{margin-bottom:12px}
+.structure-field .sf-lbl{font-size:11px;text-transform:uppercase;letter-spacing:.5px;
+  color:var(--txt3);margin-bottom:3px}
+.structure-field .sf-val{font-size:13px}
+.structure-chip{display:inline-block;background:var(--bg3);border:1px solid var(--line);
+  border-radius:12px;padding:3px 10px;font-size:12px;margin:2px 4px 2px 0;cursor:pointer}
+.structure-chip:hover{border-color:var(--accent2)}
 </style>
 </head>
 <body>
@@ -446,6 +472,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     <button x-show="uiSet=='v2'" :class="{active:tab=='overviewv2'}" @click="tab='overviewv2';openOverviewV2Tab()">Обзор</button>
     <button x-show="uiSet=='v2'" :class="{active:tab=='planv2'}" @click="tab='planv2';openPlanV2Tab()">План v2</button>
     <button x-show="uiSet=='v2'" :class="{active:tab=='reportsv2'}" @click="tab='reportsv2';openReportsV2Tab()">Отчёты</button>
+    <button x-show="uiSet=='v2'" :class="{active:tab=='structurev2'}" @click="tab='structurev2';openStructureTab()">Структура</button>
   </nav>
   <div class="spacer"></div>
   <span class="muted mono" x-text="version?'v'+version:''"></span>
@@ -788,6 +815,38 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         </div>
         </div>
       </template>
+      <!-- Незавершённая конфигурация (ТЗ §8.2/§13, партия 3 задача 4) —
+           /api/v2/validation: прибор/место/группа/план/измерение связи/
+           изолированный узел. Сервер уже отсортировал по влиянию —
+           порядок с бэкенда не переставляем. Каждая строка кликабельна —
+           тот же общий инспектор (openInspector), что и в Плане v2,
+           Отчётах и на вкладке «Структура» (ТЗ: "тот же инспектор...
+           открывается идентично из плана, дерева, отчёта и списка
+           проблем"). Отдельно от блока выше: тот смотрит на живую связь
+           с устройством по снимку, этот — на завершённость настройки. -->
+      <template x-if="validationResult && validationResult.issues.length>0">
+        <div>
+        <div class="section-title">Незавершённая конфигурация</div>
+        <div style="margin-bottom:24px">
+          <template x-for="issue in validationResult.issues" :key="issue.kind+'_'+issue.entity_type+'_'+issue.entity_id">
+            <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;
+                        background:var(--bg2);border:1px solid var(--line);margin-bottom:8px;
+                        border-radius:6px;cursor:pointer"
+                 @click="openInspector(issue.entity_type, issue.entity_id)">
+              <span class="badge" style="background:var(--warn)22;color:var(--warn);border:1px solid var(--warn)55"
+                    x-text="validationIssueLabel(issue.kind)"></span>
+              <span style="flex:1">
+                <div style="font-weight:600" x-text="issue.label||('#'+issue.entity_id)"></div>
+                <div class="muted" style="font-size:11px" x-show="issue.code" x-text="'('+issue.code+')'"></div>
+              </span>
+            </div>
+          </template>
+        </div>
+        </div>
+      </template>
+      <template x-if="validationError">
+        <div class="muted" style="font-size:11px;margin-bottom:16px" x-text="validationError"></div>
+      </template>
       <template x-if="overviewV2Snapshot && overviewV2Snapshot.points.length>0">
         <div>
         <div class="section-title">Все точки учёта</div>
@@ -916,7 +975,17 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             <tbody>
               <template x-for="row in rv2Result.rows" :key="row.dimension+'_'+row.id">
                 <tr>
-                  <td x-text="row.name"></td>
+                  <!-- ТЗ §8.3: тот же общий инспектор, что и на «Структуре» —
+                       balance_scope сюда не попадает (для неё нет отдельного
+                       вида инспектора в этой задаче), точка/ветвь/группа
+                       открывают карточку по клику. -->
+                  <td>
+                    <span x-show="row.dimension==='point'||row.dimension==='branch'||row.dimension==='group'"
+                          style="cursor:pointer;text-decoration:underline dotted"
+                          @click="openInspector(row.dimension==='point'?'point':'group', row.id)"
+                          x-text="row.name"></span>
+                    <span x-show="row.dimension==='balance_scope'" x-text="row.name"></span>
+                  </td>
                   <td class="num mono" x-text="row.result&&row.result.value!=null?fmt(row.result.value,3):'—'"></td>
                   <td x-text="row.result?row.result.unit:''"></td>
                   <td x-text="row.result?row.result.availability:'—'"></td>
@@ -944,6 +1013,316 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           </div>
         </div>
       </template>
+    </div>
+  </template>
+
+  <!-- СТРУКТУРА/ИНСПЕКТОР (ТЗ §8.3, партия 3, задача 1): дерево мест +
+       поиск слева, дочерние элементы с метриками в центре, read-only
+       инспектор справа. Инспектор общий для всего приложения — тот же
+       structInspector открывается из Плана v2, Отчётов и «Требует
+       внимания» на Обзоре через openInspector(kind,id) (см. <script>
+       ниже, метод openInspector). Инспектор НЕ считает ничего сам —
+       только показывает то, что уже посчитано существующими ручками v2
+       (snapshot, metrics/query, points/<id>/bindings, points/<id>/groups,
+       topology/*, groups/<id>/effective-members) — см. докстринг
+       v2_structure_points в api_v2.py и модульный докстринг там же.
+       Непривязанные/неразмещённые точки не прячутся — бакет «Без места»
+       в дереве и явный статус «не привязана» в центре/инспекторе. -->
+  <template x-if="tab=='structurev2'">
+    <div>
+      <div class="section-title">Структура (§8.3)</div>
+      <template x-if="structError">
+        <div class="empty" style="color:var(--err)" x-text="structError"></div>
+      </template>
+      <div class="structure-layout">
+        <!-- дерево мест + поиск (A02: поиск по имени/коду/MQTT ID/
+             серийнику/пути через /api/v2/structure/points?q=) -->
+        <div class="structure-col structure-search">
+          <input type="text" placeholder="Поиск: имя, код, MQTT ID, серийник, путь"
+                 x-model="structQuery" @input="structureSearch()">
+          <template x-if="structQuery.trim()===''">
+            <div>
+              <div class="structure-tree-row" :class="{active:structSelectedLocationId==='unplaced'}"
+                   @click="structSelectedLocationId='unplaced'">
+                <span>Без места</span>
+                <span class="stc" x-text="structUnplacedPoints().length"></span>
+              </div>
+              <template x-for="row in structLocationRows()" :key="row.id">
+                <div class="structure-tree-row" :class="{active:structSelectedLocationId===row.id}"
+                     :style="'padding-left:'+(8+row.depth*14)+'px'"
+                     @click="structSelectedLocationId=row.id">
+                  <span x-text="row.name"></span>
+                  <span class="stc" x-text="row.pointCount"></span>
+                </div>
+              </template>
+              <div class="muted" style="font-size:11px;margin-top:10px" x-show="structLocations.length===0">
+                Мест ещё не заведено.
+              </div>
+            </div>
+          </template>
+          <template x-if="structQuery.trim()!==''">
+            <div class="muted" style="font-size:11px">Результаты поиска — в списке справа.</div>
+          </template>
+        </div>
+
+        <!-- дочерние элементы с метриками (снимок — из /api/v2/snapshot,
+             числа не пересчитываются здесь) -->
+        <div class="structure-col">
+          <template x-if="structLoading">
+            <div class="empty"><span class="spin"></span> загрузка…</div>
+          </template>
+          <template x-if="!structLoading">
+            <div>
+              <div class="muted" style="font-size:11px;margin-bottom:8px" x-text="structCenterTitle()"></div>
+              <template x-if="structCenterPoints().length===0">
+                <div class="empty">Точек нет.</div>
+              </template>
+              <table class="rep-table" x-show="structCenterPoints().length>0">
+                <thead><tr>
+                  <th>Код</th><th>Имя</th><th>Статус</th>
+                  <th class="num">Мощность, кВт</th><th>Место</th><th>На плане</th>
+                </tr></thead>
+                <tbody>
+                  <template x-for="p in structCenterPoints()" :key="p.point_id">
+                    <tr class="structure-list-row"
+                        :class="{active:structInspector && structInspector.kind==='point' && structInspector.id===p.point_id}"
+                        @click="openInspector('point', p.point_id)">
+                      <td style="font-family:monospace;font-size:12px" x-text="p.code"></td>
+                      <td x-text="p.name"></td>
+                      <td>
+                        <span class="badge"
+                              :style="badgeStyle(!p.bound?'unknown':(structSnapshotFor(p.point_id)?structSnapshotFor(p.point_id).device_status:'unknown'))"
+                              x-text="!p.bound?'не привязана':statusLabel(structSnapshotFor(p.point_id)?structSnapshotFor(p.point_id).device_status:'unknown')"></span>
+                      </td>
+                      <td class="num mono"
+                          x-text="structSnapshotFor(p.point_id) && structSnapshotFor(p.point_id).power_w!=null?fmt(structSnapshotFor(p.point_id).power_w/1000,2):'—'"></td>
+                      <td class="muted" style="font-size:11px" x-text="p.location_path||'—'"></td>
+                      <td x-text="p.placed_on_plan?'да':'нет'"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </template>
+        </div>
+
+        <!-- read-only инспектор: точка/группа/узел/связь. Порядок полей
+             точки — точно по ТЗ §8.3: имя/код → статус/свежесть →
+             расход за период → фазные напряжения/токи → чем питается/что
+             питает → место установки → группы → текущий прибор →
+             история замен. -->
+        <div class="structure-col">
+          <template x-if="!structInspector">
+            <div class="muted" style="font-size:12px">
+              Выберите точку слева или в списке, чтобы увидеть карточку.
+              Группы, узлы сети и связи открываются по ссылкам из карточки
+              точки, из Плана v2, Отчётов или «Требует внимания» на Обзоре.
+            </div>
+          </template>
+          <template x-if="structInspector && structInspectorLoading">
+            <div class="empty"><span class="spin"></span> загрузка…</div>
+          </template>
+          <template x-if="structInspector && !structInspectorLoading && structInspectorError">
+            <div style="color:var(--err);font-size:13px" x-text="structInspectorError"></div>
+          </template>
+
+          <!-- точка -->
+          <template x-if="structInspector && !structInspectorLoading && !structInspectorError && structInspector.kind==='point'">
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                <div>
+                  <h3 style="margin:0 0 2px" x-text="structInspector.data.name"></h3>
+                  <div class="muted mono" style="font-size:12px" x-text="structInspector.data.code"></div>
+                </div>
+                <button class="ico-btn" @click="closeInspector()">✕</button>
+              </div>
+
+              <div class="structure-field" style="margin-top:14px">
+                <div class="sf-lbl">Статус / свежесть</div>
+                <div class="sf-val">
+                  <span class="badge"
+                        :style="badgeStyle(!structInspector.snapshot?'unknown':(structInspector.snapshot.binding_status==='unbound'?'unknown':structInspector.snapshot.device_status))"
+                        x-text="!structInspector.snapshot?'—':(structInspector.snapshot.binding_status==='unbound'?'не привязана':statusLabel(structInspector.snapshot.device_status))"></span>
+                  <span class="muted" style="font-size:11px;margin-left:8px"
+                        x-text="structInspector.snapshot?fmtAge(structInspector.snapshot.last_update_age_s):''"></span>
+                </div>
+              </div>
+
+              <div class="structure-field">
+                <div class="sf-lbl">Расход за период</div>
+                <div class="sf-val"
+                     x-text="!structInspector.consumption?'—':(structInspector.consumption.value!=null?fmt(structInspector.consumption.value,2)+' '+structInspector.consumption.unit:'нет данных ('+structInspector.consumption.availability+')')"></div>
+                <div class="muted" style="font-size:11px" x-text="structPeriodLabel()"></div>
+              </div>
+
+              <div class="structure-field" x-show="structInspector.snapshot && structInspector.snapshot.voltage_v">
+                <div class="sf-lbl">Напряжение по фазам, В</div>
+                <div class="sf-val mono">
+                  L1: <span x-text="structInspector.snapshot && structInspector.snapshot.voltage_v?fmt(structInspector.snapshot.voltage_v.L1,0):'—'"></span> ·
+                  L2: <span x-text="structInspector.snapshot && structInspector.snapshot.voltage_v?fmt(structInspector.snapshot.voltage_v.L2,0):'—'"></span> ·
+                  L3: <span x-text="structInspector.snapshot && structInspector.snapshot.voltage_v?fmt(structInspector.snapshot.voltage_v.L3,0):'—'"></span>
+                </div>
+              </div>
+              <div class="structure-field" x-show="structInspector.snapshot && structInspector.snapshot.current_a">
+                <div class="sf-lbl">Ток по фазам, А</div>
+                <div class="sf-val mono">
+                  L1: <span x-text="structInspector.snapshot && structInspector.snapshot.current_a?fmt(structInspector.snapshot.current_a.L1,2):'—'"></span> ·
+                  L2: <span x-text="structInspector.snapshot && structInspector.snapshot.current_a?fmt(structInspector.snapshot.current_a.L2,2):'—'"></span> ·
+                  L3: <span x-text="structInspector.snapshot && structInspector.snapshot.current_a?fmt(structInspector.snapshot.current_a.L3,2):'—'"></span>
+                </div>
+              </div>
+
+              <div class="structure-field">
+                <div class="sf-lbl">Чем питается / что питает (по опубликованной схеме)</div>
+                <template x-if="structFeed(structInspector.id).measuredEdges.length===0">
+                  <div class="sf-val muted">Точка не назначена измерением ни одной опубликованной связи.</div>
+                </template>
+                <template x-for="f in structFeed(structInspector.id).measuredEdges" :key="f.edge.id">
+                  <div class="sf-val" style="margin-bottom:6px">
+                    <div class="muted" style="font-size:11px" x-text="'Измеряет связь: '+(f.edge.name||f.edge.code||('#'+f.edge.id))"></div>
+                    <div x-text="'Питается от: '+(f.fedBy.length?f.fedBy.map(x=>x.name||x.code).join(', '):'— (ввод / верхний узел схемы)')"></div>
+                    <div x-text="'Питает: '+(f.feeds.length?f.feeds.map(x=>x.name||x.code).join(', '):'— (конечных потребителей на схеме нет)')"></div>
+                  </div>
+                </template>
+              </div>
+
+              <div class="structure-field">
+                <div class="sf-lbl">Место установки</div>
+                <div class="sf-val" x-text="structInspector.data.location_path||'не задано'"></div>
+              </div>
+
+              <div class="structure-field">
+                <div class="sf-lbl">Группы</div>
+                <template x-if="structInspector.groups.length===0">
+                  <div class="sf-val muted">Ни в одной группе</div>
+                </template>
+                <template x-for="g in structInspector.groups" :key="g.id">
+                  <span class="structure-chip" @click="openInspector('group', g.id)" x-text="g.name"></span>
+                </template>
+              </div>
+
+              <div class="structure-field">
+                <div class="sf-lbl">Текущий прибор</div>
+                <div class="sf-val" x-show="structInspector.data.meter_device_id">
+                  <div x-text="'Адрес: '+structInspector.data.meter_controller_key+' / '+structInspector.data.meter_device_id"></div>
+                  <div class="muted" style="font-size:11px" x-show="structInspector.data.meter_serial"
+                       x-text="'Серийный: '+structInspector.data.meter_serial"></div>
+                </div>
+                <div class="sf-val muted" x-show="!structInspector.data.meter_device_id">Прибор не привязан</div>
+              </div>
+
+              <div class="structure-field">
+                <div class="sf-lbl">История замен</div>
+                <template x-if="structInspector.bindings.length===0">
+                  <div class="sf-val muted">Записей нет</div>
+                </template>
+                <template x-for="b in structInspector.bindings" :key="b.id">
+                  <div class="sf-val muted" style="font-size:11px;margin-bottom:4px">
+                    <span x-text="fmtTime(b.valid_from)"></span> — <span x-text="b.valid_to?fmtTime(b.valid_to):'по н.в.'"></span>
+                    · источник #<span x-text="b.meter_source_id"></span>
+                    <span x-show="b.replacement_note" x-text="' · '+b.replacement_note"></span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+
+          <!-- группа: состав/сумма вместо атрибутов прибора -->
+          <template x-if="structInspector && !structInspectorLoading && !structInspectorError && structInspector.kind==='group'">
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                <div>
+                  <h3 style="margin:0 0 2px" x-text="structInspector.data.name"></h3>
+                  <div class="muted" style="font-size:12px" x-text="structInspector.data.category||'группа'"></div>
+                </div>
+                <button class="ico-btn" @click="closeInspector()">✕</button>
+              </div>
+              <div class="structure-field" style="margin-top:14px">
+                <div class="sf-lbl">Состав (рекурсивно, дедуплицирован, с происхождением)</div>
+                <template x-for="m in structInspector.members" :key="m.point_id">
+                  <div class="sf-val" style="font-size:12px;margin-bottom:3px;cursor:pointer"
+                       @click="openInspector('point', m.point_id)">
+                    <span x-text="m.name||m.code"></span>
+                    <span class="muted" x-show="m.via && m.via.length>1" x-text="' (через: '+m.via.join(', ')+')'"></span>
+                  </div>
+                </template>
+                <div class="muted" style="font-size:11px" x-show="structInspector.members.length===0">Пусто</div>
+              </div>
+              <div class="structure-field">
+                <div class="sf-lbl">Сумма за период</div>
+                <div class="sf-val"
+                     x-text="!structInspector.sum?'—':(structInspector.sum.value!=null?fmt(structInspector.sum.value,2)+' '+structInspector.sum.unit:'нет данных ('+structInspector.sum.availability+')')"></div>
+                <div class="muted" style="font-size:11px" x-show="structInspector.sum && (structInspector.sum.quality_flags||[]).length"
+                     x-text="(structInspector.sum.quality_flags||[]).join(', ')"></div>
+                <div class="muted" style="font-size:11px" x-text="structPeriodLabel()"></div>
+              </div>
+            </div>
+          </template>
+
+          <!-- узел сети -->
+          <template x-if="structInspector && !structInspectorLoading && !structInspectorError && structInspector.kind==='node'">
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                <div>
+                  <h3 style="margin:0 0 2px" x-text="structInspector.data.name"></h3>
+                  <div class="muted" style="font-size:12px" x-text="structNodeKindLabel(structInspector.data.kind)"></div>
+                </div>
+                <button class="ico-btn" @click="closeInspector()">✕</button>
+              </div>
+              <div class="structure-field" style="margin-top:14px">
+                <div class="sf-lbl">Код</div>
+                <div class="sf-val mono" x-text="structInspector.data.code"></div>
+              </div>
+              <div class="structure-field">
+                <div class="sf-lbl">Связи (опубликованные)</div>
+                <template x-for="e in structNodeEdges(structInspector.data.id)" :key="e.id">
+                  <div class="sf-val" style="cursor:pointer;margin-bottom:4px" @click="openInspector('edge', e.id)"
+                       x-text="(e.name||e.code||('#'+e.id))+' — '+(e.from_node_id===structInspector.data.id?'от этого узла':'к этому узлу')"></div>
+                </template>
+                <div class="muted" style="font-size:11px" x-show="structNodeEdges(structInspector.data.id).length===0">
+                  Связей нет — узел изолирован (см. «Требует внимания» на Обзоре).
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- связь -->
+          <template x-if="structInspector && !structInspectorLoading && !structInspectorError && structInspector.kind==='edge'">
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                <div>
+                  <h3 style="margin:0 0 2px" x-text="structInspector.data.name||structInspector.data.code||('Связь #'+structInspector.data.id)"></h3>
+                  <div class="muted" style="font-size:12px" x-text="'состояние: '+structInspector.data.state"></div>
+                </div>
+                <button class="ico-btn" @click="closeInspector()">✕</button>
+              </div>
+              <div class="structure-field" style="margin-top:14px">
+                <div class="sf-lbl">Концы</div>
+                <div class="sf-val" x-text="'от: '+structNodeName(structInspector.data.from_node_id)+' → к: '+structNodeName(structInspector.data.to_node_id)"></div>
+              </div>
+              <div class="structure-field">
+                <div class="sf-lbl">Измерение</div>
+                <template x-if="structInspector.data.primary_point_id">
+                  <div class="sf-val" style="cursor:pointer" @click="openInspector('point', structInspector.data.primary_point_id)"
+                       x-text="'точка учёта #'+structInspector.data.primary_point_id"></div>
+                </template>
+                <div class="sf-val muted" x-show="!structInspector.data.primary_point_id">
+                  Без измерения (см. «Требует внимания» на Обзоре).
+                </div>
+              </div>
+              <div class="structure-field">
+                <div class="sf-lbl">Фазы / номинальный ток</div>
+                <div class="sf-val mono"
+                     x-text="(structInspector.data.phase_count||'—')+' фаз, '+(structInspector.data.rated_current_a!=null?structInspector.data.rated_current_a+' А':'ток не указан')"></div>
+              </div>
+              <div class="structure-field" x-show="structInspector.data.cable_note">
+                <div class="sf-lbl">Кабель</div>
+                <div class="sf-val" x-text="structInspector.data.cable_note"></div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
     </div>
   </template>
 
@@ -1173,8 +1552,15 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               <h3 x-text="planV2ItemKindLabel(planV2SelectedItem.kind)"></h3>
               <div x-show="planV2SelectedItem.label" x-text="planV2SelectedItem.label"></div>
               <div class="muted mono" x-text="'id: '+planV2SelectedItem.id"></div>
-              <div style="display:flex;gap:8px;margin-top:10px">
+              <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
                 <button class="ico-btn" @click="planV2SelectedItem=null">Закрыть</button>
+                <!-- ТЗ §8.3: тот же инспектор, что и на вкладке «Структура» —
+                     см. openInspector в <script>. Доступно только для
+                     point/node/group — у location/port/annotation своего
+                     инспектора в этой задаче нет (это координаты плана, не
+                     предмет учёта/сети). -->
+                <button class="btn btn-sm btn-secondary" x-show="planV2ItemInspectorTarget(planV2SelectedItem)"
+                        @click="openInspectorForPlanItem(planV2SelectedItem)">Открыть в инспекторе</button>
                 <button class="btn btn-sm btn-danger" x-show="planV2EditMode"
                         @click="planV2RemoveItem(planV2SelectedItem); planV2SelectedItem=null">Убрать с плана</button>
               </div>
@@ -1186,6 +1572,8 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               <h3>Связь на плане</h3>
               <div class="muted mono" x-text="'edge_id: '+planV2SelectedEdgeView.edge_id"></div>
               <div class="muted" x-text="planV2SelectedEdgeView.waypoints ? 'Линия: нарисована вручную' : 'Линия: прямая между метками'"></div>
+              <button class="btn btn-sm btn-secondary" style="margin-top:8px"
+                      @click="openInspector('edge', planV2SelectedEdgeView.edge_id)">Открыть в инспекторе</button>
 
               <template x-if="planV2EditMode && planV2DrawingEdgeKey===String(planV2SelectedEdgeView.id)">
                 <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
@@ -2819,7 +3207,7 @@ const DEFAULT_UI_SET = 'classic';
 // уехала на первую вкладку нового набора, а не осталась скрытой.
 const UI_SET_TABS = {
   classic: ['dash', 'plan', 'consumption', 'settings', 'reports'],
-  v2: ['overviewv2', 'planv2', 'reportsv2'],
+  v2: ['overviewv2', 'planv2', 'reportsv2', 'structurev2'],
 };
 
 function app(){ return {
@@ -2944,6 +3332,24 @@ function app(){ return {
   rv2CompareEnabled:false, rv2CompareFrom:null, rv2CompareTo:null,
   rv2Loading:false, rv2Error:null, rv2Result:null,
   rv2Points:[], rv2Groups:[], rv2BalanceScopes:[], rv2OptionsLoaded:false,
+  // Структура/инспектор (ТЗ §8.3, партия 3, задача 1). Инспектор общий —
+  // открывается функцией openInspector(kind,id) отсюда, из Плана v2,
+  // из Отчётов и из «Требует внимания» на Обзоре одинаково (переключает
+  // на эту вкладку и заполняет structInspector). kind: 'point'|'group'|
+  // 'edge'|'node'. Списки мест/групп/узлов/связей грузятся один раз при
+  // первом открытии (openStructureTab) — нужны и дереву слева, и
+  // инспектору (например для "чем питается/что питает").
+  // Сводка незавершённой настройки (ТЗ §8.2/§13, партия 3 задача 4) —
+  // отдельный блок «Требует внимания» на Обзоре, ОТДЕЛЬНО от
+  // overviewV2Problems() (та смотрит на живую связь с устройством по
+  // снимку, эта — на завершённость конфигурации по /api/v2/validation:
+  // прибор/место/группа/план/измерение связи/изолированный узел).
+  validationResult:null, validationLoading:false, validationError:null,
+  structInited:false, structLoading:false, structError:null,
+  structQuery:'', structPoints:[], structLocations:[], structGroups:[],
+  structNodes:[], structEdges:[], structSelectedLocationId:null,
+  structInspector:null, structInspectorLoading:false, structInspectorError:null,
+  _structSearchSeq:0,
   // toast
   toast:null, _toastTimer:null,
   _timer:null,
@@ -2961,6 +3367,7 @@ function app(){ return {
     // 5-секундного таймера ниже.
     if(this.tab=='overviewv2') this.openOverviewV2Tab();
     if(this.tab=='planv2') this.openPlanV2Tab();
+    if(this.tab=='structurev2') this.openStructureTab();
     this._timer=setInterval(()=>{
       if(this.tab=='dash') this.loadStatus();
       // План (ТЗ v0.11.0): та же частота 5с, что и дашборд. Обновляем
@@ -2999,6 +3406,7 @@ function app(){ return {
       if(this.tab=='overviewv2') this.openOverviewV2Tab();
       else if(this.tab=='planv2') this.openPlanV2Tab();
       else if(this.tab=='reportsv2') this.openReportsV2Tab();
+      else if(this.tab=='structurev2') this.openStructureTab();
       else if(this.tab=='plan') this.openPlanTab();
       else if(this.tab=='consumption') this.loadConsumption();
       else if(this.tab=='settings'){ this.loadSettings(); this.initUpdatePanel(); }
@@ -4423,8 +4831,31 @@ function app(){ return {
     if(!this.overviewV2Inited){
       this.overviewV2Inited=true;
       await Promise.all([this.loadOverviewV2Snapshot(), this.loadOverviewV2Groups(),
-                          this.initOvAccounting()]);
+                          this.initOvAccounting(), this.loadValidation()]);
     }
+  },
+  async loadValidation(){
+    // §8.2/§13 (партия 3, задача 4): сводка незавершённой настройки —
+    // сервер уже отсортировал issues по влиянию (no_meter впереди no_plan
+    // и т.п., см. _VALIDATION_IMPACT_RANK в api_v2.py), на фронте порядок
+    // не трогаем. Необязательно для остального Обзора при ошибке.
+    this.validationLoading=true; this.validationError=null;
+    try{
+      const r=await fetch('/api/v2/validation');
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      this.validationResult=await r.json();
+    }catch(e){
+      this.validationError='Не удалось получить сводку конфигурации: '+e.message;
+    }finally{
+      this.validationLoading=false;
+    }
+  },
+  validationIssueLabel(kind){
+    return {
+      no_meter:'нет прибора', no_location:'нет места', no_group:'нет группы',
+      no_plan:'не размещена на плане', node_without_edges:'узел изолирован',
+      edge_without_measurement:'связь без измерения',
+    }[kind] || kind;
   },
   async loadOverviewV2Groups(){
     // Корневые группы (parent_id=null) + их ЭФФЕКТИВНЫЙ состав
@@ -4701,6 +5132,254 @@ function app(){ return {
     a.href=URL.createObjectURL(blob);
     a.download=`report_v2_${d.dimension}_${new Date().toISOString().slice(0,10)}.csv`;
     a.click();
+  },
+
+  // ------------------------------------------------------------------
+  // Структура/инспектор (ТЗ §8.3, партия 3, задача 1). openInspector —
+  // единственная точка входа, которой пользуются также План v2, Отчёты
+  // и «Требует внимания» на Обзоре: переключает на эту вкладку и грузит
+  // карточку, поэтому инспектор гарантированно один и тот же везде (ТЗ:
+  // "тот же инспектор... открывается идентично из плана, дерева, отчёта
+  // и списка проблем"). Сам инспектор ничего не считает — только читает
+  // уже существующие ручки v2 (см. докстринг v2_structure_points и
+  // модульный докстринг в api_v2.py).
+  // ------------------------------------------------------------------
+  async openStructureTab(){
+    if(this.structInited) return;
+    this.structInited=true;
+    await this._loadStructureLists();
+  },
+  async _loadStructureLists(){
+    this.structLoading=true; this.structError=null;
+    try{
+      const [pr, lr, gr, nr, er] = await Promise.all([
+        fetch('/api/v2/structure/points'),
+        fetch('/api/v2/locations'),
+        fetch('/api/v2/groups'),
+        fetch('/api/v2/topology/nodes'),
+        fetch('/api/v2/topology/edges?state=published'),
+      ]);
+      if(!pr.ok) throw new Error('structure/points: HTTP '+pr.status);
+      this.structPoints = await pr.json();
+      this.structLocations = lr.ok ? await lr.json() : [];
+      this.structGroups = gr.ok ? await gr.json() : [];
+      this.structNodes = nr.ok ? await nr.json() : [];
+      this.structEdges = er.ok ? await er.json() : [];
+      await this._loadStructureSnapshot();
+    }catch(e){
+      this.structError = 'Не удалось загрузить структуру: '+e.message;
+    }finally{
+      this.structLoading=false;
+    }
+  },
+  async _loadStructureSnapshot(){
+    // Метрики центра/списка (мощность, статус) — из общего снимка,
+    // ничего не пересчитывается здесь (см. модульный докстринг
+    // v2_snapshot в api_v2.py).
+    try{
+      const r=await fetch('/api/v2/snapshot');
+      const d=await r.json();
+      this._structSnapshotById = {};
+      (d.points||[]).forEach(p=>{ this._structSnapshotById[p.point_id]=p; });
+    }catch(e){ this._structSnapshotById = this._structSnapshotById||{}; }
+  },
+  structSnapshotFor(pointId){
+    return (this._structSnapshotById||{})[pointId] || null;
+  },
+  async structureSearch(){
+    // A02: поиск по имени/коду/MQTT ID/серийнику/пути через
+    // /api/v2/structure/points?q= — сервер уже фильтрует и не прячет
+    // непривязанные/неразмещённые точки. _structSearchSeq защищает от
+    // устаревшего ответа, если пользователь печатает быстро.
+    const seq = ++this._structSearchSeq;
+    const q = this.structQuery.trim();
+    try{
+      const r = await fetch('/api/v2/structure/points'+(q?('?q='+encodeURIComponent(q)):''));
+      const d = await r.json();
+      if(seq !== this._structSearchSeq) return;
+      if(q){
+        this._structSearchResults = d.points||[];
+      }else{
+        this.structPoints = d.points||[];
+        this._structSearchResults = null;
+        await this._loadStructureSnapshot();
+      }
+    }catch(e){ /* поиск best-effort, не валим экран */ }
+  },
+  structLocationRows(){
+    // Плоский отсортированный список мест с отступом по глубине —
+    // визуально дерево, без рекурсивных Alpine-компонентов (тот же приём,
+    // что и остальной интерфейс — минимум магии в разметке).
+    const byParent = {};
+    (this.structLocations||[]).filter(l=>!l.archived_at).forEach(l=>{
+      const key = l.parent_id==null ? 'root' : String(l.parent_id);
+      (byParent[key] = byParent[key]||[]).push(l);
+    });
+    const countsByLoc = this._structPointCountsByLocation();
+    const rows = [];
+    const walk = (parentKey, depth) => {
+      const children = (byParent[parentKey]||[]).slice()
+        .sort((a,b)=>(a.sort_order-b.sort_order)||String(a.name).localeCompare(String(b.name)));
+      children.forEach(l=>{
+        rows.push({id:l.id, name:l.name, depth, pointCount: countsByLoc[l.id]||0});
+        walk(String(l.id), depth+1);
+      });
+    };
+    walk('root', 0);
+    return rows;
+  },
+  _structPointCountsByLocation(){
+    const counts = {};
+    (this.structPoints||[]).forEach(p=>{
+      if(p.location_id!=null) counts[p.location_id]=(counts[p.location_id]||0)+1;
+    });
+    return counts;
+  },
+  structUnplacedPoints(){
+    // §8.3: "непривязанные/неразмещённые точки — в отдельной доступной
+    // коллекции, никогда не пропадают молча" — этот бакет и есть та
+    // коллекция для мест (по прибору — badge "не привязана" в списке).
+    return (this.structPoints||[]).filter(p=>p.location_id==null);
+  },
+  structCenterTitle(){
+    if(this.structQuery.trim()!=='') return `Результаты поиска «${this.structQuery.trim()}»`;
+    if(this.structSelectedLocationId==='unplaced') return 'Точки без места установки';
+    if(this.structSelectedLocationId==null) return 'Выберите место слева';
+    const loc = (this.structLocations||[]).find(l=>l.id===this.structSelectedLocationId);
+    return loc ? ('Место: '+loc.name) : '';
+  },
+  structCenterPoints(){
+    if(this.structQuery.trim()!=='') return this._structSearchResults || [];
+    if(this.structSelectedLocationId==='unplaced') return this.structUnplacedPoints();
+    if(this.structSelectedLocationId==null) return [];
+    return (this.structPoints||[]).filter(p=>p.location_id===this.structSelectedLocationId);
+  },
+  structPeriodLabel(){
+    const d=this._ovDefaultDates();
+    return `Период: ${d.from} — ${d.to} (текущий месяц, как на Обзоре)`;
+  },
+  structNodeKindLabel(kind){
+    return {source:'Ввод', panel:'Щит', junction:'Узел', load:'Нагрузка'}[kind]||kind;
+  },
+  structNodeName(nodeId){
+    const n=(this.structNodes||[]).find(x=>x.id===nodeId);
+    return n ? (n.name||n.code||('#'+nodeId)) : ('#'+nodeId);
+  },
+  structNodeEdges(nodeId){
+    return (this.structEdges||[]).filter(e=>e.from_node_id===nodeId || e.to_node_id===nodeId);
+  },
+  structFeed(pointId){
+    // "Чем питается / что питает" (§8.3): связи, где ЭТА точка назначена
+    // измерением (primary_point_id), и соседние сегменты по уже
+    // опубликованной схеме сети (черновики сюда не попадают — они ещё не
+    // прошли проверку леса, см. topology/publish).
+    const measuredEdges = (this.structEdges||[]).filter(e=>e.primary_point_id===pointId).map(edge=>{
+      const fedBy = (this.structEdges||[]).filter(e2=>e2.to_node_id===edge.from_node_id)
+        .map(e2=>({name: e2.name, code: e2.code}));
+      const feeds = (this.structEdges||[]).filter(e2=>e2.from_node_id===edge.to_node_id)
+        .map(e2=>({name: e2.name, code: e2.code}));
+      return {edge, fedBy, feeds};
+    });
+    return {measuredEdges};
+  },
+  async openInspector(kind, id){
+    if(id==null) return;
+    if(this.tab!=='structurev2'){ this.tab='structurev2'; }
+    if(!this.structInited){ this.structInited=true; await this._loadStructureLists(); }
+    this.structInspector = {kind, id, data:null};
+    this.structInspectorLoading = true; this.structInspectorError = null;
+    try{
+      if(kind==='point') await this._loadPointInspector(id);
+      else if(kind==='group') await this._loadGroupInspector(id);
+      else if(kind==='node') await this._loadNodeInspector(id);
+      else if(kind==='edge') await this._loadEdgeInspector(id);
+      else throw new Error('неизвестный тип объекта: '+kind);
+    }catch(e){
+      this.structInspectorError = 'Не удалось загрузить карточку: '+e.message;
+    }finally{
+      this.structInspectorLoading = false;
+    }
+  },
+  closeInspector(){ this.structInspector=null; this.structInspectorError=null; },
+  async _loadPointInspector(id){
+    const period=this._ovDefaultDates();
+    const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
+    const [pointR, snapR, bindingsR, groupsR] = await Promise.all([
+      fetch('/api/v2/points/'+id),
+      fetch('/api/v2/snapshot?point_ids='+id),
+      fetch('/api/v2/points/'+id+'/bindings'),
+      fetch('/api/v2/points/'+id+'/groups'),
+    ]);
+    if(!pointR.ok) throw new Error('точка не найдена (HTTP '+pointR.status+')');
+    const point = await pointR.json();
+    // location_path/meter_* берём из уже загруженного structure/points —
+    // §8.3 требует, чтобы инспектор пользовался уже имеющимися ручками, а
+    // не пересчитывал путь по местам заново на фронте.
+    const structItem = (this.structPoints||[]).find(p=>p.point_id===id) || {};
+    const data = Object.assign({}, point, {
+      location_path: structItem.location_path,
+      meter_device_id: structItem.meter_device_id,
+      meter_controller_key: structItem.meter_controller_key,
+      meter_serial: structItem.meter_serial,
+    });
+    const snap = snapR.ok ? (await snapR.json()).points : [];
+    const bindings = bindingsR.ok ? (await bindingsR.json()) : [];
+    const memberships = groupsR.ok ? (await groupsR.json()) : [];
+    const groups = memberships.filter(m=>m.valid_to==null).map(m=>{
+      const g=(this.structGroups||[]).find(x=>x.id===m.group_id);
+      return {id: m.group_id, name: g?g.name:('#'+m.group_id)};
+    });
+    this.structInspector = {
+      kind:'point', id, data,
+      snapshot: (snap&&snap[0]) || null,
+      bindings: (bindings||[]).slice().sort((a,b)=>b.valid_from-a.valid_from),
+      groups,
+      consumption: null,
+    };
+    // Расход за период — отдельным запросом, чтобы карточка сразу
+    // показывала остальное, даже если metrics/query недоступен/медленный.
+    try{
+      const r = await fetch('/api/v2/metrics/query', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({mode:'measured', point_ids:[id], from:period.from, to:period.to, timezone:tz}),
+      });
+      if(r.ok) this.structInspector.consumption = await r.json();
+    }catch(e){ /* не критично для остальной карточки */ }
+  },
+  async _loadGroupInspector(id){
+    // §8.3: у группы вместо атрибутов прибора — состав и сумма/качество.
+    const period=this._ovDefaultDates();
+    const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
+    const [groupR, membersR] = await Promise.all([
+      fetch('/api/v2/groups/'+id),
+      fetch('/api/v2/groups/'+id+'/effective-members'),
+    ]);
+    if(!groupR.ok) throw new Error('группа не найдена (HTTP '+groupR.status+')');
+    const data = await groupR.json();
+    const membersResp = membersR.ok ? await membersR.json() : {points:[]};
+    const members = membersResp.points || [];
+    this.structInspector = {kind:'group', id, data, members, sum:null};
+    if(members.length>0){
+      try{
+        const r = await fetch('/api/v2/metrics/query', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({mode:'sum', point_ids:members.map(m=>m.point_id), from:period.from, to:period.to, timezone:tz}),
+        });
+        if(r.ok) this.structInspector.sum = await r.json();
+      }catch(e){ /* сумма необязательна для остальной карточки */ }
+    }
+  },
+  async _loadNodeInspector(id){
+    const r = await fetch('/api/v2/topology/nodes/'+id);
+    if(!r.ok) throw new Error('узел не найден (HTTP '+r.status+')');
+    const data = await r.json();
+    this.structInspector = {kind:'node', id, data};
+  },
+  async _loadEdgeInspector(id){
+    const r = await fetch('/api/v2/topology/edges/'+id);
+    if(!r.ok) throw new Error('связь не найдена (HTTP '+r.status+')');
+    const data = await r.json();
+    this.structInspector = {kind:'edge', id, data};
   },
 
   async openPlanV2Tab(){
@@ -5212,6 +5891,21 @@ function app(){ return {
     const labels={point:'Точка учёта', location:'Место', group:'Группа',
                   node:'Узел сети', port:'Переход на другой план', annotation:'Подпись'};
     return labels[kind]||kind;
+  },
+  // ТЗ §8.3: "тот же инспектор... открывается идентично из плана, дерева,
+  // отчёта и списка проблем" — точка/узел/группа плана открывают общий
+  // openInspector (см. <script> секцию Структура); у place/port/annotation
+  // своего инспектора нет (это координаты на плане, не предмет учёта/сети).
+  planV2ItemInspectorTarget(item){
+    if(!item) return null;
+    if(item.kind==='point' && item.point_id!=null) return {kind:'point', id:item.point_id};
+    if(item.kind==='node' && item.node_id!=null) return {kind:'node', id:item.node_id};
+    if(item.kind==='group' && item.group_id!=null) return {kind:'group', id:item.group_id};
+    return null;
+  },
+  openInspectorForPlanItem(item){
+    const t=this.planV2ItemInspectorTarget(item);
+    if(t) this.openInspector(t.kind, t.id);
   },
 
   showToast(msg, ok=true){
