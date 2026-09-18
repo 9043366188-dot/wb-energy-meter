@@ -225,6 +225,9 @@ class MeteringPoint:
         )
 
 
+_UNSET = object()  # см. update_fields.installation_location_id
+
+
 class MeteringPointRepo:
     def __init__(self, db):
         self._db = db
@@ -384,10 +387,15 @@ class MeteringPointRepo:
         return self.get_by_id(point_id)
 
     def update_fields(self, point_id, *, name=None, description=None,
-                      installation_note=None):
-        """Обновить простые поля точки."""
-        # Если ничего не передано, ничего не делаем
-        if name is None and description is None and installation_note is None:
+                      installation_note=None, installation_location_id=_UNSET):
+        """Обновить простые поля точки. installation_location_id — партия
+        5, задача 2 (§8.3: "редактировать принадлежность" в карточке
+        точки) — раньше место установки можно было задать только при
+        создании точки (repo.add), сменить его позже было нечем. Отдельный
+        сентинел _UNSET, а не None по умолчанию: None здесь — ЗНАЧАЩЕЕ
+        значение ("снять место установки"), а не "не менять"."""
+        if (name is None and description is None and installation_note is None
+                and installation_location_id is _UNSET):
             return self.get_by_id(point_id)
 
         # Валидируем переданные значения
@@ -410,15 +418,24 @@ class MeteringPointRepo:
                 updates["description"] = description
             if installation_note is not None:
                 updates["installation_note"] = installation_note
+            if installation_location_id is not _UNSET:
+                updates["installation_location_id"] = installation_location_id
 
             # Формируем SQL
             set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
             params = list(updates.values()) + [point_id]
 
-            c.execute(
-                f"UPDATE metering_points SET {set_clause} WHERE id = ?",
-                params
-            )
+            try:
+                c.execute(
+                    f"UPDATE metering_points SET {set_clause} WHERE id = ?",
+                    params
+                )
+            except sqlite3.IntegrityError as e:
+                if "foreign key" in str(e).lower():
+                    raise ValueError(
+                        f"Место installation_location_id={installation_location_id} "
+                        f"не найдено") from None
+                raise
 
         log.info("Обновлена точка %d", point_id)
         return self.get_by_id(point_id)

@@ -95,7 +95,9 @@ from .plan_service_v2 import (
     SitePlanRepoV2, PlanItemRepo, PlanEdgeViewRepo,
     RevisionConflict, PlanError, save_plan_layout,
 )
-from .legacy_migration import migrate_meters_and_groups, SCHEMA_MIGRATION_VERSION
+from .legacy_migration import (
+    migrate_meters_and_groups, SCHEMA_MIGRATION_VERSION, DEFAULT_CONTROLLER_KEY,
+)
 from .plan_repo import SitePlanRepo, PlanZoneRepo, PlanLinkRepo
 from . import migration_wizard_service
 from .repo import GroupRepo, MeterRepo, validate_device_id
@@ -198,6 +200,50 @@ def register_v2_routes(app, state, json_response):
             "created_at": b.created_at,
         }
 
+    def _resolve_or_provision_meter_source(meter_source_id, new_meter, at=None):
+        """Партия 3/5: вернуть meter_source_id — либо уже готовый (передан
+        явно), либо провижинить физически новый прибор по адресу MQTT
+        (controller_key/device_id), заводя meters+meter_sources или
+        переиспользуя существующие с тем же адресом (устойчиво к повтору
+        запроса). Общий код для replace-meter (партия 3) и открытия
+        первой привязки точки (партия 5, задача 1) — раньше был продублирован
+        внутри replace-meter, теперь один источник истины. controller_key
+        по умолчанию — DEFAULT_CONTROLLER_KEY (контроллер в этой системе
+        один и тот же, что и у мастера переноса legacy)."""
+        if meter_source_id is not None:
+            return meter_source_id
+        if not isinstance(new_meter, dict):
+            raise ValueError(
+                "требуется meter_source_id существующего источника либо "
+                "new_meter с адресом нового прибора (device_id)")
+        controller_key = str(new_meter.get("controller_key") or DEFAULT_CONTROLLER_KEY).strip()
+        if not controller_key:
+            raise ValueError("new_meter.controller_key не может быть пустым")
+        device_id = validate_device_id(new_meter.get("device_id"))
+        meters = MeterRepo(db, GroupRepo(db))
+        sources = MeterSourceRepo(db)
+        meter = meters.get_by_device_id(device_id)
+        if meter is None:
+            # Физически новый прибор — заводим `meters` заново. Тем же
+            # device_id, что и адрес MQTT — как и в legacy_migration.py,
+            # это устойчивый естественный ключ прибора.
+            display_name = new_meter.get("display_name") or device_id
+            meter = meters.add(device_id, display_name)
+        current = sources.get_current(meter.id)
+        if (current is not None and current.controller_key == controller_key
+                and current.device_id == device_id):
+            # Повтор того же запроса (например, после сетевого сбоя) —
+            # источник уже открыт именно на этот адрес, переприсваивать
+            # незачем (и не плодим лишний ряд).
+            source = current
+        else:
+            # reassign_source сама закрывает старый открытый источник
+            # ЭТОГО прибора, если он был, и атомарно открывает новый —
+            # устойчиво и для совсем нового прибора (current is None —
+            # эквивалентно open_source).
+            source = sources.reassign_source(meter.id, controller_key, device_id, at=at)
+        return source.id
+
     def _group_to_dict(g):
         return {
             "id": g.id, "name": g.name, "category": g.category,
@@ -289,6 +335,12 @@ def register_v2_routes(app, state, json_response):
                     point_id, name=data.get("name"),
                     description=data.get("description"),
                     installation_note=data.get("installation_note"))
+            if "installation_location_id" in data:
+                # Партия 5, задача 2 (§8.3 "редактировать принадлежность"):
+                # смена места установки уже существующей точки — раньше
+                # PATCH это поле не принимал вообще (см. update_fields).
+                result = repo.update_fields(
+                    point_id, installation_location_id=data.get("installation_location_id"))
             return result
 
         try:
@@ -304,14 +356,80 @@ def register_v2_routes(app, state, json_response):
         out["configuration_revision"] = new_rev
         return json_response(out)
 
-    @app.route("/api/v2/points/<int:point_id>/bindings", methods=["GET"])
+    @app.route("/api/v2/points/<int:point_id>/bindings", methods=["GET", "POST"])
     def v2_point_bindings(point_id):
         repo = _point_repo()
         if repo.get_by_id(point_id) is None:
             body, status = _err("not_found", f"Точка {point_id} не найдена", 404, ids=[point_id])
             return json_response(body, status)
-        bindings = _binding_repo().list_for_point(point_id)
-        return json_response([_binding_to_dict(b) for b in bindings])
+
+        if request.method == "GET":
+            bindings = _binding_repo().list_for_point(point_id)
+            return json_response([_binding_to_dict(b) for b in bindings])
+
+        """POST — партия 5, задача 1: открыть привязку точки к прибору
+        (в первую очередь — ПЕРВУЮ, у только что заведённой точки прибора
+        ещё не было). `replace-meter` для этого не годится: она требует
+        уже открытую основную привязку и закрывает её (см. докстринг
+        v2_point_replace_meter и binding_service.PointBindingRepo.
+        replace_meter — кидает ValueError, если открытой основной
+        привязки нет). Нужный метод, PointBindingRepo.open_binding, уже
+        существует и используется мастером переноса legacy
+        (legacy_migration.py), но до этой партии не был доступен через
+        HTTP ни одним маршрутом — проверено по полному списку @app.route
+        в этом файле. Тело — как у replace-meter: meter_source_id
+        готового источника ЛИБО new_meter с адресом нового прибора (см.
+        _resolve_or_provision_meter_source)."""
+        body = request.get_json(silent=True) or {}
+        data, _envelope = _unwrap_data(body)
+        meter_source_id = data.get("meter_source_id")
+        new_meter = data.get("new_meter")
+
+        if meter_source_id is None and not isinstance(new_meter, dict):
+            body, status = _err(
+                "bad_request",
+                "требуется meter_source_id существующего источника либо "
+                "new_meter с адресом нового прибора (controller_key, device_id)",
+                400, fields=["meter_source_id", "new_meter"])
+            return json_response(body, status)
+
+        channel_profile = data.get("channel_profile") or "total_3p"
+        role = data.get("role") or "primary"
+        valid_from = data.get("valid_from", data.get("at"))
+        bindings = _binding_repo()
+
+        def _provision_and_open():
+            source_id = _resolve_or_provision_meter_source(
+                meter_source_id, new_meter, at=valid_from)
+            return bindings.open_binding(
+                point_id, source_id, channel_profile, role=role,
+                valid_from=valid_from,
+                replacement_note=data.get("replacement_note"),
+            ), source_id
+
+        touched = [("metering_point", point_id)]
+        if meter_source_id is not None:
+            touched.append(("meter_source", meter_source_id))
+
+        try:
+            (new_binding, used_source_id), new_rev = with_revision_check(
+                db, data.get("expected_revision"), _provision_and_open,
+                touched=touched)
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(
+                e, ids=[i for i in (point_id, meter_source_id) if i is not None])
+        except BindingConflict as e:
+            body, status = _err(
+                "double_counting", str(e), 409,
+                ids=[i for i in (point_id, meter_source_id) if i is not None])
+            return json_response(body, status)
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400)
+            return json_response(body, status)
+        out = _binding_to_dict(new_binding)
+        out["configuration_revision"] = new_rev
+        out["meter_source_id"] = used_source_id
+        return json_response(out, 201)
 
     @app.route("/api/v2/points/<int:point_id>/replace-meter", methods=["POST"])
     def v2_point_replace_meter(point_id):
@@ -351,37 +469,12 @@ def register_v2_routes(app, state, json_response):
         bindings = _binding_repo()
 
         def _provision_and_replace():
-            source_id = meter_source_id
-            if source_id is None:
-                controller_key = str(new_meter.get("controller_key") or "").strip()
-                if not controller_key:
-                    raise ValueError("new_meter.controller_key не может быть пустым")
-                device_id = validate_device_id(new_meter.get("device_id"))
-                meters = MeterRepo(db, GroupRepo(db))
-                sources = MeterSourceRepo(db)
-                meter = meters.get_by_device_id(device_id)
-                if meter is None:
-                    # Партия 3: физически новый прибор — заводим `meters`
-                    # заново. Тем же device_id, что и адрес MQTT — как и
-                    # в legacy_migration.py, это устойчивый естественный
-                    # ключ прибора.
-                    display_name = new_meter.get("display_name") or device_id
-                    meter = meters.add(device_id, display_name)
-                current = sources.get_current(meter.id)
-                if (current is not None and current.controller_key == controller_key
-                        and current.device_id == device_id):
-                    # Повтор того же запроса (например, после сетевого
-                    # сбоя) — источник уже открыт именно на этот адрес,
-                    # переприсваивать незачем (и не плодим лишний ряд).
-                    source = current
-                else:
-                    # reassign_source сама закрывает старый открытый
-                    # источник ЭТОГО прибора, если он был, и атомарно
-                    # открывает новый — устойчиво и для совсем нового
-                    # прибора (current is None — эквивалентно open_source).
-                    source = sources.reassign_source(
-                        meter.id, controller_key, device_id, at=data.get("at"))
-                source_id = source.id
+            # Партия 5: провижининг вынесен в общий
+            # _resolve_or_provision_meter_source — используется также
+            # новой ручкой открытия первой привязки (POST
+            # points/<id>/bindings), логика больше не продублирована.
+            source_id = _resolve_or_provision_meter_source(
+                meter_source_id, new_meter, at=data.get("at"))
             return bindings.replace_meter(
                 point_id, source_id,
                 at=data.get("at"),
