@@ -338,8 +338,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 .plan-empty{text-align:center;color:var(--txt3);padding:60px 20px}
 .plan-upload-form{display:flex;flex-direction:column;gap:8px}
 .plan-upload-form input[type=text],.plan-upload-form input[type=file],
-.plan-upload-form input[type=number]{background:var(--bg3);border:1px solid var(--line);
-  color:var(--txt);padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit}
+.plan-upload-form input[type=number],.plan-upload-form select{background:var(--bg3);
+  border:1px solid var(--line);color:var(--txt);padding:7px 9px;border-radius:6px;
+  font-size:13px;font-family:inherit}
 .plan-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--txt2)}
 .plan-legend span{display:flex;align-items:center;gap:5px}
 .plan-legend .ll-swatch{width:16px;height:3px;border-radius:2px;display:inline-block}
@@ -721,7 +722,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <template x-for="pid in Object.keys(b.points||{})" :key="pid">
                   <div style="display:flex;justify-content:space-between;padding:2px 0">
                     <span x-text="ovPointName(pid)"></span>
-                    <span class="mono" x-text="b.points[pid].value!=null?fmt(b.points[pid].value,1)+' кВт·ч':'нет данных'"></span>
+                    <span class="mono" x-text="b.points[pid].value!=null?fmt(b.points[pid].value,1)+' кВт·ч':ovPointDataStateLabel(Number(pid))"></span>
                   </div>
                 </template>
               </div>
@@ -1056,7 +1057,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 </div>
               </template>
               <div class="muted" style="font-size:11px;margin-top:10px" x-show="structLocations.length===0">
-                Мест ещё не заведено.
+                Мест ещё не заведено — нажмите «+ Место» ниже, чтобы создать первое.
               </div>
             </div>
           </template>
@@ -1075,7 +1076,14 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             <div>
               <div class="muted" style="font-size:11px;margin-bottom:8px" x-text="structCenterTitle()"></div>
               <template x-if="structCenterPoints().length===0">
-                <div class="empty">Точек нет.</div>
+                <div class="empty">
+                  <template x-if="structPoints.length===0 && structQuery.trim()===''">
+                    <span>Точек учёта ещё нет — нажмите «+ Точка учёта» ниже, чтобы завести первую.</span>
+                  </template>
+                  <template x-if="!(structPoints.length===0 && structQuery.trim()==='')">
+                    <span>Точек здесь нет.</span>
+                  </template>
+                </div>
               </template>
               <table class="rep-table" x-show="structCenterPoints().length>0">
                 <thead><tr>
@@ -1136,6 +1144,94 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 </div>
                 <button class="ico-btn" @click="closeInspector()">✕</button>
               </div>
+
+              <!-- Действия карточки (ТЗ §8.3, партия 5, задача 2): показать
+                   на плане / открыть график / заменить прибор / редактировать
+                   принадлежность. -->
+              <div style="display:flex;gap:6px;flex-wrap:wrap;margin:2px 0 12px">
+                <button class="btn btn-sm btn-secondary" @click="showPointOnPlan(structInspector.id)">Показать на плане</button>
+                <button class="btn btn-sm btn-secondary" x-show="structInspector.data.meter_device_id"
+                        @click="openDetail(structInspector.data.meter_device_id)">Открыть график</button>
+                <button class="btn btn-sm btn-secondary" @click="openReplaceMeterForm()"
+                        x-text="structInspector.data.meter_device_id?'Заменить прибор':'Привязать прибор'"></button>
+                <button class="btn btn-sm btn-secondary" @click="openEditMembershipForm()">Редактировать принадлежность</button>
+              </div>
+
+              <template x-if="planPickerChoices && planPickerChoices.length">
+                <div class="structure-field">
+                  <div class="sf-lbl">На каком плане показать?</div>
+                  <template x-for="(c,idx) in planPickerChoices" :key="idx">
+                    <div class="sf-val" style="cursor:pointer;margin-bottom:4px"
+                         @click="goToPlanPickerChoice(c)" x-text="c.plan.name+' ('+c.plan.kind+')'"></div>
+                  </template>
+                  <button class="btn btn-sm btn-secondary" @click="planPickerChoices=null">Отмена</button>
+                </div>
+              </template>
+
+              <template x-if="replaceMeterForm">
+                <div class="plan-upload-form structure-field" style="max-width:360px">
+                  <div class="sf-lbl">Замена прибора</div>
+                  <div class="muted" style="font-size:11px">
+                    Текущая привязка закроется в момент замены — история сохраняется,
+                    старые агрегаты не переписываются (см. «История замен» ниже).
+                  </div>
+                  <select x-model="replaceMeterForm.device_id">
+                    <option value="">— выберите прибор —</option>
+                    <template x-for="d in structKnownDevices" :key="d.device_id">
+                      <option :value="d.device_id" x-text="d.label"></option>
+                    </template>
+                  </select>
+                  <select x-model="replaceMeterForm.channel_profile">
+                    <option value="total_3p">Все фазы суммарно (total_3p)</option>
+                    <option value="phase_l1">Фаза L1</option>
+                    <option value="phase_l2">Фаза L2</option>
+                    <option value="phase_l3">Фаза L3</option>
+                  </select>
+                  <input type="text" x-model="replaceMeterForm.replacement_note" placeholder="Причина замены (опционально)">
+                  <template x-if="replaceMeterForm.error">
+                    <div class="warn-item" x-text="replaceMeterForm.error"></div>
+                  </template>
+                  <div style="display:flex;gap:8px;margin-top:4px">
+                    <button class="btn btn-primary btn-sm" :disabled="replaceMeterForm.saving" @click="submitReplaceMeter()">Заменить</button>
+                    <button class="btn btn-secondary btn-sm" @click="closeReplaceMeterForm()">Отмена</button>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="editMembershipForm">
+                <div class="plan-upload-form structure-field" style="max-width:360px">
+                  <div class="sf-lbl">Место установки</div>
+                  <select x-model.number="editMembershipForm.installation_location_id">
+                    <option :value="null">— не задано —</option>
+                    <template x-for="row in structLocationRows()" :key="row.id">
+                      <option :value="row.id" x-text="row.name"></option>
+                    </template>
+                  </select>
+                  <button class="btn btn-secondary btn-sm" :disabled="editMembershipForm.saving"
+                          @click="submitEditLocation()" style="align-self:flex-start">Сохранить место</button>
+
+                  <div class="sf-lbl" style="margin-top:10px">Группы</div>
+                  <template x-for="g in structInspector.groups" :key="g.id">
+                    <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;margin-bottom:4px">
+                      <span x-text="g.name"></span>
+                      <button class="btn btn-sm btn-danger" @click="removePointFromGroup(g.id)">Убрать</button>
+                    </div>
+                  </template>
+                  <div style="display:flex;gap:6px">
+                    <select x-model.number="editMembershipForm.add_group_id" style="flex:1">
+                      <option value="">— добавить в группу —</option>
+                      <template x-for="g in structGroups" :key="g.id">
+                        <option :value="g.id" x-text="g.name"></option>
+                      </template>
+                    </select>
+                    <button class="btn btn-secondary btn-sm" :disabled="editMembershipForm.saving" @click="addPointToGroup()">+</button>
+                  </div>
+                  <template x-if="editMembershipForm.error">
+                    <div class="warn-item" x-text="editMembershipForm.error"></div>
+                  </template>
+                  <button class="btn btn-secondary btn-sm" @click="closeEditMembershipForm()" style="align-self:flex-start;margin-top:6px">Закрыть</button>
+                </div>
+              </template>
 
               <div class="structure-field" style="margin-top:14px">
                 <div class="sf-lbl">Статус / свежесть</div>
@@ -1322,6 +1418,230 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             </div>
           </template>
         </div>
+      <!-- ЗАВЕДЕНИЕ СТРУКТУРЫ ИЗ ИНТЕРФЕЙСА (партия 5, задача 1): панель
+           под тремя колонками — до этой партии ни одно из этих действий
+           (место/точка/привязка/узел/связь/публикация) не было доступно
+           из интерфейса вообще (см. §0 docs/TZ-batch5-make-v2-usable.md:
+           прогон в браузере показал, что писать в v2 могли только
+           перенос legacy, редактирование плана и запросы расчётов).
+           Каждая кнопка открывает свою форму — тонкую обёртку над уже
+           существующими маршрутами /api/v2 (плюс новым
+           points/<id>/bindings, см. api_v2.py). Ошибка, включая конфликт
+           ревизии, показывается явным текстом и НЕ приводит к
+           автоматическому повтору — ничего не перезаписываем молча. -->
+      <div class="structure-col" style="margin-top:16px">
+        <div class="section-title" style="margin-bottom:10px">Завести в структуре</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <button class="btn btn-sm" :class="structCreatePanel==='location'?'btn-primary':'btn-secondary'"
+                  @click="openCreatePanel('location')">+ Место</button>
+          <button class="btn btn-sm" :class="structCreatePanel==='point'?'btn-primary':'btn-secondary'"
+                  @click="openCreatePanel('point')">+ Точка учёта</button>
+          <button class="btn btn-sm" :class="structCreatePanel==='node'?'btn-primary':'btn-secondary'"
+                  @click="openCreatePanel('node')">+ Узел сети</button>
+          <button class="btn btn-sm" :class="structCreatePanel==='edge'?'btn-primary':'btn-secondary'"
+                  @click="openCreatePanel('edge')">+ Связь</button>
+          <button class="btn btn-sm" :class="structCreatePanel==='publish'?'btn-primary':'btn-secondary'"
+                  @click="openCreatePanel('publish')">Публикация топологии</button>
+        </div>
+
+        <div class="muted" style="font-size:11px;margin-bottom:10px;max-width:640px">
+          Ввод объекта определяется автоматически: это точка измерения на связи,
+          исходящей из узла типа «Ввод» (source) — отдельного действия «назначить
+          ввод» нет. Чтобы точка стала вводом объекта, создайте узел типа «Ввод»,
+          проведите от него связь к щиту и укажите на этой связи точку измерения.
+        </div>
+
+        <template x-if="structCreateError">
+          <div class="warn-item" style="margin-bottom:10px;max-width:640px" x-text="structCreateError"></div>
+        </template>
+        <template x-if="structCreateOk">
+          <div style="margin-bottom:10px;color:var(--ok);font-size:13px;max-width:640px" x-text="structCreateOk"></div>
+        </template>
+
+        <!-- Место -->
+        <template x-if="structCreatePanel==='location'">
+          <div class="plan-upload-form" style="max-width:420px">
+            <label class="muted" style="font-size:11px">Название</label>
+            <input type="text" x-model="locForm.name" placeholder="Например, Цех №1">
+            <label class="muted" style="font-size:11px">Тип</label>
+            <select x-model="locForm.kind">
+              <option value="object">Объект</option>
+              <option value="building">Здание</option>
+              <option value="floor">Этаж</option>
+              <option value="room">Помещение</option>
+              <option value="zone">Зона</option>
+              <option value="installation_point">Место установки</option>
+            </select>
+            <label class="muted" style="font-size:11px">Родительское место (опционально)</label>
+            <select x-model.number="locForm.parent_id">
+              <option :value="null">— нет (верхний уровень) —</option>
+              <template x-for="row in structLocationRows()" :key="row.id">
+                <option :value="row.id" x-text="row.name"></option>
+              </template>
+            </select>
+            <div style="display:flex;gap:8px;margin-top:6px">
+              <button class="btn btn-primary btn-sm" :disabled="structCreateSaving" @click="structSubmitLocation()">Создать место</button>
+              <button class="btn btn-secondary btn-sm" @click="closeCreatePanel()">Отмена</button>
+            </div>
+          </div>
+        </template>
+
+        <!-- Точка учёта + привязка к прибору -->
+        <template x-if="structCreatePanel==='point'">
+          <div class="plan-upload-form" style="max-width:460px">
+            <label class="muted" style="font-size:11px">Код (уникальный, короткий)</label>
+            <input type="text" x-model="pointForm.code" placeholder="Например, vvod-1">
+            <label class="muted" style="font-size:11px">Имя</label>
+            <input type="text" x-model="pointForm.name" placeholder="Например, Ввод объекта">
+            <label class="muted" style="font-size:11px">Место установки (опционально)</label>
+            <select x-model.number="pointForm.installation_location_id">
+              <option :value="null">— не задано —</option>
+              <template x-for="row in structLocationRows()" :key="row.id">
+                <option :value="row.id" x-text="row.name"></option>
+              </template>
+            </select>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-top:6px">
+              <input type="checkbox" x-model="pointForm.bind" style="width:auto"> Сразу привязать к прибору
+            </label>
+            <template x-if="pointForm.bind">
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <select x-model="pointForm.device_id">
+                  <option value="">— выберите прибор —</option>
+                  <template x-for="d in structKnownDevices" :key="d.device_id">
+                    <option :value="d.device_id" x-text="d.label"></option>
+                  </template>
+                </select>
+                <div class="muted" style="font-size:11px" x-show="structKnownDevicesLoaded && structKnownDevices.length===0">
+                  Приборов не видно ни в реестре, ни в MQTT — список тот же, что и в
+                  «Настройки → Добавить счётчик». Проверьте подключение контроллера.
+                </div>
+                <select x-model="pointForm.channel_profile">
+                  <option value="total_3p">Все фазы суммарно (total_3p)</option>
+                  <option value="phase_l1">Фаза L1</option>
+                  <option value="phase_l2">Фаза L2</option>
+                  <option value="phase_l3">Фаза L3</option>
+                </select>
+              </div>
+            </template>
+            <div style="display:flex;gap:8px;margin-top:6px">
+              <button class="btn btn-primary btn-sm" :disabled="structCreateSaving" @click="structSubmitPoint()">Создать точку</button>
+              <button class="btn btn-secondary btn-sm" @click="closeCreatePanel()">Отмена</button>
+            </div>
+          </div>
+        </template>
+
+        <!-- Узел сети -->
+        <template x-if="structCreatePanel==='node'">
+          <div class="plan-upload-form" style="max-width:420px">
+            <label class="muted" style="font-size:11px">Код</label>
+            <input type="text" x-model="nodeForm.code" placeholder="Например, SRC">
+            <label class="muted" style="font-size:11px">Имя</label>
+            <input type="text" x-model="nodeForm.name" placeholder="Например, Ввод сети">
+            <label class="muted" style="font-size:11px">Тип узла</label>
+            <select x-model="nodeForm.kind">
+              <option value="source">Ввод (источник)</option>
+              <option value="panel">Щит</option>
+              <option value="junction">Узел разветвления</option>
+              <option value="load">Нагрузка</option>
+            </select>
+            <label class="muted" style="font-size:11px">Место (опционально)</label>
+            <select x-model.number="nodeForm.location_id">
+              <option :value="null">— не задано —</option>
+              <template x-for="row in structLocationRows()" :key="row.id">
+                <option :value="row.id" x-text="row.name"></option>
+              </template>
+            </select>
+            <div style="display:flex;gap:8px;margin-top:6px">
+              <button class="btn btn-primary btn-sm" :disabled="structCreateSaving" @click="structSubmitNode()">Создать узел</button>
+              <button class="btn btn-secondary btn-sm" @click="closeCreatePanel()">Отмена</button>
+            </div>
+          </div>
+        </template>
+
+        <!-- Связь (черновик — не входит в схему до публикации) -->
+        <template x-if="structCreatePanel==='edge'">
+          <div class="plan-upload-form" style="max-width:460px">
+            <div class="muted" style="font-size:11px" x-show="structNodes.length<2">
+              Нужно минимум два узла сети — сначала создайте их выше.
+            </div>
+            <label class="muted" style="font-size:11px">От узла</label>
+            <select x-model.number="edgeForm.from_node_id">
+              <option :value="null">— выберите —</option>
+              <template x-for="n in structNodes" :key="n.id">
+                <option :value="n.id" x-text="n.name+' ('+structNodeKindLabel(n.kind)+')'"></option>
+              </template>
+            </select>
+            <label class="muted" style="font-size:11px">К узлу</label>
+            <select x-model.number="edgeForm.to_node_id">
+              <option :value="null">— выберите —</option>
+              <template x-for="n in structNodes" :key="n.id">
+                <option :value="n.id" x-text="n.name+' ('+structNodeKindLabel(n.kind)+')'"></option>
+              </template>
+            </select>
+            <label class="muted" style="font-size:11px">Точка измерения на этой связи (опционально)</label>
+            <select x-model.number="edgeForm.primary_point_id">
+              <option :value="null">— без измерения —</option>
+              <template x-for="p in structPoints" :key="p.point_id">
+                <option :value="p.point_id" x-text="p.name+' ('+p.code+')'"></option>
+              </template>
+            </select>
+            <label class="muted" style="font-size:11px">Название связи (опционально)</label>
+            <input type="text" x-model="edgeForm.name">
+            <label class="muted" style="font-size:11px">Номинальный ток, А (опционально)</label>
+            <input type="number" x-model="edgeForm.rated_current_a" step="0.1" min="0">
+            <label class="muted" style="font-size:11px">Кабель / примечание (опционально)</label>
+            <input type="text" x-model="edgeForm.cable_note">
+            <div class="muted" style="font-size:11px">
+              Связь создаётся черновиком и не появляется в действующей схеме, пока не
+              опубликована (кнопка «Публикация топологии» выше).
+            </div>
+            <div style="display:flex;gap:8px;margin-top:6px">
+              <button class="btn btn-primary btn-sm" :disabled="structCreateSaving" @click="structSubmitEdge()">Создать черновик связи</button>
+              <button class="btn btn-secondary btn-sm" @click="closeCreatePanel()">Отмена</button>
+            </div>
+          </div>
+        </template>
+
+        <!-- Публикация топологии: явное отдельное действие -->
+        <template x-if="structCreatePanel==='publish'">
+          <div style="max-width:560px">
+            <template x-if="structDraftEdges.length===0">
+              <div class="muted" style="font-size:12px">Черновиков связей нет — создайте связь выше.</div>
+            </template>
+            <template x-if="structDraftEdges.length>0">
+              <div>
+                <div class="muted" style="font-size:11px;margin-bottom:6px">
+                  Выбраны для публикации (по умолчанию — все черновики):
+                </div>
+                <template x-for="e in structDraftEdges" :key="e.id">
+                  <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:4px">
+                    <input type="checkbox" :value="e.id" x-model.number="publishSelected" style="width:auto">
+                    <span x-text="(e.name||e.code||('#'+e.id))+': '+structNodeName(e.from_node_id)+' → '+structNodeName(e.to_node_id)"></span>
+                  </label>
+                </template>
+                <div style="display:flex;gap:8px;margin:10px 0">
+                  <button class="btn btn-secondary btn-sm" @click="structValidatePublish()">Проверить (без публикации)</button>
+                  <button class="btn btn-primary btn-sm" :disabled="structCreateSaving" @click="structPublish()">Опубликовать</button>
+                </div>
+                <template x-if="publishValidation">
+                  <div>
+                    <div x-show="publishValidation.ok" style="color:var(--ok);font-size:13px">Проверка пройдена — конфликтов нет.</div>
+                    <template x-if="!publishValidation.ok">
+                      <div>
+                        <div style="color:var(--err);font-size:13px;margin-bottom:4px">Найдены нарушения:</div>
+                        <template x-for="(v,idx) in (publishValidation.violations||[])" :key="idx">
+                          <div class="warn-item" style="margin-bottom:4px" x-text="v.message"></div>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </template>
+            <button class="btn btn-secondary btn-sm" style="margin-top:8px" @click="closeCreatePanel()">Закрыть</button>
+          </div>
+        </template>
+      </div>
       </div>
     </div>
   </template>
@@ -1502,6 +1822,20 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
        поддерживает draggable:true нативно (это только у L.Marker), а
        geoman уже используется в проекте для зон v1 — тот же приём. -->
   <div x-show="tab=='planv2'">
+    <!-- Партия 5, задача 4: явное объяснение модели плана v2 прямо в
+         интерфейсе — пользователь ждал заливку контуров зон, как в
+         старом «Плане» (v1), и не нашёл её. В v2 контуров нет вообще:
+         только ЭЛЕМЕНТЫ (точки/узлы/места) и ТРАССЫ вдоль электрических
+         связей поверх изображения/канвы. Если заливка зон понадобится
+         как отдельная возможность — это открытый вопрос вне партии 5,
+         см. CHANGELOG. -->
+    <div class="muted" style="font-size:11px;max-width:640px;margin-bottom:12px;line-height:1.5">
+      «План v2» — это элементы (точки учёта, узлы сети, места) и линии
+      вдоль опубликованных электрических связей поверх изображения, а
+      НЕ заливка контуров зон, как в старом «Плане». Границы помещений —
+      это места (locations) в дереве на экране «Структура», а не рисунок
+      на плане.
+    </div>
     <template x-if="!planV2Loading && planV2Plans.length===0">
       <div class="plan-empty" style="text-align:left;max-width:560px;margin:0 auto;line-height:1.5">
         <b>Планов v2 пока нет.</b><br>
@@ -1516,6 +1850,14 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
       </div>
     </template>
     <div x-show="planV2Plans.length>0">
+      <!-- Партия 5, задача 3 (§8.5): осмысленная пустая подсказка вместо
+           "выглядит сломанным", когда план есть, а сети — нет. -->
+      <template x-if="planV2Nodes.length===0">
+        <div class="plan-empty" style="text-align:left;max-width:560px;margin:0 0 12px;line-height:1.5">
+          Связей сети пока нет — сначала создайте узлы и связи на экране
+          «Структура», затем наносите их на план здесь.
+        </div>
+      </template>
       <div class="plan-toolbar">
         <select x-model.number="planV2CurrentId" @change="selectPlanV2(planV2CurrentId)">
           <template x-for="p in planV2Plans" :key="p.id">
@@ -3350,6 +3692,28 @@ function app(){ return {
   structNodes:[], structEdges:[], structSelectedLocationId:null,
   structInspector:null, structInspectorLoading:false, structInspectorError:null,
   _structSearchSeq:0,
+  // Заведение структуры из интерфейса (ТЗ §8.3/партия 5, задача 1):
+  // единая панель создания места/точки/узла/связи + публикация топологии
+  // прямо на экране «Структура» — до этой партии ни одно из этих
+  // действий не было доступно из интерфейса вообще (см.
+  // docs/TZ-batch5-make-v2-usable.md §0). Ничего не считает и не хранит
+  // самостоятельно — только вызывает уже существующие/новую (bindings)
+  // ручки /api/v2 через тот же протокол ревизий, что и везде.
+  structCreatePanel:null, structCreateSaving:false, structCreateError:null,
+  structCreateOk:null,
+  locForm:{name:'', kind:'room', parent_id:null},
+  pointForm:{code:'', name:'', installation_location_id:null, bind:true,
+             device_id:'', display_name:'', channel_profile:'total_3p'},
+  nodeForm:{code:'', name:'', kind:'panel', location_id:null},
+  edgeForm:{from_node_id:null, to_node_id:null, primary_point_id:null,
+            rated_current_a:'', cable_note:'', name:''},
+  structKnownDevices:[], structKnownDevicesLoaded:false,
+  structDraftEdges:[], publishSelected:[], publishValidation:null,
+  // Действия карточки инспектора точки (ТЗ §8.3/партия 5, задача 2):
+  // показать на плане, открыть график (переиспользует детальную
+  // карточку классического интерфейса), заменить прибор, редактировать
+  // принадлежность (место + группы).
+  planPickerChoices:null, replaceMeterForm:null, editMembershipForm:null,
   // toast
   toast:null, _toastTimer:null,
   _timer:null,
@@ -5013,6 +5377,10 @@ function app(){ return {
       const d=await r.json();
       if(!r.ok){ throw new Error(d.message||`HTTP ${r.status}`); }
       this.ovSummary=d;
+      // Партия 5, задача 3 (§8.5): различать ПОЧЕМУ у точки в режиме
+      // сравнения (electrическое пересечение группы) нет числа — раньше
+      // везде было одно "нет данных" независимо от причины.
+      if((d.branches||[]).some(b=>b.mode==='comparison')) await this._loadOvDataStateHelpers();
     }catch(e){
       this.ovError=`Не удалось посчитать итог за период: ${e.message}`;
       this.ovSummary=null;
@@ -5020,14 +5388,41 @@ function app(){ return {
       this.ovLoading=false;
     }
   },
+  async _loadOvDataStateHelpers(){
+    // snapshot даёт "нет прибора" (binding_status==='unbound') и "нет
+    // связи" (устройство не отвечает/устарело); archived_at из
+    // points?include_archived=1 даёт "архив". Best-effort — если что-то
+    // не загрузилось, соответствующие точки просто останутся с общим
+    // "нет данных" (не хуже, чем было).
+    try{
+      const [sr, pr] = await Promise.all([
+        fetch('/api/v2/snapshot'), fetch('/api/v2/points?include_archived=1'),
+      ]);
+      this._ovSnapshotById = {};
+      if(sr.ok){ (await sr.json()).points.forEach(p=>{ this._ovSnapshotById[p.point_id]=p; }); }
+      this._ovArchivedIds = new Set();
+      if(pr.ok){ (await pr.json()).forEach(p=>{ if(p.archived_at!=null) this._ovArchivedIds.add(p.id); }); }
+    }catch(e){ /* см. комментарий выше — best-effort */ }
+  },
+  ovPointDataStateLabel(pid){
+    if((this._ovArchivedIds||new Set()).has(pid)) return 'архив';
+    const snap = (this._ovSnapshotById||{})[pid];
+    if(!snap) return 'нет данных';
+    if(snap.binding_status==='unbound') return 'нет прибора';
+    if(['no_connection','never_seen','unknown'].includes(snap.device_status)) return 'нет связи';
+    return 'нет данных';
+  },
   ovToggleDisclosure(key){
     this.ovDisclosureOpen={...this.ovDisclosureOpen, [key]: !this.ovDisclosureOpen[key]};
   },
   ovGoConfigureBoundary(){
     // §8.2: "без назначенного ввода — действие 'Настроить границу
-    // объекта'" — ведёт на редактор электросети (План v2/топология),
-    // где назначается primary_point_id связи от узла kind=source.
-    this.tab='planv2'; this.openPlanV2Tab();
+    // объекта'". Партия 5: раньше вело на План v2 — но там нельзя
+    // завести НОВЫЙ узел/связь, только разместить уже существующие (см.
+    // §0 ТЗ партии 5). Теперь ведёт прямо на форму создания узла на
+    // «Структуре», где сеть заводится с нуля.
+    this.tab='structurev2'; this.openStructureTab();
+    this.openCreatePanel('node');
   },
 
   // ---- Отчёты v2 (ТЗ §8.4, партия 2 задача 3) ----
@@ -5387,6 +5782,376 @@ function app(){ return {
     if(!r.ok) throw new Error('связь не найдена (HTTP '+r.status+')');
     const data = await r.json();
     this.structInspector = {kind:'edge', id, data};
+  },
+
+  // ------------------------------------------------------------------
+  // Заведение структуры (партия 5, задача 1): панель с пятью формами —
+  // место, точка (+ привязка к прибору), узел сети, связь, публикация.
+  // Каждая форма — тонкая обёртка над уже существующим (или новым,
+  // POST points/<id>/bindings) маршрутом /api/v2, с явным
+  // expected_revision. При конфликте ревизии (409) НЕ повторяем запрос
+  // автоматически — только показываем понятный текст, чтобы не
+  // затереть чужие изменения (ТЗ §4: "на конфликте — понятный текст без
+  // перезаписи").
+  // ------------------------------------------------------------------
+  openCreatePanel(kind){
+    this.structCreatePanel = kind;
+    this.structCreateError = null;
+    this.structCreateOk = null;
+    if(kind==='point' && !this.structKnownDevicesLoaded) this._loadKnownDevices();
+    if(kind==='publish') this._loadDraftEdges();
+  },
+  closeCreatePanel(){
+    this.structCreatePanel = null; this.structCreateError = null; this.structCreateOk = null;
+  },
+  async _structCurrentRev(){
+    const r = await fetch('/api/v2/revision');
+    const d = await r.json();
+    return d.configuration_revision;
+  },
+  _apiErrorMessage(d, status){
+    if(d && d.code==='revision_conflict'){
+      return 'Конфигурацию кто-то изменил, пока была открыта форма — '+
+             'ничего не перезаписано. Обновите форму и повторите: '+(d.message||'');
+    }
+    return (d && d.message) || ('HTTP '+status);
+  },
+  async _loadKnownDevices(){
+    // Тот же список приборов, что и классическая «Настройки» → «Добавить
+    // счётчик» (registry/meters — уже зарегистрированные, meters/unregistered
+    // — видны в MQTT, но ещё не в реестре) — партия 5 не заводит новый
+    // способ узнать прибор, только переиспользует эти два уже существующих.
+    try{
+      const [rr, ur] = await Promise.all([
+        fetch('/api/registry/meters'), fetch('/api/meters/unregistered'),
+      ]);
+      const rd = rr.ok ? await rr.json() : {items:[]};
+      const ud = ur.ok ? await ur.json() : {items:[]};
+      const seen = new Set();
+      const list = [];
+      (rd.items||[]).forEach(m=>{
+        if(seen.has(m.device_id)) return;
+        seen.add(m.device_id);
+        list.push({device_id:m.device_id, label:(m.display_name||m.device_id)+' — уже в реестре'});
+      });
+      (ud.items||[]).forEach(m=>{
+        if(seen.has(m.device_id)) return;
+        seen.add(m.device_id);
+        list.push({device_id:m.device_id, label:(m.mqtt_name||m.device_id)+' — виден в MQTT, не в реестре'});
+      });
+      this.structKnownDevices = list;
+    }catch(e){ this.structKnownDevices = []; }
+    this.structKnownDevicesLoaded = true;
+  },
+  async _loadDraftEdges(){
+    try{
+      const r = await fetch('/api/v2/topology/edges'); // по умолчанию state=draft
+      this.structDraftEdges = r.ok ? (await r.json()) : [];
+      this.publishSelected = this.structDraftEdges.map(e=>e.id);
+      this.publishValidation = null;
+    }catch(e){ this.structDraftEdges = []; }
+  },
+  async structSubmitLocation(){
+    if(!this.locForm.name.trim()){ this.structCreateError='Введите название места'; return; }
+    this.structCreateSaving=true; this.structCreateError=null; this.structCreateOk=null;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/locations', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          name:this.locForm.name.trim(), kind:this.locForm.kind,
+          parent_id:this.locForm.parent_id||null, expected_revision:rev,
+        })});
+      const d = await r.json();
+      if(!r.ok) throw new Error(this._apiErrorMessage(d, r.status));
+      this.structCreateOk = 'Место «'+d.name+'» создано.';
+      this.locForm = {name:'', kind:'room', parent_id:null};
+      await this._loadStructureLists();
+    }catch(e){ this.structCreateError = e.message; }
+    finally{ this.structCreateSaving=false; }
+  },
+  async structSubmitPoint(){
+    if(!this.pointForm.code.trim() || !this.pointForm.name.trim()){
+      this.structCreateError = 'Код и имя точки обязательны'; return;
+    }
+    if(this.pointForm.bind && !this.pointForm.device_id){
+      this.structCreateError = 'Выберите прибор из списка либо снимите галку привязки';
+      return;
+    }
+    this.structCreateSaving=true; this.structCreateError=null; this.structCreateOk=null;
+    try{
+      let rev = await this._structCurrentRev();
+      let r = await fetch('/api/v2/points', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          code:this.pointForm.code.trim(), name:this.pointForm.name.trim(),
+          installation_location_id:this.pointForm.installation_location_id||null,
+          expected_revision:rev,
+        })});
+      let d = await r.json();
+      if(!r.ok) throw new Error(this._apiErrorMessage(d, r.status));
+      const pointName = d.name;
+      let bound = false;
+      if(this.pointForm.bind && this.pointForm.device_id){
+        rev = await this._structCurrentRev();
+        const br = await fetch('/api/v2/points/'+d.id+'/bindings', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({
+            new_meter:{device_id:this.pointForm.device_id,
+                       display_name:this.pointForm.display_name||null},
+            channel_profile:this.pointForm.channel_profile,
+            expected_revision:rev,
+          })});
+        const bd = await br.json();
+        if(!br.ok){
+          // Точка уже создана — сообщаем честно, что осталось привязать
+          // отдельно (через «заменить прибор» в карточке), а не теряем
+          // это молча.
+          this.structCreateOk = 'Точка «'+pointName+'» создана, но привязка к '+
+            'прибору не удалась: '+this._apiErrorMessage(bd, br.status)+
+            ' Повторите привязку из карточки точки.';
+          await this._loadStructureLists();
+          this.pointForm = {code:'', name:'', installation_location_id:null,
+                             bind:true, device_id:'', display_name:'', channel_profile:'total_3p'};
+          return;
+        }
+        bound = true;
+      }
+      this.structCreateOk = 'Точка «'+pointName+'» создана'+(bound?' и привязана к прибору.':'.');
+      this.pointForm = {code:'', name:'', installation_location_id:null,
+                         bind:true, device_id:'', display_name:'', channel_profile:'total_3p'};
+      await this._loadStructureLists();
+    }catch(e){ this.structCreateError = e.message; }
+    finally{ this.structCreateSaving=false; }
+  },
+  async structSubmitNode(){
+    if(!this.nodeForm.code.trim() || !this.nodeForm.name.trim()){
+      this.structCreateError = 'Код и имя узла обязательны'; return;
+    }
+    this.structCreateSaving=true; this.structCreateError=null; this.structCreateOk=null;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/topology/nodes', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          code:this.nodeForm.code.trim(), name:this.nodeForm.name.trim(),
+          kind:this.nodeForm.kind, location_id:this.nodeForm.location_id||null,
+          expected_revision:rev,
+        })});
+      const d = await r.json();
+      if(!r.ok) throw new Error(this._apiErrorMessage(d, r.status));
+      this.structCreateOk = 'Узел «'+d.name+'» ('+this.structNodeKindLabel(d.kind)+') создан.';
+      this.nodeForm = {code:'', name:'', kind:'panel', location_id:null};
+      await this._loadStructureLists();
+    }catch(e){ this.structCreateError = e.message; }
+    finally{ this.structCreateSaving=false; }
+  },
+  async structSubmitEdge(){
+    if(!this.edgeForm.from_node_id || !this.edgeForm.to_node_id){
+      this.structCreateError = 'Выберите оба узла связи'; return;
+    }
+    if(this.edgeForm.from_node_id === this.edgeForm.to_node_id){
+      this.structCreateError = 'Связь не может соединять узел сам с собой'; return;
+    }
+    this.structCreateSaving=true; this.structCreateError=null; this.structCreateOk=null;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/topology/edges', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          from_node_id:this.edgeForm.from_node_id, to_node_id:this.edgeForm.to_node_id,
+          primary_point_id:this.edgeForm.primary_point_id||null,
+          rated_current_a:this.edgeForm.rated_current_a?Number(this.edgeForm.rated_current_a):null,
+          cable_note:this.edgeForm.cable_note||null, name:this.edgeForm.name||null,
+          expected_revision:rev,
+        })});
+      const d = await r.json();
+      if(!r.ok) throw new Error(this._apiErrorMessage(d, r.status));
+      this.structCreateOk = 'Черновик связи создан — она появится в схеме только '+
+        'после публикации (см. вкладку «Публикация» ниже).';
+      this.edgeForm = {from_node_id:null, to_node_id:null, primary_point_id:null,
+                        rated_current_a:'', cable_note:'', name:''};
+      await this._loadDraftEdges();
+    }catch(e){ this.structCreateError = e.message; }
+    finally{ this.structCreateSaving=false; }
+  },
+  async structValidatePublish(){
+    this.structCreateError = null;
+    try{
+      const r = await fetch('/api/v2/topology/validate', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({edge_ids:this.publishSelected})});
+      this.publishValidation = await r.json();
+    }catch(e){ this.structCreateError = e.message; }
+  },
+  async structPublish(){
+    if(!this.publishSelected.length){ this.structCreateError='Нечего публиковать — нет выбранных черновиков'; return; }
+    this.structCreateSaving=true; this.structCreateError=null; this.structCreateOk=null;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/topology/publish', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({edge_ids:this.publishSelected,
+                               expected_configuration_revision:rev})});
+      const d = await r.json();
+      if(!r.ok){
+        if(d.code==='topology_conflict'){
+          this.publishValidation = {ok:false, violations:d.path||[]};
+          this.structCreateError = 'Публикация отклонена: связи образуют конфликт '+
+            '(см. нарушения ниже), схема не изменена. '+(d.message||'');
+        }else{
+          this.structCreateError = this._apiErrorMessage(d, r.status);
+        }
+        return;
+      }
+      this.structCreateOk = 'Опубликовано связей: '+d.edges.length+'.';
+      this.publishValidation = null;
+      await this._loadDraftEdges();
+      await this._loadStructureLists();
+    }catch(e){ this.structCreateError = e.message; }
+    finally{ this.structCreateSaving=false; }
+  },
+
+  // ------------------------------------------------------------------
+  // Действия карточки инспектора точки (ТЗ §8.3, партия 5, задача 2):
+  // показать на плане / открыть график / заменить прибор / редактировать
+  // принадлежность. Ничего не считает заново — только уже существующие
+  // ручки /api/v2 и уже существующий график классического интерфейса
+  // (openDetail) — задание прямо требует не писать второй график.
+  // ------------------------------------------------------------------
+  async showPointOnPlan(pointId){
+    this.structCreateError = null; this.planPickerChoices = null;
+    try{
+      const pr = await fetch('/api/v2/plans');
+      const plans = pr.ok ? await pr.json() : [];
+      const matches = [];
+      for(const p of (Array.isArray(plans)?plans:[])){
+        const ir = await fetch('/api/v2/plans/'+p.id+'/items');
+        if(!ir.ok) continue;
+        const items = await ir.json();
+        (Array.isArray(items)?items:[]).forEach(it=>{
+          if(it.kind==='point' && it.point_id===pointId) matches.push({plan:p, item:it});
+        });
+      }
+      if(matches.length===0){
+        this.showToast('Точка не размещена ни на одном плане', false);
+        return;
+      }
+      if(matches.length===1){
+        await this._planV2GoToItem(matches[0].plan.id, matches[0].item.id);
+        return;
+      }
+      this.planPickerChoices = matches;
+    }catch(e){ this.showToast('Ошибка: '+e.message, false); }
+  },
+  async goToPlanPickerChoice(choice){
+    this.planPickerChoices = null;
+    await this._planV2GoToItem(choice.plan.id, choice.item.id);
+  },
+  async _planV2GoToItem(planId, itemId){
+    this.tab = 'planv2';
+    await this.openPlanV2Tab();
+    await this.selectPlanV2(planId);
+    setTimeout(()=>{
+      try{
+        const layer = _planV2ItemLayers.get(String(itemId));
+        if(layer && _planV2Map){
+          if(layer.getLatLng){ _planV2Map.panTo(layer.getLatLng()); if(layer.openPopup) layer.openPopup(); }
+          else if(layer.getBounds){ _planV2Map.fitBounds(layer.getBounds()); }
+        }
+      }catch(e){ /* переход по плану best-effort — карточка уже открыта */ }
+    }, 350);
+  },
+
+  openReplaceMeterForm(){
+    if(!this.structKnownDevicesLoaded) this._loadKnownDevices();
+    this.replaceMeterForm = {
+      mode:'existing_device', device_id:'', display_name:'',
+      channel_profile: (this.structInspector.snapshot && this.structInspector.snapshot.channel_profile) || 'total_3p',
+      replacement_note:'', saving:false, error:null,
+    };
+    this.editMembershipForm = null;
+  },
+  closeReplaceMeterForm(){ this.replaceMeterForm = null; },
+  async submitReplaceMeter(){
+    const f = this.replaceMeterForm;
+    if(!f.device_id){ f.error = 'Выберите прибор'; return; }
+    f.saving = true; f.error = null;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/points/'+this.structInspector.id+'/replace-meter', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          new_meter:{device_id:f.device_id, display_name:f.display_name||null},
+          channel_profile:f.channel_profile,
+          replacement_note:f.replacement_note||null,
+          expected_revision:rev,
+        })});
+      const d = await r.json();
+      if(!r.ok){ f.error = this._apiErrorMessage(d, r.status); return; }
+      this.replaceMeterForm = null;
+      this.showToast('Прибор заменён. Старая привязка закрыта в момент замены — история сохранена.');
+      await this._loadPointInspector(this.structInspector.id);
+      await this._loadStructureLists();
+    }catch(e){ f.error = e.message; }
+    finally{ f.saving = false; }
+  },
+
+  openEditMembershipForm(){
+    const cur = this.structInspector.data;
+    this.editMembershipForm = {
+      installation_location_id: cur.installation_location_id,
+      add_group_id: '', saving:false, error:null,
+    };
+    this.replaceMeterForm = null;
+  },
+  closeEditMembershipForm(){ this.editMembershipForm = null; },
+  async submitEditLocation(){
+    const f = this.editMembershipForm;
+    f.saving = true; f.error = null;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/points/'+this.structInspector.id, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          installation_location_id: f.installation_location_id||null,
+          expected_revision: rev,
+        })});
+      const d = await r.json();
+      if(!r.ok){ f.error = this._apiErrorMessage(d, r.status); return; }
+      this.showToast('Место установки обновлено');
+      await this._loadPointInspector(this.structInspector.id);
+      await this._loadStructureLists();
+    }catch(e){ f.error = e.message; }
+    finally{ f.saving = false; }
+  },
+  async addPointToGroup(){
+    const f = this.editMembershipForm;
+    if(!f.add_group_id){ f.error = 'Выберите группу'; return; }
+    f.saving = true; f.error = null;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/groups/'+f.add_group_id+'/members', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({point_id:this.structInspector.id, expected_revision:rev})});
+      const d = await r.json();
+      if(!r.ok){ f.error = this._apiErrorMessage(d, r.status); return; }
+      f.add_group_id = '';
+      await this._loadPointInspector(this.structInspector.id);
+    }catch(e){ f.error = e.message; }
+    finally{ f.saving = false; }
+  },
+  async removePointFromGroup(groupId){
+    const f = this.editMembershipForm;
+    f.saving = true; f.error = null;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/groups/'+groupId+'/members/'+this.structInspector.id+
+        '?expected_revision='+rev, {method:'DELETE'});
+      if(!r.ok){ const d = await r.json(); f.error = this._apiErrorMessage(d, r.status); return; }
+      await this._loadPointInspector(this.structInspector.id);
+    }catch(e){ f.error = e.message; }
+    finally{ f.saving = false; }
   },
 
   async openPlanV2Tab(){
