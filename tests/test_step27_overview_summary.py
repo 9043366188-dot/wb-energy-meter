@@ -324,11 +324,107 @@ def test_overview_summary_pins_revision_and_rejects_unknown():
         db.close(); os.unlink(path)
 
 
+def test_a08_imbalance_has_signed_value_and_percent():
+    """A08 целиком: «Ввод 100; выходы 70 и 40 → Небаланс −10, −10%».
+
+    Значения в кВт·ч одного мало — процент входит в критерий. Считать его
+    на фронте нельзя: экран, отчёт и CSV обязаны брать одно число из
+    одного расчёта (A43), поэтому он приходит с сервера.
+
+    18.09.2026: `imbalance_value` был реализован, а `imbalance_percent` —
+    нет, хотя `accounting_service.balance()` процент считает и
+    `resolve_percentage` существует. Старый отчёт «Баланс» (v1) процент
+    показывал, то есть новый экран был шагом назад.
+    """
+    client, db, path = make_client()
+    try:
+        rig = Rig(db)
+        p_a = rig.make_point("A", 100.0)
+        p_b = rig.make_point("B", 70.0)
+        p_c = rig.make_point("C", 40.0)
+
+        nodes = {}
+        for code, kind in (("SRC", "source"), ("TOP", "panel"),
+                           ("NB", "load"), ("NC", "load")):
+            nodes[code] = client.post(
+                "/api/v2/topology/nodes",
+                json={"code": code, "name": code, "kind": kind}).get_json()
+        edges = []
+        for a, b, point in (("SRC", "TOP", p_a), ("TOP", "NB", p_b),
+                            ("TOP", "NC", p_c)):
+            edges.append(client.post("/api/v2/topology/edges", json={
+                "from_node_id": nodes[a]["id"], "to_node_id": nodes[b]["id"],
+                "primary_point_id": point.id}).get_json())
+        r = client.post("/api/v2/topology/publish", json={
+            "edge_ids": [e["id"] for e in edges],
+            "expected_configuration_revision": current_rev(client)})
+        assert r.status_code == 200, r.get_json()
+
+        for name, point in (("Ветвь 1", p_b), ("Ветвь 2", p_c)):
+            g = client.post("/api/v2/groups", json={"name": name}).get_json()
+            client.post(f"/api/v2/groups/{g['id']}/members",
+                        json={"point_id": point.id,
+                              "expected_revision": current_rev(client)})
+
+        body = client.post("/api/v2/overview/summary",
+                           json={"from": 0, "to": HOUR,
+                                 "timezone": "UTC"}).get_json()
+
+        assert body["object_total"]["value"] == 100.0, body["object_total"]
+        assert body["imbalance_value"] == -10.0, body["imbalance_value"]
+        assert body["imbalance_percent"] == -10.0, (
+            "A08 требует −10%%, получено %r" % body.get("imbalance_percent"))
+        assert body["imbalance_percent_reason"] is None
+        print("[OK] A08: небаланс −10 кВт·ч и −10%% со знаком, процент с сервера")
+
+        # A11 в паре с A08: нулевая база не даёт ни деления на ноль, ни
+        # фиктивных 100%% — процент null с причиной, значение остаётся.
+        client2, db2, path2 = make_client()
+        try:
+            rig2 = Rig(db2)
+            z_a = rig2.make_point("ZA", 0.0)
+            z_b = rig2.make_point("ZB", 0.0)
+            n = {}
+            for code, kind in (("SRC", "source"), ("TOP", "panel"),
+                               ("NB", "load")):
+                n[code] = client2.post(
+                    "/api/v2/topology/nodes",
+                    json={"code": code, "name": code, "kind": kind}).get_json()
+            ee = []
+            for a, b, point in (("SRC", "TOP", z_a), ("TOP", "NB", z_b)):
+                ee.append(client2.post("/api/v2/topology/edges", json={
+                    "from_node_id": n[a]["id"], "to_node_id": n[b]["id"],
+                    "primary_point_id": point.id}).get_json())
+            client2.post("/api/v2/topology/publish", json={
+                "edge_ids": [e["id"] for e in ee],
+                "expected_configuration_revision": current_rev(client2)})
+            g = client2.post("/api/v2/groups",
+                             json={"name": "В"}).get_json()
+            client2.post(f"/api/v2/groups/{g['id']}/members",
+                         json={"point_id": z_b.id,
+                               "expected_revision": current_rev(client2)})
+            b2 = client2.post("/api/v2/overview/summary",
+                              json={"from": 0, "to": HOUR,
+                                    "timezone": "UTC"}).get_json()
+            assert b2["imbalance_value"] == 0.0, b2["imbalance_value"]
+            assert b2["imbalance_percent"] is None, b2["imbalance_percent"]
+            assert b2["imbalance_percent_reason"] == "zero_or_negative_base"
+            print("[OK] A11: при нулевой базе процент null с причиной, "
+                  "без фиктивных 100%%")
+        finally:
+            db2.close()
+            os.unlink(path2)
+    finally:
+        db.close()
+        os.unlink(path)
+
+
 if __name__ == "__main__":
     test_a03_object_total_via_input_not_sum_of_all_meters()
     test_no_input_assigned_shows_action_not_false_total()
     test_a04_branch_sum_overlap_via_group_falls_back_to_comparison()
     test_a10_no_data_vs_zero_distinguished()
     test_a11_percentage_null_when_object_total_missing()
+    test_a08_imbalance_has_signed_value_and_percent()
     test_overview_summary_pins_revision_and_rejects_unknown()
     print("[ALL OK] test_step27_overview_summary")

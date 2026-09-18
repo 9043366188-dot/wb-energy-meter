@@ -658,6 +658,17 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               <span class="muted" style="font-size:12px">Небаланс:</span>
               <span class="mono" :style="ovSummary.imbalance_value==null?'':(ovSummary.imbalance_value<0?'color:var(--err)':'color:var(--ok)')"
                     x-text="ovSummary.imbalance_value!=null?(ovSummary.imbalance_value>0?'+':'')+fmt(ovSummary.imbalance_value,1)+' кВт·ч':'не определён (не все ветви известны)'"></span>
+              <!-- A08: критерий требует «Небаланс −10, −10%» — процент часть
+                   результата, а не украшение. Значение приходит с сервера
+                   (imbalance_percent), на фронте НЕ считается: экран, отчёт и
+                   CSV обязаны показывать одно число из одного расчёта (A43).
+                   При неопределённой или неположительной базе сервер вернёт
+                   null с причиной — показываем прочерк, а не фиктивные 100%
+                   (A11). -->
+              <span class="mono" x-show="ovSummary.imbalance_value!=null"
+                    :style="ovSummary.imbalance_percent==null?'color:var(--txt3)':(ovSummary.imbalance_percent<0?'color:var(--err)':'color:var(--ok)')"
+                    x-text="ovSummary.imbalance_percent!=null?'('+(ovSummary.imbalance_percent>0?'+':'')+ovSummary.imbalance_percent.toFixed(2)+'% от итога объекта)':'(% не определён)'"
+                    :title="ovSummary.imbalance_percent==null?('Процент не рассчитан: '+(ovSummary.imbalance_percent_reason||'нет данных')):''"></span>
             </div>
 
             <table class="rep-table" x-show="(ovSummary.branches||[]).length>0">

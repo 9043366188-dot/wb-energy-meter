@@ -1308,6 +1308,18 @@ def register_v2_routes(app, state, json_response):
                     branches_sum = sum(b["result"]["value"] for b in branches)
                     imbalance_value = round(object_total.value - branches_sum, 6)
 
+                # A08 буквально требует «Небаланс −10, −10%»: одного
+                # значения в кВт·ч недостаточно, процент от итога объекта
+                # входит в критерий. Считаем ТЕМ ЖЕ resolve_percentage,
+                # что и проценты ветвей, — он один отвечает за правило
+                # A11 (нет базы или база <= 0 -> None с причиной, без
+                # деления на ноль и фиктивных 100%). Не считать процент
+                # на фронте: экран, отчёт и CSV обязаны брать одно и то
+                # же число из одного расчёта (A43).
+                imbalance_percent, imbalance_percent_reason = resolve_percentage(
+                    imbalance_value,
+                    object_total.value if object_total is not None else None)
+
                 ungrouped_ids = None
                 if object_total is not None or branches:
                     grouped = set()
@@ -1332,6 +1344,8 @@ def register_v2_routes(app, state, json_response):
             "object_total": object_total.to_dict() if object_total is not None else None,
             "object_total_unavailable_reason": object_total_unavailable_reason,
             "imbalance_value": imbalance_value,
+            "imbalance_percent": imbalance_percent,
+            "imbalance_percent_reason": imbalance_percent_reason,
             "branches": branches,
             "ungrouped_point_ids": ungrouped_ids,
         })
