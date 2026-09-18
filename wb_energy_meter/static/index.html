@@ -5160,7 +5160,14 @@ function app(){ return {
         fetch('/api/v2/topology/edges?state=published'),
       ]);
       if(!pr.ok) throw new Error('structure/points: HTTP '+pr.status);
-      this.structPoints = await pr.json();
+      // ВНИМАНИЕ: из пяти ручек ниже четыре отдают СПИСОК, а
+      // /api/v2/structure/points — ОБЪЕКТ {"points": [...]}. Присвоение
+      // ответа как есть делало structPoints объектом, и клик по точке в
+      // «Обзоре»/«Структуре» падал с «(intermediate value).find is not a
+      // function» — карточка не открывалась вообще. Найдено пользователем
+      // в браузере 18.09.2026; ниже, в _loadStructureSnapshot, то же поле
+      // заполнялось правильно, поэтому расхождение и не бросалось в глаза.
+      this.structPoints = (await pr.json()).points || [];
       this.structLocations = lr.ok ? await lr.json() : [];
       this.structGroups = gr.ok ? await gr.json() : [];
       this.structNodes = nr.ok ? await nr.json() : [];

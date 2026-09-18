@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tempfile
 import time
@@ -149,9 +150,49 @@ def test_search_no_match_returns_empty_not_error():
         db.close(); os.unlink(path)
 
 
+def test_structure_points_shape_matches_frontend_usage():
+    """Регрессия 18.09.2026, найдена пользователем в браузере.
+
+    Экран «Структура» грузит пять ручек одним Promise.all. Четыре отдают
+    СПИСОК, а `/api/v2/structure/points` — ОБЪЕКТ `{"points": [...]}`.
+    Ответ присваивался как есть, `structPoints` становился объектом, и
+    клик по точке падал с «(intermediate value).find is not a function»:
+    карточка инспектора не открывалась вообще. Ниже по коду то же поле
+    заполнялось правильно (`d.points||[]`), поэтому расхождение не
+    бросалось в глаза.
+
+    Проверяем оба конца контракта: форму ответа сервера и то, что фронт
+    действительно достаёт `.points`, а не присваивает ответ целиком.
+    """
+    client, db, path = make_client()
+    try:
+        body = client.get("/api/v2/structure/points").get_json()
+        assert isinstance(body, dict) and isinstance(body.get("points"), list), (
+            "/api/v2/structure/points должен отдавать {'points': [...]}; "
+            "если формат поменяли — поправьте и присваивание во фронте")
+    finally:
+        db.close()
+        os.unlink(path)
+
+    index_path = os.path.join(REPO_ROOT, "wb_energy_meter", "static",
+                              "index.html")
+    with open(index_path, encoding="utf-8") as f:
+        html = f.read()
+    assigns = re.findall(r"this\.structPoints\s*=\s*([^;\n]+)", html)
+    assert assigns, "не нашлось ни одного присваивания structPoints"
+    bad = [a.strip() for a in assigns
+           if ".points" not in a and "[]" != a.strip()]
+    assert not bad, (
+        "structPoints присваивается ответом целиком — это снова уронит "
+        "карточку инспектора с «.find is not a function». Нужно "
+        "извлекать .points. Сейчас: %r" % bad)
+    print("[OK] structure/points: форма ответа и её разбор во фронте согласованы")
+
+
 if __name__ == "__main__":
     test_search_by_name_code_mqtt_serial_and_path()
     test_unbound_and_unplaced_points_still_listed()
     test_location_path_reflects_full_hierarchy()
     test_search_no_match_returns_empty_not_error()
+    test_structure_points_shape_matches_frontend_usage()
     print("\nВсе тесты поиска экрана «Структура» (Шаг 32, партия 3, задача 1) пройдены.")
