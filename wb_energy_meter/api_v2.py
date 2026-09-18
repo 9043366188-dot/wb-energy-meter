@@ -41,12 +41,15 @@ B/C (BindingConflict/TopologyConflict/AccountingConflict/ValueError) в
   настройки: точки без прибора/места/группы/плана, узлы без связей,
   связи без измерения; точка ввода не считается проблемой в "без группы"
   (см. v2_validation).
+  `GET /api/v2/migration/legacy-links` + `POST .../confirm` (задача 2) —
+  мастер переноса связей старой модели планов в electrical_edges;
+  только с явным подтверждением каждой связи, идемпотентно через
+  migration_map (см. migration_wizard_service.py, v2_migration_legacy_links).
 
   НЕ РЕАЛИЗОВАНО (сознательно отложено — вне этой задачи):
   metrics/jobs (долгие расчёты/подписки); plans/items/layout (это стадия D
   плана — редактор плана v2); migration/status; инспектор объекта/
-  однолинейная схема как второй канвас; мастер миграции legacy-связей;
-  адаптивная вёрстка (§8.5).
+  однолинейная схема как второй канвас; адаптивная вёрстка (§8.5).
   Протокол ревизий не хранит и не восстанавливает историческую
   электрическую топологию "как было на ревизии N" (см. ограничение в
   revision_service.py) и не пишет change_log.
@@ -86,7 +89,9 @@ from .plan_service_v2 import (
     SitePlanRepoV2, PlanItemRepo, PlanEdgeViewRepo,
     RevisionConflict, PlanError, save_plan_layout,
 )
-from .legacy_migration import migrate_meters_and_groups
+from .legacy_migration import migrate_meters_and_groups, SCHEMA_MIGRATION_VERSION
+from .plan_repo import SitePlanRepo, PlanZoneRepo, PlanLinkRepo
+from . import migration_wizard_service
 from .repo import GroupRepo, MeterRepo, validate_device_id
 from .group_repo_v2 import GroupRepoV2
 from .revision_service import (
@@ -2059,6 +2064,94 @@ def register_v2_routes(app, state, json_response):
             body, status = _err("bad_request", str(e), 400, ids=[plan_id])
             return json_response(body, status)
         return json_response(_plan_to_dict_v2(updated))
+
+    # ------------------- мастер переноса legacy-связей (партия 3, задача 2)
+    # ТЗ §2 (строка про §31.5): перенос СТАРЫХ связей (plan_links) в
+    # electrical_edges — ТОЛЬКО с явным подтверждением каждой связи
+    # пользователем (см. migration_wizard_service.py — там же почему
+    # автоматика запрещена большим ТЗ). Старая модель не удаляется и не
+    # меняется этими маршрутами.
+
+    @app.route("/api/v2/migration/legacy-links", methods=["GET"])
+    def v2_migration_legacy_links():
+        """Список связей старой модели планов (все планы) с их концами
+        (зона -> учётная группа) и статусом переноса (уже перенесена —
+        по migration_map, или ожидает подтверждения). Только чтение."""
+        plans_repo = SitePlanRepo(db)
+        zone_repo = PlanZoneRepo(db)
+        link_repo = PlanLinkRepo(db)
+        groups_repo_legacy = GroupRepo(db)
+
+        items = []
+        with db.read() as c:
+            for plan in plans_repo.list_all():
+                for link in link_repo.list_by_plan(plan.id):
+                    from_zone = zone_repo.get_by_id(link.from_zone_id)
+                    to_zone = zone_repo.get_by_id(link.to_zone_id)
+
+                    def _zone_ref(zone):
+                        if zone is None:
+                            return None
+                        group = groups_repo_legacy.get_by_id(zone.group_id)
+                        return {
+                            "zone_id": zone.id, "group_id": zone.group_id,
+                            "group_name": group.name if group else None,
+                        }
+
+                    migrated_edge_id = migration_wizard_service._map_get(
+                        c, "plan_links", link.id, "electrical_edges")
+                    items.append({
+                        "plan_link_id": link.id, "plan_id": plan.id,
+                        "plan_name": plan.name, "label": link.label,
+                        "source_meter_id": link.source_meter_id,
+                        "rated_current_a": link.rated_current_a,
+                        "from_zone": _zone_ref(from_zone),
+                        "to_zone": _zone_ref(to_zone),
+                        "migration_status": (
+                            "migrated" if migrated_edge_id is not None else "pending"),
+                        "migrated_edge_id": migrated_edge_id,
+                    })
+        return json_response({"links": items})
+
+    @app.route("/api/v2/migration/legacy-links/confirm", methods=["POST"])
+    def v2_migration_legacy_links_confirm():
+        """Подтвердить перенос одной или нескольких связей старой модели
+        (тело: {"confirmations": [...], "expected_revision": N} — формат
+        каждого элемента см. migration_wizard_service.confirm_links).
+        Вся пачка — одна атомарная предметная запись: ошибка в любом
+        элементе откатывает всю пачку целиком (ничего не создаётся),
+        как и любая другая запись протокола ревизий."""
+        body = request.get_json(silent=True) or {}
+        data, _envelope = _unwrap_data(body)
+        confirmations = data.get("confirmations")
+
+        plan_link_repo = PlanLinkRepo(db)
+        node_repo = _node_repo()
+        edge_repo = _edge_repo()
+
+        def _do_confirm():
+            with db.transaction() as c:
+                return migration_wizard_service.confirm_links(
+                    c, plan_link_repo, node_repo, edge_repo, confirmations)
+
+        try:
+            results, new_rev = with_revision_check(
+                db, data.get("expected_revision"), _do_confirm,
+                touched=[("migration_wizard", len(confirmations)
+                          if isinstance(confirmations, list) else 0)])
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e)
+        except migration_wizard_service.WizardError as e:
+            body, status = _err("bad_request", str(e), 400)
+            return json_response(body, status)
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400)
+            return json_response(body, status)
+
+        return json_response({
+            "configuration_revision": new_rev,
+            "results": [r.to_dict() for r in results],
+        })
 
     # --- Разовый перенос легаси meters/meter_groups в v2 (Стадия F,
     # docs/migration-plan-v2.md §5 п.1-2) --------------------------------
