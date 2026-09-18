@@ -33,12 +33,15 @@ B/C (BindingConflict/TopologyConflict/AccountingConflict/ValueError) в
   держат ОДИН db.read() на весь расчёт (A43 — согласованный снимок
   конфигурации внутри запроса), см. докстринги этих функций.
 
+  Партия 3: провижининг нового физического прибора (`meters`+
+  `meter_sources`) прямо внутри `replace-meter` — тело `{"new_meter":
+  {"controller_key":.., "device_id":.., "display_name":..}}` вместо
+  готового `meter_source_id` (§5.4, задача 3, см. v2_point_replace_meter).
+
   НЕ РЕАЛИЗОВАНО (сознательно отложено — вне этой задачи):
   metrics/jobs (долгие расчёты/подписки); plans/items/layout (это стадия D
-  плана — редактор плана v2); validation (сводка непривязанных/неразмещённых
-  объектов); migration/status; инспектор объекта/однолинейная схема как
-  второй канвас; мастер миграции legacy-подключений; провижининг новых
-  приборов (§8.5/responsive — сознательно отложено, см. отчёт по партии 2).
+  плана — редактор плана v2); migration/status; инспектор объекта/
+  однолинейная схема как второй канвас; адаптивная вёрстка (§8.5).
   Протокол ревизий не хранит и не восстанавливает историческую
   электрическую топологию "как было на ревизии N" (см. ограничение в
   revision_service.py) и не пишет change_log.
@@ -79,6 +82,7 @@ from .plan_service_v2 import (
     RevisionConflict, PlanError, save_plan_layout,
 )
 from .legacy_migration import migrate_meters_and_groups
+from .repo import GroupRepo, MeterRepo, validate_device_id
 from .group_repo_v2 import GroupRepoV2
 from .revision_service import (
     RevisionConflict as GlobalRevisionConflict, with_revision_check, bump_revision,
@@ -295,44 +299,102 @@ def register_v2_routes(app, state, json_response):
 
     @app.route("/api/v2/points/<int:point_id>/replace-meter", methods=["POST"])
     def v2_point_replace_meter(point_id):
-        """§5.4/A18: атомарная замена прибора. Тело:
-        {"meter_source_id": <id существующего meter_source>,
-         "at": <unix ts, опционально>, "channel_profile": <опционально>,
-         "replacement_note": <опционально>}. Провижининг НОВОГО
-         meter/meter_source из адреса контроллера здесь не делается —
-         вызывающий код создаёт источник заранее (см. модульный
-         docstring, "не реализовано")."""
+        """§5.4/A18/партия 3 задача 3: атомарная замена прибора. Тело —
+        один из двух вариантов адреса нового прибора:
+
+        1) {"meter_source_id": <id существующего meter_source>, ...} —
+           источник уже существует (был использован раньше или создан
+           заранее отдельным вызовом topology/точек).
+        2) {"new_meter": {"controller_key": .., "device_id": ..,
+           "display_name": .. (опционально)}, ...} — физически новый
+           прибор: адрес контроллера, как он приходит из MQTT. Заводит
+           `meter` (либо переиспользует существующий с тем же device_id
+           — устойчиво к повтору запроса) и `meter_source`, и только
+           затем открывает новый интервал привязки — одной транзакцией
+           с ревизией, как и вариант 1.
+
+        Общие поля тела: "at" (опционально, unix ts), "channel_profile"
+        (опционально), "replacement_note" (опционально),
+        "expected_revision" (обязателен протоколом ревизий).
+
+        Завершение СТАРОГО интервала привязки делает
+        `PointBindingRepo.replace_meter` сама — здесь не дублируется."""
         body = request.get_json(silent=True) or {}
         data, _envelope = _unwrap_data(body)
         meter_source_id = data.get("meter_source_id")
-        if meter_source_id is None:
+        new_meter = data.get("new_meter")
+
+        if meter_source_id is None and not isinstance(new_meter, dict):
             body, status = _err(
-                "bad_request", "требуется meter_source_id существующего источника",
-                400, fields=["meter_source_id"])
+                "bad_request",
+                "требуется meter_source_id существующего источника либо "
+                "new_meter с адресом нового прибора (controller_key, device_id)",
+                400, fields=["meter_source_id", "new_meter"])
             return json_response(body, status)
 
         bindings = _binding_repo()
+
+        def _provision_and_replace():
+            source_id = meter_source_id
+            if source_id is None:
+                controller_key = str(new_meter.get("controller_key") or "").strip()
+                if not controller_key:
+                    raise ValueError("new_meter.controller_key не может быть пустым")
+                device_id = validate_device_id(new_meter.get("device_id"))
+                meters = MeterRepo(db, GroupRepo(db))
+                sources = MeterSourceRepo(db)
+                meter = meters.get_by_device_id(device_id)
+                if meter is None:
+                    # Партия 3: физически новый прибор — заводим `meters`
+                    # заново. Тем же device_id, что и адрес MQTT — как и
+                    # в legacy_migration.py, это устойчивый естественный
+                    # ключ прибора.
+                    display_name = new_meter.get("display_name") or device_id
+                    meter = meters.add(device_id, display_name)
+                current = sources.get_current(meter.id)
+                if (current is not None and current.controller_key == controller_key
+                        and current.device_id == device_id):
+                    # Повтор того же запроса (например, после сетевого
+                    # сбоя) — источник уже открыт именно на этот адрес,
+                    # переприсваивать незачем (и не плодим лишний ряд).
+                    source = current
+                else:
+                    # reassign_source сама закрывает старый открытый
+                    # источник ЭТОГО прибора, если он был, и атомарно
+                    # открывает новый — устойчиво и для совсем нового
+                    # прибора (current is None — эквивалентно open_source).
+                    source = sources.reassign_source(
+                        meter.id, controller_key, device_id, at=data.get("at"))
+                source_id = source.id
+            return bindings.replace_meter(
+                point_id, source_id,
+                at=data.get("at"),
+                channel_profile=data.get("channel_profile"),
+                replacement_note=data.get("replacement_note"),
+            ), source_id
+
+        touched = [("metering_point", point_id)]
+        if meter_source_id is not None:
+            touched.append(("meter_source", meter_source_id))
+
         try:
-            new_binding, new_rev = with_revision_check(
-                db, data.get("expected_revision"),
-                lambda: bindings.replace_meter(
-                    point_id, meter_source_id,
-                    at=data.get("at"),
-                    channel_profile=data.get("channel_profile"),
-                    replacement_note=data.get("replacement_note"),
-                ),
-                touched=[("metering_point", point_id), ("meter_source", meter_source_id)])
+            (new_binding, used_source_id), new_rev = with_revision_check(
+                db, data.get("expected_revision"), _provision_and_replace,
+                touched=touched)
         except GlobalRevisionConflict as e:
-            return _revision_conflict(e, ids=[point_id, meter_source_id])
+            return _revision_conflict(
+                e, ids=[i for i in (point_id, meter_source_id) if i is not None])
         except BindingConflict as e:
             body, status = _err(
-                "double_counting", str(e), 409, ids=[point_id, meter_source_id])
+                "double_counting", str(e), 409,
+                ids=[i for i in (point_id, meter_source_id) if i is not None])
             return json_response(body, status)
         except ValueError as e:
             body, status = _err("bad_request", str(e), 400)
             return json_response(body, status)
         out = _binding_to_dict(new_binding)
         out["configuration_revision"] = new_rev
+        out["meter_source_id"] = used_source_id
         return json_response(out, 200)
 
     # ---------------------------------------------------------- locations
