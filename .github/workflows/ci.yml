@@ -154,6 +154,15 @@ jobs:
       - name: "Run unit tests (v2: поиск экрана Структура, партия 3)"
         run: python tests/test_step32_structure_search.py
 
+      - name: "Run unit tests (v2: создание первой привязки прибора, партия 5)"
+        run: python tests/test_step33_open_binding_route.py
+
+      - name: "Run unit tests (v2: e2e создание структуры с чистой БД, партия 5)"
+        run: python tests/test_step34_e2e_ui_creation_path.py
+
+      - name: "Run unit tests (v2: редактирование места точки, партия 5)"
+        run: python tests/test_step35_edit_point_location.py
+
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
 
@@ -239,6 +248,9 @@ jobs:
           python tests/test_step30_validation_summary.py
           python tests/test_step31_migration_wizard.py
           python tests/test_step32_structure_search.py
+          python tests/test_step33_open_binding_route.py
+          python tests/test_step34_e2e_ui_creation_path.py
+          python tests/test_step35_edit_point_location.py
 
   lint:
     name: Basic checks
