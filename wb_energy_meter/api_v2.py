@@ -45,6 +45,12 @@ B/C (BindingConflict/TopologyConflict/AccountingConflict/ValueError) в
   мастер переноса связей старой модели планов в electrical_edges;
   только с явным подтверждением каждой связи, идемпотентно через
   migration_map (см. migration_wizard_service.py, v2_migration_legacy_links).
+  `GET /api/v2/structure/points` (§8.3, задача 1) — поиск точек учёта по
+  имени/коду/MQTT ID/серийнику прибора/пути размещения (A02) для левой
+  панели дерева экрана «Структура»; отдаёт также непривязанные/
+  неразмещённые точки (bound/placed_on_plan флагами, не прячет их) —
+  инспектор и остальные числа берутся из уже существующих ручек
+  (snapshot, bindings, groups, topology/*), см. v2_structure_points.
 
   НЕ РЕАЛИЗОВАНО (сознательно отложено — вне этой задачи):
   metrics/jobs (долгие расчёты/подписки); plans/items/layout (это стадия D
@@ -1219,6 +1225,87 @@ def register_v2_routes(app, state, json_response):
             "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "points": items,
         })
+
+    # ------------------------------------ структура/инспектор (партия 3, задача 1)
+    # ТЗ §8.3: "слева дерево и поиск... поиск по имени, коду точки, MQTT
+    # ID, серийному номеру и пути" (A02). Этот маршрут отдаёт ТОЛЬКО то,
+    # чего не хватает обычному GET /api/v2/points для такого поиска —
+    # путь по месту установки и адрес/серийник ДЕЙСТВУЮЩЕГО прибора.
+    # Расход, состояние, история замен и т.п. инспектор запрашивает
+    # отдельно через уже существующие ручки (snapshot, metrics/query,
+    # points/<id>/bindings, points/<id>/groups, topology/*) — здесь
+    # заново не считаются и не дублируются (§8.3: "инспектор... через
+    # уже имеющиеся ручки v2").
+    @app.route("/api/v2/structure/points", methods=["GET"])
+    def v2_structure_points():
+        point_repo = _point_repo()
+        location_repo = _location_repo()
+        binding_repo = _binding_repo()
+        source_repo = _source_repo()
+        meters_repo_legacy = MeterRepo(db, GroupRepo(db))
+
+        locations_by_id = {
+            l.id: l for l in location_repo.list_all(include_archived=True)}
+
+        def _location_path(loc_id):
+            if loc_id is None:
+                return None
+            parts = []
+            seen = set()
+            cur_id = loc_id
+            while cur_id is not None and cur_id not in seen:
+                seen.add(cur_id)
+                loc = locations_by_id.get(cur_id)
+                if loc is None:
+                    break
+                parts.append(loc.name)
+                cur_id = loc.parent_id
+            return " / ".join(reversed(parts)) if parts else None
+
+        with db.read() as c:
+            plan_point_ids = {
+                row["point_id"] for row in c.execute(
+                    "SELECT DISTINCT point_id FROM plan_items "
+                    "WHERE kind = 'point' AND point_id IS NOT NULL "
+                    "AND archived_at IS NULL").fetchall()
+            }
+
+        q = (request.args.get("q") or "").strip().casefold()
+        items = []
+        for p in point_repo.list_all(include_archived=False):
+            binding = binding_repo.get_open_primary(p.id)
+            meter_device_id = meter_controller_key = meter_serial = None
+            if binding is not None:
+                source = source_repo.get_by_id(binding.meter_source_id)
+                if source is not None:
+                    meter_device_id = source.device_id
+                    meter_controller_key = source.controller_key
+                    meter = meters_repo_legacy.get_by_id(source.meter_id)
+                    if meter is not None:
+                        meter_serial = meter.serial_number
+
+            location_path = _location_path(p.installation_location_id)
+
+            if q:
+                searchable = " ".join(str(x) for x in (
+                    p.code, p.name, meter_device_id, meter_serial,
+                    location_path) if x).casefold()
+                if q not in searchable:
+                    continue
+
+            items.append({
+                "point_id": p.id, "code": p.code, "name": p.name,
+                "enabled": bool(p.enabled),
+                "location_id": p.installation_location_id,
+                "location_path": location_path,
+                "bound": binding is not None,
+                "meter_device_id": meter_device_id,
+                "meter_controller_key": meter_controller_key,
+                "meter_serial": meter_serial,
+                "placed_on_plan": p.id in plan_point_ids,
+            })
+
+        return json_response({"points": items})
 
     # ---------------------------------------- validation (партия 3, задача 4)
     # ТЗ §8.2/§13, docs/TZ-batch3 задача 4: "на ста точках без него

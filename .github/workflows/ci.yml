@@ -142,6 +142,18 @@ jobs:
       - name: "Run unit tests (v2: отчёты/CSV, партия 2)"
         run: python tests/test_step28_reports_query.py
 
+      - name: "Run unit tests (v2: провижининг прибора при замене, партия 3)"
+        run: python tests/test_step29_replace_meter_provisioning.py
+
+      - name: "Run unit tests (v2: сводка незавершённой настройки, партия 3)"
+        run: python tests/test_step30_validation_summary.py
+
+      - name: "Run unit tests (v2: мастер переноса legacy-связей, партия 3)"
+        run: python tests/test_step31_migration_wizard.py
+
+      - name: "Run unit tests (v2: поиск экрана Структура, партия 3)"
+        run: python tests/test_step32_structure_search.py
+
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
 
@@ -223,6 +235,10 @@ jobs:
           python tests/test_step26_revision_protocol.py
           python tests/test_step27_overview_summary.py
           python tests/test_step28_reports_query.py
+          python tests/test_step29_replace_meter_provisioning.py
+          python tests/test_step30_validation_summary.py
+          python tests/test_step31_migration_wizard.py
+          python tests/test_step32_structure_search.py
 
   lint:
     name: Basic checks
