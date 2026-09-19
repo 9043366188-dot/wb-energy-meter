@@ -1748,7 +1748,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 </div>
               </div>
               <div class="muted" x-show="planDrawingGroupId!==null" style="margin-top:8px">
-                Обведите контур на плане (клик — точка, двойной клик — завершить), затем
+                Обведите контур на плане (клик — точка, двойной клик — завершить, Esc — отменить), затем
                 поправьте вершины при необходимости.
               </div>
               <button class="btn btn-primary btn-sm" x-show="planHasPendingZoneDraw"
@@ -1911,15 +1911,45 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 
           <template x-if="planV2SelectedEdgeView && !planV2SelectedItem">
             <div>
-              <h3>Связь на плане</h3>
-              <div class="muted mono" x-text="'edge_id: '+planV2SelectedEdgeView.edge_id"></div>
+              <h3 x-text="planV2EdgeViewLabel(planV2SelectedEdgeView)"></h3>
+              <!-- Партия 6, баг из браузера (§5: "выбор связи не показывает
+                   информацию" — раньше здесь было только 'edge_id: N').
+                   Концы/точка измерения/кабель — как в инспекторе на
+                   «Структуре»; ток/% загрузки — только здесь (живые данные,
+                   инспектору не нужны). -->
+              <template x-if="planV2EdgeInfo && planV2EdgeInfo.loading">
+                <div class="muted">Загрузка сведений о связи…</div>
+              </template>
+              <template x-if="planV2EdgeInfo && planV2EdgeInfo.error">
+                <div class="muted" x-text="planV2EdgeInfo.error"></div>
+              </template>
+              <template x-if="planV2EdgeInfo && !planV2EdgeInfo.loading && !planV2EdgeInfo.error && planV2EdgeInfo.edgeId===planV2SelectedEdgeView.edge_id">
+                <div>
+                  <div class="structure-field">
+                    <div class="sf-lbl">Концы</div>
+                    <div class="sf-val" x-text="'от: '+structNodeName(planV2EdgeInfo.edge.from_node_id)+' → к: '+structNodeName(planV2EdgeInfo.edge.to_node_id)"></div>
+                  </div>
+                  <div class="structure-field">
+                    <div class="sf-lbl">Точка измерения</div>
+                    <div class="sf-val" x-text="planV2EdgeInfo.edge.primary_point_id!=null ? structPointName(planV2EdgeInfo.edge.primary_point_id) : 'без измерения'"></div>
+                  </div>
+                  <div class="structure-field" x-show="planV2EdgeInfo.currentA!=null || planV2EdgeInfo.edge.rated_current_a!=null">
+                    <div class="sf-lbl">Ток / загрузка</div>
+                    <div class="sf-val mono" x-text="(planV2EdgeInfo.currentA!=null?planV2EdgeInfo.currentA.toFixed(1)+' А':'ток неизвестен')+(planV2EdgeInfo.loadPct!=null?(' · '+planV2EdgeInfo.loadPct+'% от номинала'):(planV2EdgeInfo.edge.rated_current_a?(' (номинал '+planV2EdgeInfo.edge.rated_current_a+' А)'):''))"></div>
+                  </div>
+                  <div class="structure-field" x-show="planV2EdgeInfo.edge.cable_note">
+                    <div class="sf-lbl">Кабель</div>
+                    <div class="sf-val" x-text="planV2EdgeInfo.edge.cable_note"></div>
+                  </div>
+                </div>
+              </template>
               <div class="muted" x-text="planV2SelectedEdgeView.waypoints ? 'Линия: нарисована вручную' : 'Линия: прямая между метками'"></div>
               <button class="btn btn-sm btn-secondary" style="margin-top:8px"
                       @click="openInspector('edge', planV2SelectedEdgeView.edge_id)">Открыть в инспекторе</button>
 
               <template x-if="planV2EditMode && planV2DrawingEdgeKey===String(planV2SelectedEdgeView.id)">
                 <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px">
-                  <div class="muted">Кликайте по плану, чтобы добавлять точки линии; двойной клик — завершить.</div>
+                  <div class="muted">Кликайте по плану, чтобы добавлять точки линии; двойной клик — завершить, Esc — отменить.</div>
                   <div style="display:flex;gap:8px">
                     <button class="btn btn-sm btn-primary" :disabled="!planV2HasPendingEdgeDraw"
                             @click="planV2SaveDrawnWaypoints()">Сохранить линию</button>
@@ -2006,8 +2036,8 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               <div class="plan-zone-list">
                 <template x-for="v in _planV2EffectiveEdgeViews()" :key="v.id">
                   <div class="plan-zone-row" style="cursor:pointer"
-                       @click="planV2SelectedItem=null; planV2SelectedEdgeView=v">
-                    <span class="pzr-name" x-text="'edge_id: '+v.edge_id+(v.waypoints?' 🖊':'')"></span>
+                       @click="_planV2SelectEdgeView(v)">
+                    <span class="pzr-name" x-text="planV2EdgeViewLabel(v)+(v.waypoints?' 🖊':'')"></span>
                     <button class="btn btn-sm btn-danger" @click.stop="planV2RemoveEdgeView(v)">✕</button>
                   </div>
                 </template>
@@ -3628,6 +3658,11 @@ function app(){ return {
   planV2Plans:[], planV2CurrentId:null, planV2Current:null,
   planV2Loading:false, planV2Inited:false, planV2SelectedItem:null,
   planV2SelectedEdgeView:null,
+  // Партия 6, задача 6 (баг из браузера: "выбор связи не показывает
+  // информацию") — карточка со сведениями по выбранной связи
+  // (endpoints/точка измерения/ток и % загрузки/кабель), см.
+  // _planV2LoadEdgeInfo. null пока не загружено или ничего не выбрано.
+  planV2EdgeInfo:null,
   // --- Stage D (ТЗ §7.3): редактирование плана v2 локальным черновиком.
   // planV2Draft.items/edges: ключ -> {op:'upsert'|'remove', ...поля}.
   // Ключ существующего элемента/связи — String(id); ключ элемента/связи,
@@ -3740,6 +3775,18 @@ function app(){ return {
       if(this.tab=='plan') this.loadPlanLive();
       if(this.tab=='overviewv2') this.loadOverviewV2Snapshot();
     },5000);
+    // Партия 6, баг из браузера (§5: "рисование линии/контура никогда не
+    // завершается" — режим рисования оставался включённым). Escape —
+    // безусловный аварийный выход из ЛЮБОГО активного режима рисования
+    // geoman на обеих картах (v1-зона и v2-линия связи), независимо от
+    // того, сработал ли у geoman finishOn:'dblclick' (см. startZoneDraw/
+    // planV2StartDrawWaypoints — там же теперь отключается
+    // doubleClickZoom на время рисования, см. те же места).
+    document.addEventListener('keydown', (ev)=>{
+      if(ev.key!=='Escape') return;
+      if(this.planDrawingGroupId!==null) this.cancelZoneDraw();
+      if(this.planV2DrawingEdgeKey!==null) this.planV2CancelDrawWaypoints();
+    });
   },
   async loadChannelDictionary(){
     try{
@@ -4995,6 +5042,13 @@ function app(){ return {
     if(this.planDrawingGroupId!==null || !_planMap) return;
     this.planDrawingGroupId=group.id;
     this.planHasPendingZoneDraw=false;
+    // Баг из браузера (§5): встроенный Leaflet doubleClickZoom конкурирует
+    // с geoman finishOn:'dblclick' за один и тот же двойной клик — второй
+    // клик то зумит карту, то не долетает до geoman, и фигура "не
+    // завершается" на глаз пользователя. На время рисования отключаем
+    // zoom по двойному клику, возвращаем в cancelZoneDraw()/saveZoneDraw()
+    // (обе — единственные выходы из режима, включая Escape, см. init()).
+    if(_planMap.doubleClickZoom) _planMap.doubleClickZoom.disable();
     _planMap.pm.enableDraw('Polygon', {snappable:true, finishOn:'dblclick'});
   },
   _planOnPmCreate(e){
@@ -5024,6 +5078,7 @@ function app(){ return {
   },
   cancelZoneDraw(){
     if(_planMap && _planMap.pm) _planMap.pm.disableDraw('Polygon');
+    if(_planMap && _planMap.doubleClickZoom) _planMap.doubleClickZoom.enable();
     if(_planDrawLayer){ try{_planMap.removeLayer(_planDrawLayer);}catch(e){} _planDrawLayer=null; }
     this.planDrawingGroupId=null;
     this.planHasPendingZoneDraw=false;
@@ -5667,6 +5722,69 @@ function app(){ return {
     const n=(this.structNodes||[]).find(x=>x.id===nodeId);
     return n ? (n.name||n.code||('#'+nodeId)) : ('#'+nodeId);
   },
+  structPointName(pointId){
+    const p=(this.structPoints||[]).find(x=>x.point_id===pointId);
+    return p ? (p.name||p.code||('#'+pointId)) : ('#'+pointId);
+  },
+  // Партия 6, задача 6 (баг: "выбор связи на плане v2 не показывает
+  // информацию" — раньше в панели был только 'edge_id: N'). Тянет то же,
+  // что структуре — концы/измерение/кабель — плюс живой ток по точке
+  // измерения и % загрузки от номинального тока (если он задан на
+  // связи). structNodeName/structPointName требуют structNodes/
+  // structPoints — догружаем их (_loadStructureLists), если план v2
+  // открыли, минуя вкладку «Структура».
+  // Партия 6, баг из браузера (§5, index.html~1915/2010): подпись связи
+  // на плане была жёстко "edge_id: N" — не показывала ни имя/код связи,
+  // ни (в простом режиме) "Ввод → ЩР-1" по концам. structEdges грузится
+  // либо этим же openPlanV2Tab, либо уже был загружен вкладкой
+  // «Структура» — если связь ещё не найдена (структура ещё грузится),
+  // временно показываем "Связь #N", а не падаем.
+  planV2EdgeViewLabel(v){
+    const e=(this.structEdges||[]).find(x=>x.id===v.edge_id);
+    if(!e) return 'Связь #'+v.edge_id;
+    if(e.name) return e.name;
+    if(e.code) return e.code;
+    return this.structNodeName(e.from_node_id)+' → '+this.structNodeName(e.to_node_id);
+  },
+  async _planV2SelectEdgeView(v){
+    this.planV2SelectedItem=null;
+    this.planV2SelectedEdgeView=v;
+    this._planV2LoadEdgeInfo(v.edge_id);
+  },
+  async _planV2LoadEdgeInfo(edgeId){
+    this.planV2EdgeInfo={loading:true, edgeId};
+    try{
+      if(!this.structInited){ this.structInited=true; await this._loadStructureLists(); }
+      const r=await fetch('/api/v2/topology/edges/'+edgeId);
+      if(!r.ok) throw new Error('связь не найдена (HTTP '+r.status+')');
+      const edge=await r.json();
+      let currentA=null, loadPct=null;
+      if(edge.primary_point_id!=null){
+        try{
+          const sr=await fetch('/api/v2/snapshot?point_ids='+edge.primary_point_id);
+          if(sr.ok){
+            const snap=(await sr.json()).points||[];
+            const cur=snap[0] && snap[0].current_a;
+            if(cur){
+              // "ток" в карточке связи — худшая (максимальная) фаза: именно
+              // она определяет реальную загрузку кабеля/автомата, а не
+              // среднее по фазам.
+              const vals=[cur.L1,cur.L2,cur.L3].filter(x=>x!=null);
+              if(vals.length){
+                currentA=Math.max(...vals);
+                if(edge.rated_current_a) loadPct=Math.round(currentA/edge.rated_current_a*100);
+              }
+            }
+          }
+        }catch(e){ /* живых данных может не быть — карточка всё равно показывает статическое */ }
+      }
+      if(this.planV2EdgeInfo && this.planV2EdgeInfo.edgeId===edgeId){
+        this.planV2EdgeInfo={loading:false, edgeId, edge, currentA, loadPct};
+      }
+    }catch(e){
+      this.planV2EdgeInfo={loading:false, edgeId, error:'Не удалось загрузить связь: '+e.message};
+    }
+  },
   structNodeEdges(nodeId){
     return (this.structEdges||[]).filter(e=>e.from_node_id===nodeId || e.to_node_id===nodeId);
   },
@@ -6158,7 +6276,13 @@ function app(){ return {
     if(!_planV2Map) this.initPlanV2Map();
     if(!this.planV2Inited){
       this.planV2Inited=true;
-      await this.loadPlanV2List();
+      // Партия 6, задача 6: узлы/точки нужны, чтобы подписи связей на
+      // плане (planV2EdgeViewLabel) и карточка выбранной связи
+      // (_planV2LoadEdgeInfo) сразу показывали имена, а не "#N", даже
+      // если пользователь открыл План, минуя вкладку «Структура».
+      const loads=[this.loadPlanV2List()];
+      if(!this.structInited){ this.structInited=true; loads.push(this._loadStructureLists()); }
+      await Promise.all(loads);
     }
     this.$nextTick(()=>{ if(_planV2Map) _planV2Map.invalidateSize(); });
   },
@@ -6531,6 +6655,14 @@ function app(){ return {
     if(!view || this.planV2DrawingEdgeKey!==null || !_planV2Map || !this.planV2EditMode) return;
     this.planV2DrawingEdgeKey=String(view.id);
     this.planV2HasPendingEdgeDraw=false;
+    // Баг из браузера (§5, "рисование линии никогда не завершается") — та
+    // же причина и то же лечение, что у startZoneDraw() выше: Leaflet
+    // doubleClickZoom забирает второй клик двойного клика себе (зумит
+    // карту), geoman finishOn:'dblclick' может не увидеть событие.
+    // Единственные выходы из режима — planV2SaveDrawnWaypoints() и
+    // planV2CancelDrawWaypoints() (включая по Escape, см. init()) — оба
+    // возвращают doubleClickZoom обратно.
+    if(_planV2Map.doubleClickZoom) _planV2Map.doubleClickZoom.disable();
     _planV2Map.pm.enableDraw('Line', {snappable:true, finishOn:'dblclick'});
   },
   _planV2OnPmCreate(e){
@@ -6555,6 +6687,7 @@ function app(){ return {
       ? this.planV2Draft.edges[key] : this._planV2BaseEdgeFields(view);
     this.planV2Draft.edges[key]={...base, op:'upsert', waypoints};
     if(_planV2Map && _planV2Map.pm) _planV2Map.pm.disableDraw('Line');
+    if(_planV2Map && _planV2Map.doubleClickZoom) _planV2Map.doubleClickZoom.enable();
     this._planV2CleanupDrawLayer();
     this.planV2DrawingEdgeKey=null; this.planV2HasPendingEdgeDraw=false;
     this._planV2RenderItems();
@@ -6562,6 +6695,7 @@ function app(){ return {
   },
   planV2CancelDrawWaypoints(){
     if(_planV2Map && _planV2Map.pm) _planV2Map.pm.disableDraw('Line');
+    if(_planV2Map && _planV2Map.doubleClickZoom) _planV2Map.doubleClickZoom.enable();
     this._planV2CleanupDrawLayer();
     this.planV2DrawingEdgeKey=null;
     this.planV2HasPendingEdgeDraw=false;
@@ -6637,8 +6771,7 @@ function app(){ return {
                                        dashArray:v.view_kind==='cable_route'?null:'6,4'});
       line.on('click', (e)=>{
         if(e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
-        this.planV2SelectedItem=null;
-        this.planV2SelectedEdgeView=v;
+        this._planV2SelectEdgeView(v);
       });
       line.addTo(_planV2Map);
       _planV2EdgeLayers.set(String(v.id), line);
