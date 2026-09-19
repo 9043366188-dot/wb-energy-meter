@@ -583,6 +583,12 @@ def register_v2_routes(app, state, json_response):
             result = l
             if "parent_id" in data:
                 result = repo.set_parent(location_id, data["parent_id"])
+            if any(k in data for k in ("name", "code")):
+                # Партия 6, задача 3 (§4: инлайн-редактирование мест на
+                # экране "Структура" без ухода с экрана) — раньше имя и
+                # код места задавались только один раз при создании.
+                result = repo.update_fields(
+                    location_id, name=data.get("name"), code=data.get("code"))
             if data.get("archived"):
                 result = repo.archive(location_id)
             return result

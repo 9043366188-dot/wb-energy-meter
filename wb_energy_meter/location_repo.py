@@ -240,6 +240,45 @@ class LocationRepo:
 
         return self.get_by_id(loc_id)
 
+    def update_fields(self, loc_id, *, name=None, code=None):
+        """Переименовать место / сменить код (партия 6, задача 3, §4:
+        "инлайн-редактирование без ухода с экрана") — раньше у мест не
+        было ручки для этого вообще (только parent_id/archived через
+        PATCH), name/code задавались один раз при создании (add()).
+        name=None/code=None здесь значит "не менять" (в отличие от
+        installation_location_id у точек, у места нет отдельного "поля
+        со значащим None" — обнулять имя или код в простом режиме
+        незачем)."""
+        if name is None and code is None:
+            return self.get_by_id(loc_id)
+
+        if self.get_by_id(loc_id) is None:
+            raise ValueError(f"Место {loc_id} не найдено")
+
+        if name is not None:
+            name = validate_name(name)
+
+        now = int(time.time())
+        set_parts = ["updated_at = ?"]
+        params = [now]
+        if name is not None:
+            set_parts += ["name = ?", "name_norm = py_casefold(?)"]
+            params += [name, name]
+        if code is not None:
+            set_parts.append("code = ?")
+            params.append(code)
+        params.append(loc_id)
+
+        with self._db.transaction() as c:
+            try:
+                c.execute(
+                    f"UPDATE locations SET {', '.join(set_parts)} WHERE id = ?",
+                    params)
+            except sqlite3.IntegrityError as e:
+                raise ValueError(f"Не удалось обновить место: {e}") from None
+
+        return self.get_by_id(loc_id)
+
     def archive(self, loc_id, at=None):
         """Архивировать место, проставляя archived_at.
 
