@@ -294,6 +294,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 #site-plan-v2-map{height:calc(100vh - 220px);min-height:420px;
   border-radius:10px;border:1px solid var(--line);background:var(--bg3)}
 #site-plan-v2-map.planv2-placing{cursor:crosshair}
+#site-plan-v3-map{height:calc(100vh - 220px);min-height:420px;
+  border-radius:10px;border:1px solid var(--line);background:var(--bg3)}
+#site-plan-v3-map.planv3-placing{cursor:crosshair}
 .leaflet-container{background:var(--bg3);font-family:inherit;outline:none}
 .leaflet-popup-content-wrapper{background:var(--bg2);color:var(--txt);
   border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.4)}
@@ -474,6 +477,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     <button x-show="uiSet=='v2'" :class="{active:tab=='planv2'}" @click="tab='planv2';openPlanV2Tab()">План v2</button>
     <button x-show="uiSet=='v2'" :class="{active:tab=='reportsv2'}" @click="tab='reportsv2';openReportsV2Tab()">Отчёты</button>
     <button x-show="uiSet=='v2'" :class="{active:tab=='structurev2'}" @click="tab='structurev2';openStructureTab()">Структура</button>
+    <button x-show="uiSet=='v2'" :class="{active:tab=='planv3'}" @click="tab='planv3';openPlanV3Tab()">План v3</button>
   </nav>
   <div class="spacer"></div>
   <span class="muted mono" x-text="version?'v'+version:''"></span>
@@ -2217,8 +2221,195 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     </div>
   </div>
 
+  <!-- ПЛАН v3 (docs/TZ-batch6-plan-v3.md): единый экран узлов на карте.
+       Объединяет «Структуру» (заведение узлов/связей) и «План v2»
+       (карту) в один экран — без черновика/undo-redo, в отличие от
+       Плана v2 выше: каждое действие (узел/линия/зона) пишется на
+       сервер сразу одним запросом (§0 задания: "клик → узел появился →
+       карточка сразу"). «Структура» и «План v2» ОСТАЮТСЯ доступными
+       как есть (не удалены) — запасной путь, если что-то здесь не
+       получится проверить в браузере (§7 задания).
+       Своя L.Map (_planV3Map ниже, вне реактивности Alpine) — та же
+       причина, что и у Плана/Плана v2: Leaflet держит собственный DOM,
+       Proxy-обёртка Alpine его ломает (см. AGENTS.md). -->
+  <div x-show="tab=='planv3'">
+    <div class="muted" style="font-size:11px;max-width:640px;margin-bottom:12px;line-height:1.5">
+      «План v3» — на карту наносятся УЗЛЫ сети (ввод/щит/потребитель), а
+      не точки учёта: какая точка «стоит в узле» вычисляется по тому,
+      какую линию она измеряет (см. список линий в карточке узла), а не
+      задаётся отдельно. Места (locations) не рисуются контурами — у
+      узла есть свободное поле «где стоит». Учётные группы (зоны), в
+      отличие от мест, по-прежнему рисуются контуром на карте.
+    </div>
+
+    <template x-if="!planV3Loading && planV3Plans.length===0">
+      <div class="plan-empty" style="text-align:left;max-width:560px;margin:0 auto;line-height:1.5">
+        <b>Планов пока нет.</b><br>
+        Создайте пустой план ниже, чтобы расставлять на нём узлы сети.
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+          <input type="text" x-model="planV3NewPlanName" placeholder="Название плана" style="max-width:260px">
+          <button class="btn btn-primary" :disabled="planV3Saving" @click="planV3CreateEmptyPlan()">Создать план</button>
+        </div>
+      </div>
+    </template>
+
+    <div x-show="planV3Plans.length>0">
+      <div class="plan-toolbar">
+        <select x-model.number="planV3CurrentId" @change="selectPlanV3(planV3CurrentId)">
+          <template x-for="p in planV3Plans" :key="p.id">
+            <option :value="p.id" x-text="p.name"></option>
+          </template>
+        </select>
+        <div class="spacer"></div>
+        <button class="btn btn-sm" :class="{'btn-primary': planV3Tool=='node'}" @click="planV3SetTool('node')">+ Узел</button>
+        <button class="btn btn-sm" :class="{'btn-primary': planV3Tool=='edge'}" @click="planV3SetTool('edge')">+ Линия</button>
+        <button class="btn btn-sm" :class="{'btn-primary': planV3Tool=='zone'}" @click="planV3SetTool('zone')">+ Зона (учётная группа)</button>
+        <button class="ico-btn" x-show="planV3Tool" @click="planV3CancelTool()">✕ Отменить инструмент</button>
+      </div>
+
+      <template x-if="planV3Tool=='node'">
+        <div class="plan-toolbar" style="margin-top:-6px">
+          <select x-model="planV3PendingNodeForm.kind">
+            <option value="source">Ввод (источник)</option>
+            <option value="panel">Щит</option>
+            <option value="junction">Промежуточный узел</option>
+            <option value="load">Потребитель</option>
+          </select>
+          <input type="text" x-model="planV3PendingNodeForm.name" placeholder="Название узла" style="max-width:220px">
+          <span class="muted" style="font-size:11px">Кликните на карте, чтобы разместить узел</span>
+        </div>
+      </template>
+      <template x-if="planV3Tool=='edge'">
+        <div class="plan-toolbar" style="margin-top:-6px">
+          <span class="muted" style="font-size:11px" x-text="planV3EdgeFirstItem
+            ? ('Откуда: «'+(planV3EdgeFirstItem.label||('узел '+planV3EdgeFirstItem.node_id))+'» — кликните узел-получатель')
+            : 'Кликните узел-источник, затем узел-получатель'"></span>
+        </div>
+      </template>
+      <template x-if="planV3Tool=='zone'">
+        <div class="plan-toolbar" style="margin-top:-6px">
+          <select x-model.number="planV3ZoneGroupId" :disabled="planV3DrawingZone">
+            <option value="">— выберите учётную группу —</option>
+            <template x-for="g in structGroups" :key="g.id">
+              <option :value="g.id" x-text="g.name"></option>
+            </template>
+          </select>
+          <button class="btn btn-sm btn-primary" :disabled="!planV3ZoneGroupId || planV3DrawingZone"
+                  @click="planV3StartDrawZone()">Нарисовать контур</button>
+          <span class="muted" style="font-size:11px" x-show="planV3DrawingZone">
+            Рисуйте контур на карте, двойной клик — завершить (Esc — отмена)
+          </span>
+        </div>
+      </template>
+
+      <template x-if="structNodes.length===0">
+        <div class="plan-empty" style="text-align:left;max-width:560px;margin:0 0 12px;line-height:1.5">
+          Узлов сети пока нет — нажмите «+ Узел» выше и кликните на карте.
+        </div>
+      </template>
+
+      <div class="plan-layout plan-edit-open">
+        <div id="site-plan-v3-map" x-ref="planV3Map"
+             :class="{'planv3-placing': planV3Tool=='node' || planV3Tool=='edge'}"></div>
+
+        <div class="plan-side">
+          <template x-if="structInspectorLoading"><div class="muted">Загрузка…</div></template>
+          <template x-if="structInspectorError"><div class="warn-item" x-text="structInspectorError"></div></template>
+
+          <template x-if="!structInspector && !structInspectorLoading">
+            <div class="muted" style="font-size:12px;line-height:1.6">
+              <template x-if="!planV3Tool"><span>Кликните узел на карте, чтобы открыть его карточку, либо выберите инструмент выше.</span></template>
+              <template x-if="planV3Tool=='node'"><span>Заполните форму выше и кликните на карте, чтобы разместить узел.</span></template>
+              <template x-if="planV3Tool=='edge'"><span>Кликните узел-источник, затем узел-получатель, чтобы провести линию.</span></template>
+              <template x-if="planV3Tool=='zone'"><span>Выберите учётную группу и нажмите «Нарисовать контур», затем обведите её на карте (двойной клик — завершить).</span></template>
+            </div>
+          </template>
+
+          <!-- карточка узла (§1/§2 задания): имя, «где стоит», линии со
+               своими счётчиками, «добавить отходящую линию» одним
+               действием. Тот же structInspector, что и на «Структуре»,
+               но БЕЗ ухода с этой вкладки (openInspectorInPlace) и с
+               другой, более функциональной разметкой. -->
+          <template x-if="!structInspectorLoading && !structInspectorError && structInspector && structInspector.kind==='node'">
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                <div>
+                  <h3 style="margin:0 0 2px" x-text="structInspector.data.name"></h3>
+                  <div class="muted" style="font-size:12px"
+                       x-text="structNodeKindLabel(structInspector.data.kind)+' · код '+structInspector.data.code"></div>
+                </div>
+                <button class="ico-btn" @click="closeInspector()">✕</button>
+              </div>
+
+              <div class="structure-field" style="margin-top:14px">
+                <div class="sf-lbl">Название</div>
+                <div style="display:flex;gap:6px">
+                  <input type="text" x-model="structInspector.nameDraft" style="flex:1">
+                  <button class="btn btn-sm" @click="planV3SaveNodeCard()">Сохранить</button>
+                </div>
+              </div>
+              <div class="structure-field">
+                <div class="sf-lbl">Где стоит</div>
+                <div style="display:flex;gap:6px">
+                  <input type="text" x-model="structInspector.locationTextDraft"
+                         placeholder="например, ЩР-1, эт. 2" style="flex:1">
+                  <button class="btn btn-sm" @click="planV3SaveNodeCard()">Сохранить</button>
+                </div>
+              </div>
+              <template x-if="planV3NodeCardError">
+                <div class="warn-item" x-text="planV3NodeCardError"></div>
+              </template>
+
+              <div class="structure-field">
+                <div class="sf-lbl">Линии этого узла</div>
+                <template x-if="!(structInspector.lines) || structInspector.lines.length===0">
+                  <div class="muted" style="font-size:11px">Линий нет.</div>
+                </template>
+                <template x-for="ln in (structInspector.lines||[])" :key="ln.edge_id">
+                  <div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
+                    <div class="sf-val" x-text="(ln.direction==='in'?'← от ':'→ к ')+ln.other_node_name"></div>
+                    <div class="muted" style="font-size:11px" x-text="ln.name||ln.code"></div>
+                    <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
+                      <select style="flex:1"
+                              @change="planV3AssignMeter(ln.edge_id, $event.target.value?Number($event.target.value):null)">
+                        <option value="">— без счётчика —</option>
+                        <template x-for="p in structPoints" :key="p.point_id">
+                          <option :value="p.point_id" :selected="p.point_id===ln.primary_point_id"
+                                  x-text="p.name||p.code"></option>
+                        </template>
+                      </select>
+                    </div>
+                  </div>
+                </template>
+              </div>
+
+              <div class="structure-field">
+                <div class="sf-lbl">Добавить отходящую линию</div>
+                <template x-if="structInspector.data.kind!=='load'">
+                  <div>
+                    <div style="display:flex;gap:6px">
+                      <input type="text" x-model="planV3AddConsumerName" placeholder="что питает линия" style="flex:1">
+                      <button class="btn btn-sm btn-primary" :disabled="!planV3AddConsumerName"
+                              @click="planV3AddConsumerSubmit()">Добавить</button>
+                    </div>
+                    <template x-if="planV3AddConsumerError">
+                      <div class="warn-item" x-text="planV3AddConsumerError"></div>
+                    </template>
+                  </div>
+                </template>
+                <div class="muted" style="font-size:11px" x-show="structInspector.data.kind==='load'">
+                  У потребителя не может быть отходящих линий.
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- CONSUMPTION -->
-  <template x-if="tab=='consumption'">
+<template x-if="tab=='consumption'">
     <div>
       <div class="periods">
         <template x-for="p in presets" :key="p.id">
@@ -3742,7 +3933,7 @@ const DEFAULT_UI_SET = 'classic';
 // уехала на первую вкладку нового набора, а не осталась скрытой.
 const UI_SET_TABS = {
   classic: ['dash', 'plan', 'consumption', 'settings', 'reports'],
-  v2: ['overviewv2', 'planv2', 'reportsv2', 'structurev2'],
+  v2: ['overviewv2', 'planv2', 'reportsv2', 'structurev2', 'planv3'],
 };
 
 function app(){ return {
@@ -3860,6 +4051,22 @@ function app(){ return {
   planV2DrawingEdgeKey:null, planV2HasPendingEdgeDraw:false,
   planV2PickersLoaded:false, planV2Points:[], planV2Locations:[],
   planV2Nodes:[], planV2Edges:[],
+  // «План v3» (docs/TZ-batch6-plan-v3.md) — единый экран узлов на карте:
+  // объединяет «Структуру» (заведение узлов/связей) и «План v2» (карту)
+  // в одно действие без черновика/undo — каждое действие пишется на
+  // сервер сразу (см. секцию методов planV3* ниже). Своя L.Map —
+  // _planV3Map, модульная переменная вне реактивности Alpine, та же
+  // причина, что у Плана/Плана v2.
+  planV3Inited:false, planV3Loading:false, planV3Saving:false,
+  planV3Plans:[], planV3CurrentId:null, planV3Current:null,
+  planV3NewPlanName:'',
+  // planV3Tool: null|'node'|'edge'|'zone' — активный инструмент карты.
+  planV3Tool:null,
+  planV3PendingNodeForm:{kind:'panel', name:''},
+  planV3EdgeFirstItem:null,
+  planV3ZoneGroupId:'', planV3DrawingZone:false,
+  planV3AddConsumerName:'', planV3AddConsumerError:null,
+  planV3NodeCardError:null,
   // перенос легаси-данных
   migrateLegacyConfirm:false, migrateLegacyBusy:false,
   migrateLegacyResult:null, migrateLegacyError:null,
@@ -3942,6 +4149,7 @@ function app(){ return {
     if(this.tab=='overviewv2') this.openOverviewV2Tab();
     if(this.tab=='planv2') this.openPlanV2Tab();
     if(this.tab=='structurev2') this.openStructureTab();
+    if(this.tab=='planv3') this.openPlanV3Tab();
     this._timer=setInterval(()=>{
       if(this.tab=='dash') this.loadStatus();
       // План (ТЗ v0.11.0): та же частота 5с, что и дашборд. Обновляем
@@ -3962,6 +4170,11 @@ function app(){ return {
       if(this.planDrawingGroupId!==null) this.cancelZoneDraw();
       if(this.planV2DrawingEdgeKey!==null) this.planV2CancelDrawWaypoints();
       if(this.planV2PlacingPolygon) this.planV2CancelPlacePolygon();
+      // «План v3» (§0 задания, тот же баг класса "рисование не
+      // заканчивается"): Escape — безусловный выход из любого активного
+      // инструмента карты (узел/линия/зона), включая рисование контура
+      // зоны geoman.
+      if(this.planV3Tool) this.planV3CancelTool();
     });
   },
   async loadChannelDictionary(){
@@ -4001,6 +4214,7 @@ function app(){ return {
       else if(this.tab=='planv2') this.openPlanV2Tab();
       else if(this.tab=='reportsv2') this.openReportsV2Tab();
       else if(this.tab=='structurev2') this.openStructureTab();
+      else if(this.tab=='planv3') this.openPlanV3Tab();
       else if(this.tab=='plan') this.openPlanTab();
       else if(this.tab=='consumption') this.loadConsumption();
       else if(this.tab=='settings'){ this.loadSettings(); this.initUpdatePanel(); }
@@ -6153,6 +6367,19 @@ function app(){ return {
     if(id==null) return;
     if(this.tab!=='structurev2'){ this.tab='structurev2'; }
     if(!this.structInited){ this.structInited=true; await this._loadStructureLists(); }
+    await this._loadInspectorData(kind, id);
+  },
+  // «План v3», рефакторинг: то же самое, что openInspector, но БЕЗ
+  // переключения вкладки на 'structurev2' — карточка узла/связи должна
+  // остаться на месте, на плане v3 (§0 задания: "не уходить с экрана").
+  // Существующие вызовы openInspector (Обзор/Отчёты/План v2/Структура)
+  // не затронуты — вся их логика цела, только вынесена в общий хелпер.
+  async openInspectorInPlace(kind, id){
+    if(id==null) return;
+    if(!this.structInited){ this.structInited=true; await this._loadStructureLists(); }
+    await this._loadInspectorData(kind, id);
+  },
+  async _loadInspectorData(kind, id){
     this.structInspector = {kind, id, data:null};
     this.structInspectorLoading = true; this.structInspectorError = null;
     try{
@@ -6244,7 +6471,24 @@ function app(){ return {
     const r = await fetch('/api/v2/topology/nodes/'+id);
     if(!r.ok) throw new Error('узел не найден (HTTP '+r.status+')');
     const data = await r.json();
-    this.structInspector = {kind:'node', id, data};
+    // «План v3», §1/§2: список линий узла (входящая+отходящие, каждая со
+    // своей измеряющей точкой) и текстовое "где стоит" — берём имя места
+    // из уже загруженного structLocations (общий список, не отдельный
+    // запрос), чтобы карточка сразу показывала и то, и другое.
+    let lines = [];
+    try{
+      const lr = await fetch('/api/v2/topology/nodes/'+id+'/lines');
+      if(lr.ok) lines = (await lr.json()).lines || [];
+    }catch(e){ /* необязательно для остальной карточки */ }
+    let locationText = '';
+    if(data.location_id!=null){
+      const loc = (this.structLocations||[]).find(l=>l.id===data.location_id);
+      locationText = loc ? loc.name : '';
+    }
+    this.structInspector = {kind:'node', id, data, lines,
+      nameDraft: data.name, locationTextDraft: locationText};
+    this.planV3NodeCardError = null;
+    this.planV3AddConsumerError = null; this.planV3AddConsumerName = '';
   },
   async _loadEdgeInspector(id){
     const r = await fetch('/api/v2/topology/edges/'+id);
@@ -7293,6 +7537,394 @@ function app(){ return {
     if(t) this.openInspector(t.kind, t.id);
   },
 
+  // ================= «План v3» (docs/TZ-batch6-plan-v3.md) =================
+  // Единый экран: на карту наносятся УЗЛЫ сети (не точки учёта — какая
+  // точка "стоит" в узле выводится из того, какую смежную линию она
+  // измеряет, см. карточку узла ниже и plan_v3_service.describe_node_lines).
+  // В отличие от «Плана v2» — без черновика/undo: каждое действие (узел,
+  // линия, зона) пишется на сервер сразу одним запросом и сразу
+  // перечитывается с сервера (§0 задания: "клик → узел появился →
+  // карточка сразу", "публикация не должна быть видна отдельным шагом").
+  // «Структура» и «План v2» не удаляются и остаются рабочими — запасной
+  // путь, если что-то здесь не получится проверить в браузере.
+  async openPlanV3Tab(){
+    if(!_planV3Map) this.initPlanV3Map();
+    if(!this.planV3Inited){
+      this.planV3Inited=true;
+      const loads=[this.loadPlanV3List()];
+      if(!this.structInited){ this.structInited=true; loads.push(this._loadStructureLists()); }
+      await Promise.all(loads);
+    }
+    this.$nextTick(()=>{ if(_planV3Map) _planV3Map.invalidateSize(); });
+  },
+  initPlanV3Map(){
+    if(_planV3Map) return;
+    const el=this.$refs.planV3Map;
+    _planV3Map=L.map(el, {crs:L.CRS.Simple, minZoom:-4, zoomControl:true,
+                          attributionControl:false});
+    _planV3Map.setView([0,0],0);
+    _planV3Map.on('click', (e)=>this._planV3OnMapClick(e));
+    _planV3Map.on('pm:create', (e)=>this._planV3OnPmCreate(e));
+    window.addEventListener('resize', ()=>{ if(_planV3Map) _planV3Map.invalidateSize(); });
+  },
+  async loadPlanV3List(){
+    this.planV3Loading=true;
+    try{
+      const r=await fetch('/api/v2/plans');
+      const d=await r.json();
+      this.planV3Plans=Array.isArray(d)?d:[];
+      if(this.planV3Plans.length>0 && !this.planV3CurrentId){
+        await this.selectPlanV3(this.planV3Plans[0].id);
+      }
+    }catch(e){ console.error(e); }
+    this.planV3Loading=false;
+  },
+  // Пустой план "с нуля" — на чистой БД мигрировать легаси-данные
+  // (единственный способ завести план в «Плане v2») неоткуда, а «План
+  // v3» обязан работать и без него (мандатный e2e-сценарий задания §8:
+  // "чистая БД"). single_line — тот же вид, что у пустого однолинейного
+  // плана v2 (без фонового изображения, логический холст).
+  async planV3CreateEmptyPlan(){
+    const name=(this.planV3NewPlanName||'').trim() || 'План v3';
+    this.planV3Saving=true;
+    try{
+      const fd=new FormData();
+      fd.append('name', name); fd.append('plan_kind', 'single_line');
+      fd.append('canvas_width', '2000'); fd.append('canvas_height', '1200');
+      const r=await fetch('/api/v2/plans', {method:'POST', body:fd});
+      const d=await r.json();
+      if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
+      this.planV3NewPlanName='';
+      await this.loadPlanV3List();
+      await this.selectPlanV3(d.id);
+    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
+    finally{ this.planV3Saving=false; }
+  },
+  async selectPlanV3(id){
+    if(!id) return;
+    this.planV3CancelTool();
+    this.planV3CurrentId=id;
+    this.closeInspector();
+    try{
+      const r=await fetch('/api/v2/plans/'+id);
+      if(!r.ok){ this.showToast('Не удалось загрузить план', false); return; }
+      this.planV3Current=await r.json();
+    }catch(e){ console.error(e); return; }
+    this._planV3RenderBase();
+  },
+  _planV3EffectiveDims(plan){
+    if(plan.image_width && plan.image_height) return [plan.image_width, plan.image_height];
+    return [plan.canvas_width||2000, plan.canvas_height||1200];
+  },
+  _planV3XyToLatLng(x, y, height){ return [height-y, x]; },
+  _planV3LatLngToXy(latlng, height){ return [latlng.lng, height-latlng.lat]; },
+  _planV3CoordSpace(){
+    return this.planV3Current && this.planV3Current.plan_kind==='floor'
+      ? 'image_px_xy_v2' : 'canvas_xy_v2';
+  },
+  planV3SetTool(tool){
+    this.planV3CancelTool();
+    this.planV3Tool=tool;
+    if(tool==='node'){ this.planV3PendingNodeForm={kind:'panel', name:''}; }
+  },
+  planV3CancelTool(){
+    this.planV3Tool=null;
+    this.planV3EdgeFirstItem=null;
+    this.planV3ZoneGroupId='';
+    this._planV3CancelDrawZone();
+  },
+
+  // --- узлы: разместить бланк-узел одним кликом (§1 задания) ---
+  _planV3OnMapClick(e){
+    if(!this.planV3Current || this.planV3Tool!=='node') return;
+    const name=(this.planV3PendingNodeForm.name||'').trim();
+    if(!name){ this.showToast('Укажите название узла', false); return; }
+    const [W,H]=this._planV3EffectiveDims(this.planV3Current);
+    const [x,y]=this._planV3LatLngToXy(e.latlng, H);
+    if(x<0||x>W||y<0||y>H){ this.showToast('Точка вне границ плана', false); return; }
+    this.planV3PlaceNode(x,y);
+  },
+  async planV3PlaceNode(x,y){
+    const form=this.planV3PendingNodeForm;
+    const name=(form.name||'').trim();
+    try{
+      const nr=await fetch('/api/v2/topology/nodes', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({code:'pv3-'+form.kind+'-'+Date.now(), name, kind:form.kind})});
+      const nd=await nr.json();
+      if(!nr.ok){ this.showToast(this._apiErrorMessage(nd, nr.status), false); return; }
+      const ir=await fetch('/api/v2/plans/'+this.planV3Current.id+'/items', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({kind:'node', node_id:nd.id, geometry:{x,y},
+          coord_space:this._planV3CoordSpace(), label:name})});
+      const id_=await ir.json();
+      if(!ir.ok){ this.showToast(this._apiErrorMessage(id_, ir.status), false); return; }
+      this.showToast('Узел «'+name+'» размещён', true);
+      this.planV3PendingNodeForm={kind:form.kind, name:''};
+      await this._loadStructureLists();
+      await this.selectPlanV3(this.planV3Current.id);
+      await this.openInspectorInPlace('node', nd.id);
+    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
+  },
+  // Перетаскивание уже размещённого узла — сразу пишет новую геометрию
+  // (plan_items не защищены ревизией, см. api_v2.py — чисто визуальный
+  // слой), без отдельного режима редактирования, как у Плана v2.
+  async _planV3OnItemDragEnd(item, latlng, height){
+    const [x,y]=this._planV3LatLngToXy(latlng, height);
+    try{
+      const r=await fetch('/api/v2/plans/'+this.planV3Current.id+'/items/'+item.id, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({geometry:{x,y}, coord_space:item.coord_space})});
+      if(!r.ok){ const d=await r.json(); this.showToast(this._apiErrorMessage(d, r.status), false); }
+      await this.selectPlanV3(this.planV3Current.id);
+    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
+  },
+  _planV3OnNodeMarkerClick(item){
+    if(this.planV3Tool==='edge'){
+      if(!this.planV3EdgeFirstItem){
+        this.planV3EdgeFirstItem=item;
+      }else{
+        const fromItem=this.planV3EdgeFirstItem;
+        this.planV3EdgeFirstItem=null;
+        if(fromItem.node_id===item.node_id){
+          this.showToast('Нельзя соединить узел с самим собой', false); return;
+        }
+        this.planV3ConnectNodes(fromItem, item);
+      }
+      return;
+    }
+    this.openInspectorInPlace('node', item.node_id);
+  },
+
+  // --- линии: «соединить линией» (§2 задания) — два клика по узлам ---
+  async planV3ConnectNodes(fromItem, toItem){
+    try{
+      const rev=await this._structCurrentRev();
+      const r=await fetch('/api/v2/topology/edges/connect', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({from_node_id: fromItem.node_id, to_node_id: toItem.node_id,
+                               expected_revision: rev})});
+      const d=await r.json();
+      if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
+      await fetch('/api/v2/plans/'+this.planV3Current.id+'/edges', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({edge_id:d.id, from_item_id:fromItem.id, to_item_id:toItem.id,
+                               view_kind:'structural'})});
+      this.showToast('Линия проведена', true);
+      await this._loadStructureLists();
+      await this.selectPlanV3(this.planV3Current.id);
+    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
+    finally{ this.planV3Tool=null; }
+  },
+
+  // --- зоны: учётные группы контуром поверх карты (§3 задания — раньше
+  // было сломано: валидация геометрии допускала полигон только для
+  // kind='location', см. фикс в plan_geo_v2.py) ---
+  planV3StartDrawZone(){
+    if(!this.planV3ZoneGroupId || !_planV3Map) return;
+    this.planV3DrawingZone=true;
+    if(_planV3Map.doubleClickZoom) _planV3Map.doubleClickZoom.disable();
+    _planV3Map.pm.enableDraw('Polygon', {snappable:true, finishOn:'dblclick'});
+  },
+  _planV3CancelDrawZone(){
+    if(_planV3Map && _planV3Map.pm) _planV3Map.pm.disableDraw('Polygon');
+    if(_planV3Map && _planV3Map.doubleClickZoom) _planV3Map.doubleClickZoom.enable();
+    this.planV3DrawingZone=false;
+  },
+  async _planV3OnPmCreate(e){
+    if(e.shape!=='Polygon' || !this.planV3DrawingZone || !this.planV3Current) return;
+    const rings=e.layer.getLatLngs();
+    const ring=Array.isArray(rings[0]) ? rings[0] : rings;
+    try{_planV3Map.removeLayer(e.layer);}catch(err){}
+    const groupId=this.planV3ZoneGroupId;
+    this._planV3CancelDrawZone();
+    if(ring.length<3){ this.showToast('Контур должен содержать минимум 3 точки', false); return; }
+    const [,H]=this._planV3EffectiveDims(this.planV3Current);
+    const geometry=ring.map(ll=>this._planV3LatLngToXy(ll, H));
+    try{
+      const r=await fetch('/api/v2/plans/'+this.planV3Current.id+'/items', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({kind:'group', group_id:groupId, geometry,
+                               coord_space:this._planV3CoordSpace()})});
+      const d=await r.json();
+      if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
+      this.showToast('Зона нанесена', true);
+      this.planV3Tool=null; this.planV3ZoneGroupId='';
+      await this.selectPlanV3(this.planV3Current.id);
+    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
+  },
+
+  // --- карточка узла: имя/место, список линий, назначение счётчика,
+  // «добавить отходящую линию» одним действием (§1/§2 задания) ---
+  async planV3SaveNodeCard(){
+    if(!this.structInspector || this.structInspector.kind!=='node') return;
+    this.planV3NodeCardError=null;
+    try{
+      const rev=await this._structCurrentRev();
+      const r=await fetch('/api/v2/topology/nodes/'+this.structInspector.id, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          name: this.structInspector.nameDraft,
+          location_text: this.structInspector.locationTextDraft,
+          expected_revision: rev,
+        })});
+      const d=await r.json();
+      if(!r.ok){ this.planV3NodeCardError=this._apiErrorMessage(d, r.status); return; }
+      this.showToast('Узел обновлён', true);
+      const id=this.structInspector.id;
+      await this._loadStructureLists();
+      await this.openInspectorInPlace('node', id);
+      if(this.planV3Current) await this.selectPlanV3(this.planV3Current.id);
+    }catch(e){ this.planV3NodeCardError='Ошибка сети: '+e; }
+  },
+  // «поставить счётчик на линию» / «снять» (§1 задания) — существующая
+  // PATCH .../topology/edges/<id> с новой ручкой primary_point_id
+  // (topology_service.py: ElectricalEdgeRepo.set_primary_point).
+  async planV3AssignMeter(edgeId, pointId){
+    try{
+      const rev=await this._structCurrentRev();
+      const r=await fetch('/api/v2/topology/edges/'+edgeId, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({primary_point_id: pointId, expected_revision: rev})});
+      const d=await r.json();
+      if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
+      this.showToast(pointId?'Счётчик назначен':'Счётчик снят', true);
+      await this._loadStructureLists();
+      if(this.structInspector && this.structInspector.kind==='node'){
+        await this.openInspectorInPlace('node', this.structInspector.id);
+      }
+    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
+  },
+  // «Добавить отходящую линию» (§1 задания) — новый узел-потребитель и
+  // линия к нему ОДНИМ действием пользователя (одна кнопка, только
+  // имя) — /api/v2/topology/nodes/<id>/add-consumer уже делает это
+  // атомарно на сервере; здесь только следом наносим новый узел на
+  // карту (авто-смещение от родителя, чтобы сразу было видно и можно
+  // было перетащить) и проводим визуальную линию между ними.
+  async planV3AddConsumerSubmit(){
+    if(!this.structInspector || this.structInspector.kind!=='node') return;
+    const name=(this.planV3AddConsumerName||'').trim();
+    if(!name){ this.planV3AddConsumerError='Укажите название'; return; }
+    this.planV3AddConsumerError=null;
+    try{
+      const rev=await this._structCurrentRev();
+      const r=await fetch('/api/v2/topology/nodes/'+this.structInspector.id+'/add-consumer', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({name, expected_revision: rev})});
+      const d=await r.json();
+      if(!r.ok){ this.planV3AddConsumerError=this._apiErrorMessage(d, r.status); return; }
+      if(this.planV3Current){
+        const parentItem=(this.planV3Current.items||[]).find(
+          it=>it.kind==='node' && it.node_id===this.structInspector.id);
+        const [W,H]=this._planV3EffectiveDims(this.planV3Current);
+        let x=W/2, y=H/2;
+        if(parentItem && parentItem.geometry){
+          x=Math.min(W, parentItem.geometry.x+60); y=Math.min(H, parentItem.geometry.y+60);
+        }
+        const ir=await fetch('/api/v2/plans/'+this.planV3Current.id+'/items', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({kind:'node', node_id:d.node.id, geometry:{x,y},
+            coord_space:this._planV3CoordSpace(), label:d.node.name})});
+        const itemD=await ir.json();
+        if(ir.ok && parentItem){
+          await fetch('/api/v2/plans/'+this.planV3Current.id+'/edges', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({edge_id:d.edge.id, from_item_id:parentItem.id,
+                                   to_item_id:itemD.id, view_kind:'structural'})});
+        }
+      }
+      this.showToast('Отходящая линия добавлена', true);
+      this.planV3AddConsumerName='';
+      const id=this.structInspector.id;
+      await this._loadStructureLists();
+      if(this.planV3Current) await this.selectPlanV3(this.planV3Current.id);
+      await this.openInspectorInPlace('node', id);
+    }catch(e){ this.planV3AddConsumerError='Ошибка сети: '+e; }
+  },
+
+  // --- отрисовка ---
+  _planV3ItemLayerFor(item, height){
+    // Зона (учётная группа) — контур-полигон, кликом только подсказка,
+    // без своей карточки (сама группа управляется на «Структуре»).
+    if(item.kind==='group' && Array.isArray(item.geometry)){
+      if(item.geometry.length<3) return null;
+      const latlngs=item.geometry.map(([x,y])=>this._planV3XyToLatLng(x,y,height));
+      const color=_planCssVar('--accent2');
+      const layer=L.polygon(latlngs, {color, fillColor:color, fillOpacity:.18, weight:2});
+      const group=(this.structGroups||[]).find(g=>g.id===item.group_id);
+      layer.on('click', (e)=>{
+        if(e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+        this.showToast(group?('Учётная группа: '+group.name):'Учётная группа', true);
+      });
+      return layer;
+    }
+    if(item.kind!=='node' || !item.geometry || typeof item.geometry.x!=='number') return null;
+    const node=(this.structNodes||[]).find(n=>n.id===item.node_id);
+    const colors={source:'#4fa8f5', panel:'#3dd6c0', junction:'#9aa0a8', load:'#f0a83c'};
+    const color=colors[node?node.kind:'']||'#3dd6c0';
+    const latlng=this._planV3XyToLatLng(item.geometry.x, item.geometry.y, height);
+    const layer=L.circleMarker(latlng, {radius:9, color, fillColor:color, fillOpacity:.8, weight:2});
+    layer.on('click', (e)=>{
+      if(e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+      this._planV3OnNodeMarkerClick(item);
+    });
+    // Перетаскивание — как у Плана v2, всегда включено (нет отдельного
+    // режима редактирования — все действия здесь прямые).
+    if(layer.pm){
+      layer.pm.enableLayerDrag();
+      layer.on('pm:dragend', ()=>{ this._planV3OnItemDragEnd(item, layer.getLatLng(), height); });
+    }
+    return layer;
+  },
+  _planV3RenderItems(){
+    if(!_planV3Map || !this.planV3Current) return;
+    _planV3ItemLayers.forEach(l=>{ try{_planV3Map.removeLayer(l);}catch(e){} });
+    _planV3ItemLayers.clear();
+    _planV3EdgeLayers.forEach(l=>{ try{_planV3Map.removeLayer(l);}catch(e){} });
+    _planV3EdgeLayers.clear();
+
+    const [,H]=this._planV3EffectiveDims(this.planV3Current);
+    const items=this.planV3Current.items||[];
+    items.forEach(it=>{
+      const layer=this._planV3ItemLayerFor(it, H);
+      if(layer){ layer.addTo(_planV3Map); _planV3ItemLayers.set(String(it.id), layer); }
+    });
+
+    (this.planV3Current.edges||[]).forEach(v=>{
+      const fromIt=v.from_item_id!=null ? items.find(i=>i.id===v.from_item_id) : null;
+      const toIt=v.to_item_id!=null ? items.find(i=>i.id===v.to_item_id) : null;
+      if(!fromIt || !toIt || !fromIt.geometry || !toIt.geometry) return;
+      const latlngs=[this._planV3XyToLatLng(fromIt.geometry.x, fromIt.geometry.y, H),
+                     this._planV3XyToLatLng(toIt.geometry.x, toIt.geometry.y, H)];
+      const edge=(this.structEdges||[]).find(e2=>e2.id===v.edge_id);
+      const color=edge && edge.primary_point_id ? _planCssVar('--ok') : '#e0995f';
+      const line=L.polyline(latlngs, {color, weight:3});
+      line.on('click', (e)=>{
+        if(e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+        // У линии нет своей карточки в Плане v3 — счётчик назначается
+        // из карточки узла (список «Линии этого узла»); клик по линии
+        // открывает карточку узла-источника, откуда она видна.
+        if(edge) this.openInspectorInPlace('node', edge.from_node_id);
+      });
+      line.addTo(_planV3Map);
+      _planV3EdgeLayers.set(String(v.id), line);
+    });
+  },
+  _planV3RenderBase(){
+    if(!_planV3Map || !this.planV3Current) return;
+    if(_planV3ImageLayer){ try{_planV3Map.removeLayer(_planV3ImageLayer);}catch(e){} _planV3ImageLayer=null; }
+    const pc=this.planV3Current;
+    const [W,H]=this._planV3EffectiveDims(pc);
+    const bounds=[[0,0],[H,W]];
+    if(pc.plan_kind==='floor'){
+      _planV3ImageLayer=L.imageOverlay('/api/v2/plans/'+pc.id+'/image', bounds).addTo(_planV3Map);
+    }else{
+      _planV3ImageLayer=L.rectangle(bounds, {color:_planCssVar('--line'), weight:1, fill:false, dashArray:'4,4'}).addTo(_planV3Map);
+    }
+    _planV3Map.fitBounds(bounds);
+    this._planV3RenderItems();
+  },
+
   showToast(msg, ok=true){
     clearTimeout(this._toastTimer);
     this.toast={msg,ok};
@@ -7316,6 +7948,10 @@ let _planV2ImageLayer=null;
 const _planV2ItemLayers=new Map();   // item_id (String) -> layer
 const _planV2EdgeLayers=new Map();   // edge_view_id (String) -> polyline
 let _planV2DrawLayer=null;           // временный слой линии во время рисования waypoints edge_view
+let _planV3Map=null;
+let _planV3ImageLayer=null;
+const _planV3ItemLayers=new Map();   // item_id (String) -> layer
+const _planV3EdgeLayers=new Map();   // plan_edge_view id (String) -> polyline
 function _planV2KindColor(kind){
   const colors={point:'#3dd6c0', location:'#8a7cff', group:'#f0a83c',
                 node:'#4fa8f5', port:'#e05fae', annotation:'#9aa0a8'};

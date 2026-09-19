@@ -507,6 +507,72 @@ def test_group_polygon_zone_accepted_point_polygon_still_rejected():
         db.close(); os.unlink(path)
 
 
+# ---------------------------------------------------------------------
+# §5 задания ("Состояния размещения/изолированности врут"): точка не
+# имеет своего узла в модели «Плана v3» — она измеряет линию, а линия
+# инцидентна узлу. placed_on_plan/no_plan должны считать точку
+# размещённой, если размещён (kind='node') любой из узлов измеряемой ею
+# линии — раньше (до этого фикса) это работало только для СВОЕГО узла
+# точки из отменённого простого режима, которого «План v3» не заводит,
+# и точка неизменно показывалась "не размещена", хотя на карте видна
+# линия, которую она измеряет.
+# ---------------------------------------------------------------------
+
+def test_placed_on_plan_true_via_measured_edge_node_and_false_without_it():
+    client, db, path = make_client_with_plans()
+    try:
+        r = client.post("/api/v2/plans", data={
+            "name": "Тестовый план", "plan_kind": "single_line",
+            "canvas_width": "1000", "canvas_height": "800"})
+        assert r.status_code == 201, r.get_json()
+        plan_id = r.get_json()["id"]
+
+        n_in = _make_node(client, "n-in", "Ввод", "source")
+        n_panel = _make_node(client, "n-panel", "Щит", "panel")
+        r = _connect(client, n_in["id"], n_panel["id"])
+        assert r.status_code == 201, r.get_json()
+        e_in = r.get_json()
+
+        p_in = _make_point(client, "p-in", "Счётчик ввода")
+        r = _set_meter_on_edge(client, e_in["id"], p_in["id"])
+        assert r.status_code == 200, r.get_json()
+
+        # ДО размещения узла на карте — точка НЕ считается размещённой,
+        # "нет плана" видна в сводке (placed_on_plan/location_path и т.п.
+        # отдаёт /api/v2/structure/points, а не голый /api/v2/points —
+        # см. api_v2.py v2_structure_points) -------------------------------
+        r = client.get("/api/v2/structure/points")
+        assert r.status_code == 200, r.get_json()
+        item = next(x for x in r.get_json()["points"] if x["point_id"] == p_in["id"])
+        assert item["placed_on_plan"] is False, item
+
+        r = client.get("/api/v2/validation")
+        assert r.status_code == 200, r.get_json()
+        no_plan_ids = {x["point_id"] for x in r.get_json()["points_without_plan"]}
+        assert p_in["id"] in no_plan_ids, r.get_json()["points_without_plan"]
+
+        # разместить узел ВВОДА на карте (как «Плана v3» — kind='node') —
+        # точка, измеряющая линию Ввод→Щит (инцидентную узлу «Ввод»),
+        # должна тут же стать "размещена" ---------------------------------
+        r = client.post(f"/api/v2/plans/{plan_id}/items", json={
+            "kind": "node", "node_id": n_in["id"],
+            "geometry": {"x": 50, "y": 50}, "coord_space": "canvas_xy_v2"})
+        assert r.status_code == 201, r.get_json()
+
+        r = client.get("/api/v2/structure/points")
+        item = next(x for x in r.get_json()["points"] if x["point_id"] == p_in["id"])
+        assert item["placed_on_plan"] is True, item
+
+        r = client.get("/api/v2/validation")
+        no_plan_ids = {x["point_id"] for x in r.get_json()["points_without_plan"]}
+        assert p_in["id"] not in no_plan_ids, r.get_json()["points_without_plan"]
+
+        print("[OK] placed_on_plan/no_plan для «Плана v3»: точка размещена, "
+              "если размещён любой из узлов измеряемой ею линии (§5 задания)")
+    finally:
+        db.close(); os.unlink(path)
+
+
 if __name__ == "__main__":
     test_e2e_input_panel_two_metered_consumers_and_one_unmetered_line()
     test_cycle_rejected_in_node_terms_and_legit_connection_still_works()
@@ -515,4 +581,5 @@ if __name__ == "__main__":
     test_point_already_measures_another_edge_rejected_and_reassign_works()
     test_node_rename_and_location_text_and_empty_name_rejected()
     test_group_polygon_zone_accepted_point_polygon_still_rejected()
+    test_placed_on_plan_true_via_measured_edge_node_and_false_without_it()
     print("\nВсе тесты «Плана v3» (Шаг 39) пройдены.")

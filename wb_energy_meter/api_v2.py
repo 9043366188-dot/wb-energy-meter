@@ -1560,6 +1560,16 @@ def register_v2_routes(app, state, json_response):
                     pid = simple_mode_service.point_id_from_node_code(n.code)
                     if pid is not None:
                         plan_point_ids.add(pid)
+            # «План v3» (партия 6, §5 задания: "с переходом на узлы логика
+            # меняется"): точка измеряет ЛИНИЮ (electrical_edges.primary_
+            # point_id), а не имеет "свой" узел, как в (уже отменённом)
+            # простом режиме выше, — она физически нанесена на план, если
+            # размещён (kind='node') любой из двух узлов линии, которую
+            # она измеряет.
+            for e in _edge_repo().list_active_published():
+                if e.primary_point_id is not None and (
+                        e.from_node_id in plan_node_ids or e.to_node_id in plan_node_ids):
+                    plan_point_ids.add(e.primary_point_id)
 
         q = (request.args.get("q") or "").strip().casefold()
         items = []
@@ -1652,6 +1662,28 @@ def register_v2_routes(app, state, json_response):
                     "WHERE kind = 'point' AND point_id IS NOT NULL "
                     "AND archived_at IS NULL").fetchall()
             }
+            plan_node_ids = {
+                row["node_id"] for row in c.execute(
+                    "SELECT DISTINCT node_id FROM plan_items "
+                    "WHERE kind = 'node' AND node_id IS NOT NULL "
+                    "AND archived_at IS NULL").fetchall()
+            }
+        # «План v3» (партия 6, §5 задания: "с переходом на узлы логика
+        # меняется") — то же расширение, что и у /api/v2/points
+        # (v2_points_list выше): точка измеряет линию, а не имеет свой
+        # узел; физически нанесена на план, если размещён любой из двух
+        # узлов линии, которую она измеряет (плюс старый запасной путь
+        # простого режима — «свой» узел точки, если он существует).
+        if plan_node_ids:
+            for n in node_repo.list_all(include_archived=True):
+                if n.id in plan_node_ids:
+                    pid = simple_mode_service.point_id_from_node_code(n.code)
+                    if pid is not None:
+                        plan_point_ids.add(pid)
+            for e in published_edges:
+                if e.primary_point_id is not None and (
+                        e.from_node_id in plan_node_ids or e.to_node_id in plan_node_ids):
+                    plan_point_ids.add(e.primary_point_id)
 
         # §8.2 (задача 4, известное поведение): точка ввода не обязана
         # состоять в ветвях/группах — это не забытая настройка, а
