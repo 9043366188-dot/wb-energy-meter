@@ -88,6 +88,7 @@ from .point_repo import MeteringPointRepo, MeterSourceRepo
 from .topology_service import (
     ElectricalNodeRepo, ElectricalEdgeRepo, TopologyConflict,
 )
+from . import simple_mode_service
 from .aggregates_repo import AggregateRepo
 from .periods import parse_user_datetime
 from .plan_repo import read_plan_image
@@ -152,8 +153,8 @@ def register_v2_routes(app, state, json_response):
     def _plan_edge_view_repo(): return PlanEdgeViewRepo(db)
     def _group_repo_v2(): return GroupRepoV2(db)
 
-    def _point_to_dict(p):
-        return {
+    def _point_to_dict(p, power_supply=None):
+        out = {
             "id": p.id, "code": p.code, "name": p.name,
             "description": p.description,
             "installation_location_id": p.installation_location_id,
@@ -162,6 +163,16 @@ def register_v2_routes(app, state, json_response):
             "archived_at": p.archived_at,
             "created_at": p.created_at, "updated_at": p.updated_at,
         }
+        # Партия 6 (простой режим, docs/TZ-batch6-simple-mode.md §2):
+        # "ввод"/"питается от" — read-only проекция опубликованного графа
+        # electrical_edges/electrical_nodes (см. simple_mode_service),
+        # НЕ отдельное поле в metering_points. Присутствует только там,
+        # где вызывающий код явно его посчитал (карточка точки) — не в
+        # каждом _point_to_dict(), чтобы не давать по паре лишних запросов
+        # к БД на каждую строку списка /api/v2/points.
+        if power_supply is not None:
+            out["power_supply"] = power_supply
+        return out
 
     def _location_to_dict(l):
         return {
@@ -311,6 +322,10 @@ def register_v2_routes(app, state, json_response):
         out["configuration_revision"] = new_rev
         return json_response(out, 201)
 
+    def _point_power_supply(point_id):
+        return simple_mode_service.describe_power_supply(
+            _node_repo(), _edge_repo(), point_id)
+
     @app.route("/api/v2/points/<int:point_id>", methods=["GET", "PATCH"])
     def v2_point_detail(point_id):
         repo = _point_repo()
@@ -320,7 +335,7 @@ def register_v2_routes(app, state, json_response):
             return json_response(body, status)
 
         if request.method == "GET":
-            return json_response(_point_to_dict(p))
+            return json_response(_point_to_dict(p, power_supply=_point_power_supply(point_id)))
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
 
@@ -341,6 +356,21 @@ def register_v2_routes(app, state, json_response):
                 # PATCH это поле не принимал вообще (см. update_fields).
                 result = repo.update_fields(
                     point_id, installation_location_id=data.get("installation_location_id"))
+            if "is_input" in data or "fed_from_point_id" in data:
+                # Партия 6, задача 1 (простой режим, §2): "ввод"/"питается
+                # от" — интерфейсный слой поверх узлов/связей, см.
+                # simple_mode_service.apply_power_supply. Читаем текущее
+                # состояние там, где явно НЕ передано, чтобы одиночная
+                # смена is_input не сбрасывала fed_from_point_id (и
+                # наоборот) — PATCH меняет только присланные поля, как и
+                # везде в этом маршруте.
+                current = simple_mode_service.describe_power_supply(
+                    _node_repo(), _edge_repo(), point_id)
+                is_input = bool(data["is_input"]) if "is_input" in data                     else current["is_input"]
+                fed_from_point_id = data.get("fed_from_point_id")                     if "fed_from_point_id" in data else current["fed_from_point_id"]
+                result = simple_mode_service.apply_power_supply(
+                    repo, _node_repo(), _edge_repo(), point_id,
+                    is_input, fed_from_point_id)
             return result
 
         try:
@@ -349,10 +379,13 @@ def register_v2_routes(app, state, json_response):
                 touched=[("metering_point", point_id)])
         except GlobalRevisionConflict as e:
             return _revision_conflict(e, ids=[point_id])
+        except simple_mode_service.SimpleModeConflict as e:
+            body, status = _err("simple_mode_conflict", str(e), 409, ids=[point_id])
+            return json_response(body, status)
         except ValueError as e:
             body, status = _err("bad_request", str(e), 400)
             return json_response(body, status)
-        out = _point_to_dict(repo.get_by_id(point_id))
+        out = _point_to_dict(repo.get_by_id(point_id), power_supply=_point_power_supply(point_id))
         out["configuration_revision"] = new_rev
         return json_response(out)
 
@@ -1355,6 +1388,11 @@ def register_v2_routes(app, state, json_response):
                 cur_id = loc.parent_id
             return " / ".join(reversed(parts)) if parts else None
 
+        all_points = point_repo.list_all(include_archived=False)
+        power_supply_by_id = simple_mode_service.bulk_describe_power_supply(
+            _node_repo(), _edge_repo(), [p.id for p in all_points])
+        points_by_id = {p.id: p for p in all_points}
+
         with db.read() as c:
             plan_point_ids = {
                 row["point_id"] for row in c.execute(
@@ -1362,10 +1400,30 @@ def register_v2_routes(app, state, json_response):
                     "WHERE kind = 'point' AND point_id IS NOT NULL "
                     "AND archived_at IS NULL").fetchall()
             }
+            # Партия 6, задача 5 (баг из браузера, §5: "Состояния
+            # размещения врут" — api_v2.py, "считаются только элементы
+            # kind='point'"): точка, чей СОБСТВЕННЫЙ узел (заведённый
+            # простым режимом, см. simple_mode_service) размещён на плане
+            # как kind='node' (подробный режим это позволяет — узел точки
+            # не отличить от любого другого на плане), тоже физически
+            # нанесена на план — раньше в этом случае placed_on_plan лгала
+            # "нет", хотя метка на карте есть.
+            plan_node_ids = {
+                row["node_id"] for row in c.execute(
+                    "SELECT DISTINCT node_id FROM plan_items "
+                    "WHERE kind = 'node' AND node_id IS NOT NULL "
+                    "AND archived_at IS NULL").fetchall()
+            }
+        if plan_node_ids:
+            for n in _node_repo().list_all(include_archived=True):
+                if n.id in plan_node_ids:
+                    pid = simple_mode_service.point_id_from_node_code(n.code)
+                    if pid is not None:
+                        plan_point_ids.add(pid)
 
         q = (request.args.get("q") or "").strip().casefold()
         items = []
-        for p in point_repo.list_all(include_archived=False):
+        for p in all_points:
             binding = binding_repo.get_open_primary(p.id)
             meter_device_id = meter_controller_key = meter_serial = None
             if binding is not None:
@@ -1386,6 +1444,11 @@ def register_v2_routes(app, state, json_response):
                 if q not in searchable:
                     continue
 
+            power_supply = power_supply_by_id.get(
+                p.id, {"is_input": False, "fed_from_point_id": None})
+            fed_from_point_id = power_supply.get("fed_from_point_id")
+            fed_from_point = points_by_id.get(fed_from_point_id) if fed_from_point_id else None
+
             items.append({
                 "point_id": p.id, "code": p.code, "name": p.name,
                 "enabled": bool(p.enabled),
@@ -1396,6 +1459,9 @@ def register_v2_routes(app, state, json_response):
                 "meter_controller_key": meter_controller_key,
                 "meter_serial": meter_serial,
                 "placed_on_plan": p.id in plan_point_ids,
+                "is_input": power_supply["is_input"],
+                "fed_from_point_id": fed_from_point_id,
+                "fed_from_point_name": fed_from_point.name if fed_from_point else None,
             })
 
         return json_response({"points": items})
@@ -2162,6 +2228,13 @@ def register_v2_routes(app, state, json_response):
         try:
             item = repo.update_geometry(item_id, data["geometry"], data.get("coord_space"))
         except PlanError as e:
+            body, status = _err("bad_request", str(e), 400)
+            return json_response(body, status)
+        except ValueError as e:
+            # geometry-валидация (plan_geo_v2) кидает голый ValueError, а не
+            # PlanError — тот же паттерн, что и в POST .../items выше; без
+            # этого перехвата ошибка валидации превращалась в 500 (найдено
+            # тестом полигонов мест, партия 6, задача 2).
             body, status = _err("bad_request", str(e), 400)
             return json_response(body, status)
         return json_response(_plan_item_to_dict(item))
