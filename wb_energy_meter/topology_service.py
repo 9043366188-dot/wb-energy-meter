@@ -36,6 +36,7 @@ from . import domain_generation
 log = logging.getLogger(__name__)
 
 VALID_NODE_KINDS = ("source", "panel", "junction", "load")
+_UNSET_NODE = object()  # см. ElectricalNodeRepo.update_fields.location_id
 
 
 class TopologyConflict(ValueError):
@@ -273,6 +274,40 @@ class ElectricalNodeRepo:
             domain_generation.mark_v2_domain_write(c)
         return self.get_by_id(node_id)
 
+    def update_fields(self, node_id, *, name=None, location_id=_UNSET_NODE):
+        """Переименовать узел / сменить место (партия 6, «План v3», §2:
+        карточка узла редактируется на месте — «где стоит» приходит сюда
+        уже разрешённым в location_id, поиск/заведение места по
+        свободному тексту делает вызывающий код api_v2.py, не репозиторий).
+        location_id=_UNSET_NODE (по умолчанию) значит «не менять»;
+        location_id=None — явно снять место (в отличие от «не менять» —
+        нужен отдельный маркер, как и у installation_location_id точек)."""
+        if name is None and location_id is _UNSET_NODE:
+            return self.get_by_id(node_id)
+        if self.get_by_id(node_id) is None:
+            raise ValueError(f"Узел {node_id} не найден")
+        if name is not None:
+            name = validate_name(name)
+        now = int(time.time())
+        set_parts = ["updated_at = ?"]
+        params = [now]
+        if name is not None:
+            set_parts.append("name = ?")
+            params.append(name)
+        if location_id is not _UNSET_NODE:
+            set_parts.append("location_id = ?")
+            params.append(location_id)
+        params.append(node_id)
+        with self._db.transaction() as c:
+            if location_id is not _UNSET_NODE and location_id is not None and c.execute(
+                "SELECT 1 FROM locations WHERE id = ?", (location_id,)
+            ).fetchone() is None:
+                raise ValueError(f"Место {location_id} не найдено")
+            c.execute(
+                f"UPDATE electrical_nodes SET {', '.join(set_parts)} WHERE id = ?",
+                params)
+        return self.get_by_id(node_id)
+
     def archive(self, node_id, at=None):
         now = at or int(time.time())
         with self._db.transaction() as c:
@@ -480,6 +515,42 @@ class ElectricalEdgeRepo:
             edge_ids, len(superseded)
         )
         return [self.get_by_id(eid) for eid in edge_ids]
+
+    def set_primary_point(self, edge_id, point_id, at=None):
+        """Назначить/снять измеряющую точку у СУЩЕСТВУЮЩЕЙ связи (партия
+        6, «План v3», §1: «действие поставить сюда счётчик спрашивает,
+        на какую линию»). До этой партии primary_point_id задавался
+        только один раз, при создании черновика (add_draft) — изменить
+        его у уже существующей связи (в том числе опубликованной) было
+        нечем. point_id=None снимает измерение с линии (линия без
+        счётчика допустима, §1 большого ТЗ).
+
+        Уникальность «одна точка — максимум одна ДЕЙСТВУЮЩАЯ связь»
+        (idx_electrical_edges_one_point, только для state='published' И
+        valid_to IS NULL) уже гарантирована схемой — здесь она только
+        транслируется в понятный ValueError вместо голого
+        sqlite3.IntegrityError."""
+        now = at or int(time.time())
+        with self._db.transaction() as c:
+            row = c.execute(
+                "SELECT * FROM electrical_edges WHERE id = ?", (edge_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Связь {edge_id} не найдена")
+            try:
+                c.execute(
+                    "UPDATE electrical_edges SET primary_point_id = ?, "
+                    "updated_at = ? WHERE id = ?",
+                    (point_id, now, edge_id)
+                )
+            except Exception as e:
+                if "unique" in str(e).lower():
+                    raise ValueError(
+                        "Эта точка уже измеряет другую действующую линию — "
+                        "сначала снимите её оттуда"
+                    ) from None
+                raise
+        return self.get_by_id(edge_id)
 
     def retire_edge(self, edge_id, at=None):
         """Закрыть опубликованную связь без замены (узел временно теряет

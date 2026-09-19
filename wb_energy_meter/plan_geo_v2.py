@@ -156,20 +156,30 @@ def _validate_polygon(points: Any, width: Optional[float], height: Optional[floa
         _validate_xy_pair(pt, width, height, f"{what}[{idx}]")
 
 
+_POLYGON_ALLOWED_KINDS = ("location", "group")
+
+
 def validate_plan_item_geometry(geometry: Any, coord_space: str,
                                  width: Optional[float], height: Optional[float],
                                  kind: Optional[str] = None) -> None:
     """Валидация geometry для plan_item. По умолчанию (и для всех kind
-    кроме 'location') — одиночная точка {x,y}. Для kind='location'
+    кроме 'location'/'group') — одиночная точка {x,y}. Для kind='location'
     допускается ЛИБО точка (место как маркер), ЛИБО контур-полигон
     [[x,y],...] (место как область, партия 6 §3) — разрешаем список
-    ТОЛЬКО когда вызывающий код явно передал kind='location', чтобы не
-    ослабить валидацию для point/group/node/port/annotation, для
-    которых полигон физически не имеет смысла и раньше (до партии 6)
-    гарантированно отвергался."""
+    ТОЛЬКО когда вызывающий код явно передал подходящий kind, чтобы не
+    ослабить валидацию для point/node/port/annotation, для которых
+    полигон физически не имеет смысла и раньше гарантированно
+    отвергался.
+
+    kind='group' (зона учёта областью, «План v3» §2/§5 задания
+    docs/TZ-batch6-plan-v3.md: "Полигон схемой допущен, но
+    validate_plan_item_geometry принимает только точку — это
+    недоделка, исправить") добавлен партией «План v3» — схема
+    (plan_items.geometry TEXT) полигон для group допускала всегда,
+    просто здесь раньше был захардкожен ровно один kind."""
     if coord_space not in VALID_COORD_SPACES:
         raise ValueError(f"неизвестный coord_space: {coord_space!r}")
-    if kind == "location" and isinstance(geometry, (list, tuple)):
+    if kind in _POLYGON_ALLOWED_KINDS and isinstance(geometry, (list, tuple)):
         _validate_polygon(geometry, width, height, "geometry")
         return
     _validate_xy_obj(geometry, width, height, "geometry")

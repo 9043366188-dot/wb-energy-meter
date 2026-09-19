@@ -172,6 +172,9 @@ jobs:
       - name: "Run unit tests (v2: инлайн-переименование мест, партия 6)"
         run: python tests/test_step38_location_rename.py
 
+      - name: "Run unit tests (v2: План v3 — узлы на карте, партия 6)"
+        run: python tests/test_step39_plan_v3.py
+
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
 
@@ -263,6 +266,7 @@ jobs:
           python tests/test_step36_simple_mode.py
           python tests/test_step37_plan_polygons.py
           python tests/test_step38_location_rename.py
+          python tests/test_step39_plan_v3.py
 
   lint:
     name: Basic checks

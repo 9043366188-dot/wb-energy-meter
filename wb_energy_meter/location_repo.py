@@ -84,6 +84,24 @@ class LocationRepo:
             ).fetchone()
             return Location.from_row(row) if row else None
 
+    def get_by_name(self, name):
+        """Найти место по точному совпадению имени без учёта регистра
+        (казефолд-нормализация, см. грабли AGENTS.md про COLLATE NOCASE
+        и кириллицу) — партия 6, «План v3», §2: свободный текст «где
+        стоит узла» под капотом ищет/заводит место по имени, без
+        отдельного поля на electrical_nodes. Архивные места не
+        возвращает — вводить текст, совпадающий с архивным местом,
+        должно заводить новое, а не молча оживлять старое."""
+        name = (name or "").strip()
+        if not name:
+            return None
+        with self._db.read() as c:
+            row = c.execute(
+                "SELECT * FROM locations WHERE name_norm = py_casefold(?) "
+                "AND archived_at IS NULL LIMIT 1", (name,)
+            ).fetchone()
+            return Location.from_row(row) if row else None
+
     def list_all(self, include_archived=False):
         """Список всех мест, отсортировано по sort_order и имени.
 

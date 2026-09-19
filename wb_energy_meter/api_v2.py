@@ -89,6 +89,7 @@ from .topology_service import (
     ElectricalNodeRepo, ElectricalEdgeRepo, TopologyConflict,
 )
 from . import simple_mode_service
+from . import plan_v3_service
 from .aggregates_repo import AggregateRepo
 from .periods import parse_user_datetime
 from .plan_repo import read_plan_image
@@ -110,6 +111,7 @@ from .revision_service import (
 from dataclasses import asdict as _dataclass_asdict
 
 log = logging.getLogger(__name__)
+_UNSET = object()  # см. v2_topology_node_detail: "не менять" для location_id
 
 
 def _err(code, message, status, fields=None, ids=None, path=None):
@@ -863,6 +865,37 @@ def register_v2_routes(app, state, json_response):
             out = _node_to_dict(repo.get_by_id(node_id))
             out["configuration_revision"] = new_rev
             return json_response(out)
+
+        # «План v3», §2: карточка узла редактируется на месте — имя и
+        # свободный текст «где стоит» (под капотом ищет/заводит locations
+        # по имени, см. plan_v3_service.resolve_location_text). Раньше
+        # (до этой партии) у узла вообще не было ручки на изменение
+        # чего-либо, кроме archived.
+        if "name" in data or "location_text" in data or "location_id" in data:
+            def _mutate():
+                location_id = _UNSET
+                if "location_text" in data:
+                    loc = plan_v3_service.resolve_location_text(
+                        _location_repo(), data.get("location_text"))
+                    location_id = loc.id if loc is not None else None
+                elif "location_id" in data:
+                    location_id = data.get("location_id")
+                kwargs = {}
+                if location_id is not _UNSET:
+                    kwargs["location_id"] = location_id
+                return repo.update_fields(node_id, name=data.get("name"), **kwargs)
+            try:
+                _, new_rev = with_revision_check(
+                    db, data.get("expected_revision"), _mutate,
+                    touched=[("electrical_node", node_id)])
+            except GlobalRevisionConflict as e:
+                return _revision_conflict(e, ids=[node_id])
+            except ValueError as e:
+                body, status = _err("bad_request", str(e), 400, ids=[node_id])
+                return json_response(body, status)
+            out = _node_to_dict(repo.get_by_id(node_id))
+            out["configuration_revision"] = new_rev
+            return json_response(out)
         return json_response(_node_to_dict(repo.get_by_id(node_id)))
 
     @app.route("/api/v2/topology/edges", methods=["GET", "POST"])
@@ -914,6 +947,25 @@ def register_v2_routes(app, state, json_response):
                 _, new_rev = with_revision_check(
                     db, data.get("expected_revision"),
                     lambda: repo.retire_edge(edge_id, at=data.get("at")),
+                    touched=[("electrical_edge", edge_id)])
+            except GlobalRevisionConflict as e2:
+                return _revision_conflict(e2, ids=[edge_id])
+            except ValueError as e2:
+                body, status = _err("bad_request", str(e2), 400, ids=[edge_id])
+                return json_response(body, status)
+            out = _edge_to_dict(repo.get_by_id(edge_id))
+            out["configuration_revision"] = new_rev
+            return json_response(out)
+
+        # «План v3», §1: «поставить сюда счётчик» — назначить/снять
+        # измеряющую точку у уже существующей (в т.ч. опубликованной)
+        # связи. primary_point_id=None — снять измерение (линия без
+        # счётчика допустима, §1 задания).
+        if "primary_point_id" in data:
+            try:
+                _, new_rev = with_revision_check(
+                    db, data.get("expected_revision"),
+                    lambda: repo.set_primary_point(edge_id, data.get("primary_point_id")),
                     touched=[("electrical_edge", edge_id)])
             except GlobalRevisionConflict as e2:
                 return _revision_conflict(e2, ids=[edge_id])
@@ -983,6 +1035,88 @@ def register_v2_routes(app, state, json_response):
         return json_response(
             {"edges": [_edge_to_dict(e) for e in published],
              "configuration_revision": new_rev}, 200)
+
+    # ------------------------------------------- «План v3» (партия 6)
+    # docs/TZ-batch6-plan-v3.md: тонкий слой поверх ElectricalNodeRepo/
+    # ElectricalEdgeRepo — «соединить линией на карте» и «добавить
+    # отходящую линию» видны пользователю одним действием, а не
+    # «создать черновик» + отдельно «опубликовать»; конфликты леса —
+    # текстом по именам узлов, см. plan_v3_service.
+
+    @app.route("/api/v2/topology/edges/connect", methods=["POST"])
+    def v2_topology_edges_connect():
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        from_node_id = data.get("from_node_id")
+        to_node_id = data.get("to_node_id")
+        if from_node_id is None or to_node_id is None:
+            body, status = _err(
+                "bad_request", "требуются from_node_id и to_node_id", 400,
+                fields=["from_node_id", "to_node_id"])
+            return json_response(body, status)
+
+        def _mutate():
+            return plan_v3_service.connect_nodes(
+                _node_repo(), _edge_repo(), from_node_id, to_node_id,
+                code=data.get("code"), name=data.get("name"),
+                primary_point_id=data.get("primary_point_id"),
+                phase_count=data.get("phase_count"),
+                rated_current_a=data.get("rated_current_a"),
+                cable_note=data.get("cable_note"))
+
+        try:
+            edge, new_rev = with_revision_check(
+                db, data.get("expected_revision"), _mutate,
+                touched=[("electrical_edge", "new")])
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e, ids=[from_node_id, to_node_id])
+        except plan_v3_service.PlanV3Conflict as e:
+            body, status = _err("topology_conflict", str(e), 409,
+                                 ids=[from_node_id, to_node_id])
+            return json_response(body, status)
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400,
+                                 fields=["from_node_id", "to_node_id"])
+            return json_response(body, status)
+        out = _edge_to_dict(edge)
+        out["configuration_revision"] = new_rev
+        return json_response(out, 201)
+
+    @app.route("/api/v2/topology/nodes/<int:node_id>/add-consumer", methods=["POST"])
+    def v2_topology_node_add_consumer(node_id):
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        load_name = data.get("name")
+
+        def _mutate():
+            return plan_v3_service.add_consumer_line(
+                _node_repo(), _edge_repo(), node_id, load_name,
+                rated_current_a=data.get("rated_current_a"),
+                cable_note=data.get("cable_note"))
+
+        try:
+            (new_node, edge), new_rev = with_revision_check(
+                db, data.get("expected_revision"), _mutate,
+                touched=[("electrical_node", "new"), ("electrical_edge", "new")])
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e, ids=[node_id])
+        except plan_v3_service.PlanV3Conflict as e:
+            body, status = _err("topology_conflict", str(e), 409, ids=[node_id])
+            return json_response(body, status)
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400, ids=[node_id], fields=["name"])
+            return json_response(body, status)
+        out = {"node": _node_to_dict(new_node), "edge": _edge_to_dict(edge),
+               "configuration_revision": new_rev}
+        return json_response(out, 201)
+
+    @app.route("/api/v2/topology/nodes/<int:node_id>/lines", methods=["GET"])
+    def v2_topology_node_lines(node_id):
+        try:
+            lines = plan_v3_service.describe_node_lines(
+                _node_repo(), _edge_repo(), _point_repo(), node_id)
+        except ValueError as e:
+            body, status = _err("not_found", str(e), 404, ids=[node_id])
+            return json_response(body, status)
+        return json_response({"lines": lines})
 
     # ----------------------------------------------------- balance-scopes
 
