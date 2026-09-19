@@ -2107,8 +2107,10 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <option value="">— тип элемента —</option>
                   <option value="point">Точка учёта</option>
                   <option value="location">Место</option>
-                  <option value="node">Узел сети</option>
-                  <option value="port">Переход на другой план</option>
+                  <!-- Партия 6, задача 5 (§6): узел/переход-на-план — термины
+                       подробной схемы, скрыты в простом режиме. -->
+                  <option value="node" x-show="detailedMode">Узел сети</option>
+                  <option value="port" x-show="detailedMode">Переход на другой план</option>
                   <option value="annotation">Подпись</option>
                 </select>
                 <select x-show="planV2AddKind==='point'" x-model.number="planV2AddRefId">
@@ -2123,13 +2125,13 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     <option :value="l.id" x-text="l.name"></option>
                   </template>
                 </select>
-                <select x-show="planV2AddKind==='node' || planV2AddKind==='port'" x-model.number="planV2AddRefId">
+                <select x-show="detailedMode && (planV2AddKind==='node' || planV2AddKind==='port')" x-model.number="planV2AddRefId">
                   <option value="">— узел —</option>
                   <template x-for="n in planV2Nodes" :key="n.id">
                     <option :value="n.id" x-text="n.name"></option>
                   </template>
                 </select>
-                <select x-show="planV2AddKind==='port'" x-model.number="planV2AddTargetPlanId">
+                <select x-show="detailedMode && planV2AddKind==='port'" x-model.number="planV2AddTargetPlanId">
                   <option value="">— ведёт на план (необязательно) —</option>
                   <template x-for="p in planV2Plans" :key="p.id">
                     <option :value="p.id" x-text="p.name"></option>
@@ -2137,10 +2139,17 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 </select>
                 <input type="text" placeholder="Подпись (необязательно)" x-model="planV2AddLabel"
                        x-show="planV2AddKind">
-                <button class="btn btn-sm btn-primary" x-show="planV2AddKind && !planV2Placing"
-                        @click="planV2StartPlace()">Разместить на карте</button>
+                <button class="btn btn-sm btn-primary" x-show="planV2AddKind && !planV2Placing && !planV2PlacingPolygon"
+                        @click="planV2StartPlace()">Разместить на карте (точкой)</button>
+                <!-- Партия 6, задача 2 (§3): контур места — мышью, поверх
+                     уже существующего одноклик-плейсмента выше (место
+                     по-прежнему можно поставить и просто точкой-меткой). -->
+                <button class="btn btn-sm btn-secondary" x-show="planV2AddKind==='location' && !planV2Placing && !planV2PlacingPolygon"
+                        @click="planV2StartPlacePolygon()">Нарисовать контур</button>
                 <div class="muted" x-show="planV2Placing">Кликните на плане, чтобы поставить метку.</div>
+                <div class="muted" x-show="planV2PlacingPolygon">Обрисуйте место на плане: клик — точка контура, двойной клик — завершить, Esc — отменить.</div>
                 <button class="btn btn-sm btn-secondary" x-show="planV2Placing" @click="planV2CancelPlace()">Отмена</button>
+                <button class="btn btn-sm btn-secondary" x-show="planV2PlacingPolygon" @click="planV2CancelPlacePolygon()">Отмена</button>
               </div>
 
               <h3 style="margin-top:14px">Элементы на плане</h3>
@@ -2155,41 +2164,50 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <div class="muted" x-show="!_planV2EffectiveItems().length">Элементов пока нет.</div>
               </div>
 
-              <h3 style="margin-top:14px">Связи (edge_views)</h3>
-              <div class="plan-zone-list">
-                <template x-for="v in _planV2EffectiveEdgeViews()" :key="v.id">
-                  <div class="plan-zone-row" style="cursor:pointer"
-                       @click="_planV2SelectEdgeView(v)">
-                    <span class="pzr-name" x-text="planV2EdgeViewLabel(v)+(v.waypoints?' 🖊':'')"></span>
-                    <button class="btn btn-sm btn-danger" @click.stop="planV2RemoveEdgeView(v)">✕</button>
+              <!-- Партия 6, задача 5 (§6): связи (edge_views) на плане —
+                   термины подробной схемы, скрыты в простом режиме целиком
+                   (список, добавление, форма). Ничего не меняется в данных
+                   при переключении — уже нанесённые связи просто не
+                   показываются, пока включение обратно их не откроет. -->
+              <template x-if="detailedMode">
+                <div>
+                  <h3 style="margin-top:14px">Связи (edge_views)</h3>
+                  <div class="plan-zone-list">
+                    <template x-for="v in _planV2EffectiveEdgeViews()" :key="v.id">
+                      <div class="plan-zone-row" style="cursor:pointer"
+                           @click="_planV2SelectEdgeView(v)">
+                        <span class="pzr-name" x-text="planV2EdgeViewLabel(v)+(v.waypoints?' 🖊':'')"></span>
+                        <button class="btn btn-sm btn-danger" @click.stop="planV2RemoveEdgeView(v)">✕</button>
+                      </div>
+                    </template>
+                    <div class="muted" x-show="!_planV2EffectiveEdgeViews().length">Связей пока нет.</div>
                   </div>
-                </template>
-                <div class="muted" x-show="!_planV2EffectiveEdgeViews().length">Связей пока нет.</div>
-              </div>
-              <button class="btn btn-sm" :class="planV2AddingEdgeView?'btn-secondary':'btn-primary'"
-                      @click="planV2ToggleAddingEdgeView()"
-                      x-text="planV2AddingEdgeView?'Отменить добавление связи':'Добавить связь'"></button>
-              <template x-if="planV2AddingEdgeView">
-                <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
-                  <select x-model.number="planV2EdgeForm.edgeId">
-                    <option value="">— электрическая связь (edge) —</option>
-                    <template x-for="e in planV2Edges" :key="e.id">
-                      <option :value="e.id" x-text="(e.code||('#'+e.id))+' '+(e.name||'')"></option>
-                    </template>
-                  </select>
-                  <select x-model="planV2EdgeForm.fromItemKey">
-                    <option value="">— откуда (необязательно) —</option>
-                    <template x-for="it in planV2NodeLikeItems()" :key="it.id">
-                      <option :value="String(it.id)" x-text="it.label||('элемент '+it.id)"></option>
-                    </template>
-                  </select>
-                  <select x-model="planV2EdgeForm.toItemKey">
-                    <option value="">— куда (необязательно) —</option>
-                    <template x-for="it in planV2NodeLikeItems()" :key="it.id">
-                      <option :value="String(it.id)" x-text="it.label||('элемент '+it.id)"></option>
-                    </template>
-                  </select>
-                  <button class="btn btn-primary btn-sm" @click="planV2SaveEdgeDraft()">Добавить в черновик</button>
+                  <button class="btn btn-sm" :class="planV2AddingEdgeView?'btn-secondary':'btn-primary'"
+                          @click="planV2ToggleAddingEdgeView()"
+                          x-text="planV2AddingEdgeView?'Отменить добавление связи':'Добавить связь'"></button>
+                  <template x-if="planV2AddingEdgeView">
+                    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+                      <select x-model.number="planV2EdgeForm.edgeId">
+                        <option value="">— электрическая связь (edge) —</option>
+                        <template x-for="e in planV2Edges" :key="e.id">
+                          <option :value="e.id" x-text="(e.code||('#'+e.id))+' '+(e.name||'')"></option>
+                        </template>
+                      </select>
+                      <select x-model="planV2EdgeForm.fromItemKey">
+                        <option value="">— откуда (необязательно) —</option>
+                        <template x-for="it in planV2NodeLikeItems()" :key="it.id">
+                          <option :value="String(it.id)" x-text="it.label||('элемент '+it.id)"></option>
+                        </template>
+                      </select>
+                      <select x-model="planV2EdgeForm.toItemKey">
+                        <option value="">— куда (необязательно) —</option>
+                        <template x-for="it in planV2NodeLikeItems()" :key="it.id">
+                          <option :value="String(it.id)" x-text="it.label||('элемент '+it.id)"></option>
+                        </template>
+                      </select>
+                      <button class="btn btn-primary btn-sm" @click="planV2SaveEdgeDraft()">Добавить в черновик</button>
+                    </div>
+                  </template>
                 </div>
               </template>
             </div>
@@ -3602,6 +3620,28 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     </div>
   </template>
 
+  <!-- Партия 6, задача 2 (§3): "точка попала в контур места — предложить
+       отнести, никогда не молча". Тот же confirm-overlay/-box, что и
+       остальные подтверждения на планах — единственный способ, которым
+       эта подсказка вообще может что-то сохранить: без явного "Да"
+       installation_location_id точки не меняется. -->
+  <template x-if="planV2LocationAssignProposal">
+    <div class="confirm-overlay">
+      <div class="confirm-box">
+        <h3>Отнести точку к месту?</h3>
+        <p>
+          Точка <b x-text="planV2LocationAssignProposal.pointName"></b> оказалась внутри
+          контура места <b x-text="planV2LocationAssignProposal.locationName"></b>.<br><br>
+          Назначить это место точке как место установки?
+        </p>
+        <div class="actions">
+          <button class="btn btn-secondary" @click="planV2DeclineLocationAssign()">Нет, оставить как есть</button>
+          <button class="btn btn-primary" @click="planV2ConfirmLocationAssign()">Да, назначить</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
   <!-- CONFIRM DELETE PLAN (ТЗ v0.11.0) -->
   <template x-if="planConfirmDeletePlan">
     <div class="confirm-overlay">
@@ -3804,6 +3844,10 @@ function app(){ return {
   planV2ConfirmDiscard:false, planV2RevisionConflict:false,
   planV2Placing:false, planV2AddKind:'', planV2AddRefId:'',
   planV2AddTargetPlanId:'', planV2AddLabel:'', planV2NewItemSeq:0,
+  // Партия 6, задача 2 (§3) — контур места рисуется отдельным потоком от
+  // одноклик-плейсмента точек/узлов выше; planV2LocationAssignProposal —
+  // диалог подтверждения "точка попала в контур места, отнести?".
+  planV2PlacingPolygon:false, planV2LocationAssignProposal:null,
   planV2AddingEdgeView:false, planV2NewEdgeSeq:0,
   planV2EdgeForm:{edgeId:'', fromItemKey:'', toItemKey:''},
   // Рисование waypoints для edge_view через leaflet-geoman (по образцу
@@ -3917,6 +3961,7 @@ function app(){ return {
       if(ev.key!=='Escape') return;
       if(this.planDrawingGroupId!==null) this.cancelZoneDraw();
       if(this.planV2DrawingEdgeKey!==null) this.planV2CancelDrawWaypoints();
+      if(this.planV2PlacingPolygon) this.planV2CancelPlacePolygon();
     });
   },
   async loadChannelDictionary(){
@@ -6769,6 +6814,11 @@ function app(){ return {
     this.planV2Draft.items[key]={...base, op:'upsert',
       geometry:{x,y}, coord_space:effItem.coord_space};
     this._planV2RenderItems();
+    // Партия 6, задача 2 (§3): перетащили метку точки внутрь контура
+    // места — предложить (с подтверждением) отнести точку к этому месту.
+    if(effItem.kind==='point' && effItem.point_id!=null){
+      this._planV2ProposePointLocationIfInside({point_id:effItem.point_id, geometry:{x,y}});
+    }
   },
   planV2RemoveItem(effItem){
     if(!effItem) return;
@@ -6825,6 +6875,11 @@ function app(){ return {
     this.planV2AddKind=''; this.planV2AddRefId=''; this.planV2AddLabel=''; this.planV2AddTargetPlanId='';
     this._planV2RenderItems();
     this.showToast('Элемент добавлен в черновик', true);
+    // Партия 6, задача 2 (§3): поставили метку точки внутрь контура
+    // места — предложить (с подтверждением) отнести точку к этому месту.
+    if(rec.kind==='point' && rec.point_id!=null){
+      this._planV2ProposePointLocationIfInside({point_id:rec.point_id, geometry:{x,y}});
+    }
   },
 
   // --- edge_views: связи на плане (§7.1/§7.3) ---
@@ -6977,7 +7032,109 @@ function app(){ return {
       _planV2DrawLayer=e.layer;
       if(_planV2DrawLayer.pm) _planV2DrawLayer.pm.enable({allowSelfIntersection:false});
       this.planV2HasPendingEdgeDraw=true;
+    }else if(e.shape==='Polygon' && this.planV2PlacingPolygon){
+      // Партия 6, задача 2 (§3): контур места на плане v2 — рисуется тем
+      // же geoman-инструментом Polygon, что и legacy-зоны (startZoneDraw
+      // выше), но здесь коммитится в черновик сразу по завершении рисования
+      // (тот же стиль, что и одиночная точка в _planV2OnMapClick), а не
+      // ждёт отдельной кнопки "Сохранить" — контур редактировать вершины
+      // после рисования незачем, у него нет отдельного шага правки.
+      const rings=e.layer.getLatLngs();
+      const ring=Array.isArray(rings[0]) ? rings[0] : rings;
+      try{_planV2Map.removeLayer(e.layer);}catch(err){}
+      if(_planV2Map && _planV2Map.pm) _planV2Map.pm.disableDraw('Polygon');
+      if(_planV2Map && _planV2Map.doubleClickZoom) _planV2Map.doubleClickZoom.enable();
+      this.planV2PlacingPolygon=false;
+      if(ring.length<3){ this.showToast('Контур должен содержать минимум 3 точки', false); return; }
+      const [W,H]=this._planV2EffectiveDims(this.planV2Current);
+      const coordSpace=this.planV2Current.plan_kind==='floor' ? 'image_px_xy_v2' : 'canvas_xy_v2';
+      const geometry=ring.map(ll=>this._planV2LatLngToXy(ll, H));
+      this._planV2PushHistory();
+      const key='new:'+(++this.planV2NewItemSeq);
+      this.planV2Draft.items[key]={op:'upsert', kind:'location', geometry, coord_space:coordSpace,
+        label:this.planV2AddLabel||null, point_id:null, location_id:this.planV2AddRefId,
+        group_id:null, node_id:null, target_plan_id:null};
+      this.planV2AddKind=''; this.planV2AddRefId=''; this.planV2AddLabel='';
+      this._planV2RenderItems();
+      this.showToast('Контур места добавлен в черновик', true);
+      // Партия 6, задача 2 (§3): марш нанесённых точек может теперь
+      // попадать внутрь этого нового контура — предложим (с явным
+      // подтверждением, никогда не молча) отнести их к месту.
+      this._planV2ProposeAssignForPointsInPolygon(key);
     }
+  },
+  // Партия 6, задача 2 (§3): "когда метка точки попадает внутрь
+  // контура места — ПРЕДЛОЖИТЬ отнести точку к этому месту, с явным
+  // подтверждением, никогда не молча". Только предлагает — пишет
+  // installation_location_id (существующая ручка PATCH .../points/<id>,
+  // не новая) только по явному "Да" пользователя.
+  _planV2PointInPolygon(x, y, ring){
+    let inside=false;
+    for(let i=0,j=ring.length-1;i<ring.length;j=i++){
+      const xi=ring[i][0], yi=ring[i][1], xj=ring[j][0], yj=ring[j][1];
+      const intersect=((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi);
+      if(intersect) inside=!inside;
+    }
+    return inside;
+  },
+  _planV2FindContainingLocation(x, y){
+    const items=this._planV2EffectiveItems().filter(it=>
+      it.kind==='location' && Array.isArray(it.geometry) && it.geometry.length>=3 && it.location_id!=null);
+    return items.find(it=>this._planV2PointInPolygon(x, y, it.geometry)) || null;
+  },
+  _planV2ProposePointLocationIfInside(pointRef){
+    const loc=this._planV2FindContainingLocation(pointRef.geometry.x, pointRef.geometry.y);
+    if(!loc) return;
+    const structPoint=(this.structPoints||[]).find(p=>p.point_id===pointRef.point_id);
+    if(structPoint && structPoint.location_id===loc.location_id) return; // уже так и есть — предлагать нечего
+    const planPoint=(this.planV2Points||[]).find(p=>p.id===pointRef.point_id);
+    const planLoc=(this.planV2Locations||[]).find(l=>l.id===loc.location_id);
+    this.planV2LocationAssignProposal={
+      pointId: pointRef.point_id,
+      pointName: (planPoint&&planPoint.name) || (structPoint&&structPoint.name) || ('#'+pointRef.point_id),
+      locationId: loc.location_id,
+      locationName: (planLoc&&planLoc.name) || ('#'+loc.location_id),
+    };
+  },
+  _planV2ProposeAssignForPointsInPolygon(polygonItemKey){
+    const polyItem=this.planV2Draft.items[polygonItemKey];
+    if(!polyItem || !Array.isArray(polyItem.geometry)) return;
+    const items=this._planV2EffectiveItems().filter(it=>
+      it.kind==='point' && it.point_id!=null && it.geometry && typeof it.geometry.x==='number');
+    const hit=items.find(it=>this._planV2PointInPolygon(it.geometry.x, it.geometry.y, polyItem.geometry));
+    // Один диалог за раз — не заваливаем пользователя вопросами подряд,
+    // если контур случайно охватил сразу несколько уже нанесённых точек.
+    if(hit) this._planV2ProposePointLocationIfInside(hit);
+  },
+  async planV2ConfirmLocationAssign(){
+    const p=this.planV2LocationAssignProposal;
+    if(!p) return;
+    try{
+      const rev=await this._structCurrentRev();
+      const r=await fetch('/api/v2/points/'+p.pointId, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({installation_location_id:p.locationId, expected_revision:rev})});
+      const d=await r.json();
+      if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); this.planV2LocationAssignProposal=null; return; }
+      this.showToast('Место точки обновлено', true);
+      await this._loadStructureLists();
+    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
+    this.planV2LocationAssignProposal=null;
+  },
+  planV2DeclineLocationAssign(){ this.planV2LocationAssignProposal=null; },
+  planV2StartPlacePolygon(){
+    if(this.planV2AddKind!=='location' || !this.planV2AddRefId){
+      this.showToast('Выберите место для размещения', false); return;
+    }
+    if(!_planV2Map) return;
+    this.planV2PlacingPolygon=true;
+    if(_planV2Map.doubleClickZoom) _planV2Map.doubleClickZoom.disable();
+    _planV2Map.pm.enableDraw('Polygon', {snappable:true, finishOn:'dblclick'});
+  },
+  planV2CancelPlacePolygon(){
+    if(_planV2Map && _planV2Map.pm) _planV2Map.pm.disableDraw('Polygon');
+    if(_planV2Map && _planV2Map.doubleClickZoom) _planV2Map.doubleClickZoom.enable();
+    this.planV2PlacingPolygon=false;
   },
   planV2SaveDrawnWaypoints(){
     if(!_planV2DrawLayer || this.planV2DrawingEdgeKey===null || !this.planV2Current) return;
@@ -7025,6 +7182,23 @@ function app(){ return {
       return null;
     }
     const g=item.geometry;
+    // Партия 6, задача 2 (§3): место может быть контуром-полигоном
+    // ([[x,y],...] — plan_geo_v2.py, kind='location'), а не только точкой.
+    // Полигон не перетаскивается как целое (в отличие от точечных меток
+    // ниже) — тот же уровень возможностей, что у legacy-зон на v1-плане:
+    // чтобы переместить контур, его убирают и рисуют заново.
+    if(item.kind==='location' && Array.isArray(g)){
+      if(g.length<3) return null;
+      const latlngs=g.map(([x,y])=>this._planV2XyToLatLng(x,y,height));
+      const color=_planV2KindColor(item.kind);
+      const layer=L.polygon(latlngs, {color, fillColor:color, fillOpacity:.25, weight:2});
+      layer.on('click', (e)=>{
+        if(e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+        this.planV2SelectedEdgeView=null;
+        this.planV2SelectedItem=item;
+      });
+      return layer;
+    }
     if(!g || typeof g.x!=='number' || typeof g.y!=='number') return null;
     const latlng=this._planV2XyToLatLng(g.x, g.y, height);
     const color=_planV2KindColor(item.kind);
