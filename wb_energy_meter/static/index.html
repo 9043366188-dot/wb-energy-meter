@@ -479,6 +479,14 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   <span class="muted mono" x-text="version?'v'+version:''"></span>
   <button class="ico-btn" @click="toggleUiSet()" x-text="uiSet=='v2'?'Классический':'Новый интерфейс'"
           title="Переключить набор вкладок: классический интерфейс или новый (ТЗ v2, в разработке — см. CHANGELOG.md)"></button>
+  <!-- Партия 6, задача 5: простой режим — по умолчанию. Всё, что связано
+       с узлами/связями/публикацией (термины электрической сети), доступно
+       только когда это явно включено — см. docs/TZ-batch6-simple-mode.md
+       §6. Кнопка видна только в новом наборе — в классическом узлов/связей
+       не существует вовсе. -->
+  <button class="ico-btn" x-show="uiSet=='v2'" @click="toggleDetailedMode()"
+          x-text="detailedMode?'⚙ Подробная схема: вкл':'⚙ Подробная схема: выкл'"
+          title="Подробная схема — узлы, связи и их публикация напрямую (для сложных/нестандартных схем электроснабжения). Выключено — точки учёта настраиваются через «Это ввод» / «Питается от»."></button>
   <button class="ico-btn" @click="toggleTheme()" x-text="theme=='dark'?'☀ Светлая':'🌙 Тёмная'"></button>
   <button class="ico-btn" @click="refresh()">⟳ Обновить</button>
 </header>
@@ -1051,7 +1059,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               <template x-for="row in structLocationRows()" :key="row.id">
                 <div class="structure-tree-row" :class="{active:structSelectedLocationId===row.id}"
                      :style="'padding-left:'+(8+row.depth*14)+'px'"
-                     @click="structSelectedLocationId=row.id">
+                     @click="structSelectedLocationId=row.id; openLocationEdit(row.id)">
                   <span x-text="row.name"></span>
                   <span class="stc" x-text="row.pointCount"></span>
                 </div>
@@ -1075,6 +1083,28 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           <template x-if="!structLoading">
             <div>
               <div class="muted" style="font-size:11px;margin-bottom:8px" x-text="structCenterTitle()"></div>
+
+              <!-- Партия 6, задача 3 (§4: "инлайн-редактирование мест без
+                   ухода с экрана") — раньше у мест не было вообще никакого
+                   способа переименовать/архивировать из интерфейса, только
+                   создать. Показывается для выбранного места (не для «Без
+                   места» и не для результатов поиска). -->
+              <template x-if="typeof structSelectedLocationId==='number' && structQuery.trim()===''">
+                <div class="plan-upload-form" style="max-width:420px;margin-bottom:12px">
+                  <div style="display:flex;gap:8px">
+                    <input type="text" x-model="locEditForm.name" placeholder="Название места" style="flex:1">
+                    <input type="text" x-model="locEditForm.code" placeholder="Код (опц.)" style="width:110px">
+                  </div>
+                  <div style="display:flex;gap:8px;margin-top:6px">
+                    <button class="btn btn-primary btn-sm" :disabled="locEditForm.saving" @click="saveLocationEdit()">Сохранить</button>
+                    <button class="btn btn-danger btn-sm" :disabled="locEditForm.saving" @click="archiveSelectedLocation()">Архивировать</button>
+                  </div>
+                  <template x-if="locEditForm.error">
+                    <div class="warn-item" style="margin-top:6px" x-text="locEditForm.error"></div>
+                  </template>
+                </div>
+              </template>
+
               <template x-if="structCenterPoints().length===0">
                 <div class="empty">
                   <template x-if="structPoints.length===0 && structQuery.trim()===''">
@@ -1089,6 +1119,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <thead><tr>
                   <th>Код</th><th>Имя</th><th>Статус</th>
                   <th class="num">Мощность, кВт</th><th>Место</th><th>На плане</th>
+                  <th>Чего не хватает</th>
                 </tr></thead>
                 <tbody>
                   <template x-for="p in structCenterPoints()" :key="p.point_id">
@@ -1106,6 +1137,11 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                           x-text="structSnapshotFor(p.point_id) && structSnapshotFor(p.point_id).power_w!=null?fmt(structSnapshotFor(p.point_id).power_w/1000,2):'—'"></td>
                       <td class="muted" style="font-size:11px" x-text="p.location_path||'—'"></td>
                       <td x-text="p.placed_on_plan?'да':'нет'"></td>
+                      <!-- Партия 6, задача 3 (§4: "показать чего не хватает") —
+                           точка без прибора/места/питания раньше никак не
+                           выделялась в общем списке, это надо было заметить
+                           по отдельности в каждом поле. -->
+                      <td class="muted" style="font-size:11px;color:var(--warn)" x-text="structMissingInfo(p).join(', ')||'—'"></td>
                     </tr>
                   </template>
                 </tbody>
@@ -1268,19 +1304,90 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 </div>
               </div>
 
+              <!-- Партия 6, задача 1 (§2, ГЛАВНАЯ задача партии): простой
+                   режим — «Это ввод»/«Питается от» вместо узлов/связей на
+                   глазах у пользователя. Пишет через ту же ручку PATCH
+                   .../points/<id> (is_input/fed_from_point_id), см.
+                   simple_mode_service.py — здесь только форма поверх неё,
+                   никакого нового домена. -->
               <div class="structure-field">
-                <div class="sf-lbl">Чем питается / что питает (по опубликованной схеме)</div>
-                <template x-if="structFeed(structInspector.id).measuredEdges.length===0">
-                  <div class="sf-val muted">Точка не назначена измерением ни одной опубликованной связи.</div>
-                </template>
-                <template x-for="f in structFeed(structInspector.id).measuredEdges" :key="f.edge.id">
-                  <div class="sf-val" style="margin-bottom:6px">
-                    <div class="muted" style="font-size:11px" x-text="'Измеряет связь: '+(f.edge.name||f.edge.code||('#'+f.edge.id))"></div>
-                    <div x-text="'Питается от: '+(f.fedBy.length?f.fedBy.map(x=>x.name||x.code).join(', '):'— (ввод / верхний узел схемы)')"></div>
-                    <div x-text="'Питает: '+(f.feeds.length?f.feeds.map(x=>x.name||x.code).join(', '):'— (конечных потребителей на схеме нет)')"></div>
+                <div class="sf-lbl">Питание</div>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                  <input type="checkbox"
+                         x-model="structInspector.data.power_supply.is_input"
+                         @change="if(structInspector.data.power_supply.is_input) structInspector.data.power_supply.fed_from_point_id=null; submitSimplePower()">
+                  <span>Это ввод (питается от внешней сети)</span>
+                </label>
+                <template x-if="!structInspector.data.power_supply.is_input">
+                  <div style="margin-top:6px">
+                    <div class="muted" style="font-size:11px;margin-bottom:2px">Питается от</div>
+                    <select x-model.number="structInspector.data.power_supply.fed_from_point_id" @change="submitSimplePower()">
+                      <option :value="null">— не задано —</option>
+                      <template x-for="op in structOtherPoints(structInspector.id)" :key="op.point_id">
+                        <option :value="op.point_id" x-text="op.name"></option>
+                      </template>
+                    </select>
                   </div>
                 </template>
+                <template x-if="simplePowerError">
+                  <div class="warn-item" style="margin-top:6px" x-text="simplePowerError"></div>
+                </template>
               </div>
+
+              <!-- Обратное действие — только у ввода: "добавить потребителей"
+                   вместо того, чтобы заходить в карточку каждой точки по
+                   отдельности и выставлять там "питается от" на этот ввод. -->
+              <template x-if="structInspector.data.power_supply.is_input">
+                <div class="structure-field">
+                  <div class="sf-lbl">Добавить потребителей (питаются от этого ввода)</div>
+                  <div style="display:flex;gap:6px">
+                    <select x-model.number="structInspector.addConsumerPick" style="flex:1">
+                      <option value="">— выберите точку —</option>
+                      <template x-for="op in structOtherPoints(structInspector.id)" :key="op.point_id">
+                        <option :value="op.point_id" x-text="op.name"></option>
+                      </template>
+                    </select>
+                    <button class="btn btn-secondary btn-sm" @click="addConsumerToInput()">+</button>
+                  </div>
+                  <template x-if="addConsumerError">
+                    <div class="warn-item" style="margin-top:6px" x-text="addConsumerError"></div>
+                  </template>
+                  <template x-for="c in structConsumersOf(structInspector.id)" :key="c.point_id">
+                    <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;margin-top:6px">
+                      <span x-text="c.name"></span>
+                      <button class="btn btn-sm btn-danger" @click="removeConsumerFeed(c.point_id)">Убрать</button>
+                    </div>
+                  </template>
+                  <div class="muted" style="font-size:11px;margin-top:4px" x-show="structConsumersOf(structInspector.id).length===0">
+                    Пока никто не выбрал эту точку как источник питания.
+                  </div>
+                </div>
+              </template>
+
+              <div class="structure-field">
+                <div class="sf-lbl">Что питает (заметка, не влияет на расчёт)</div>
+                <textarea x-model="structInspector.data.description" @blur="submitSimpleNote()"
+                          rows="2" style="width:100%;resize:vertical" placeholder="Например: розетки цеха 2, освещение склада"></textarea>
+              </div>
+
+              <!-- Подробная схема (§6, задача 5): то же самое, но в терминах
+                   узлов/связей/публикации — по умолчанию скрыто, доступно
+                   тем, кому простого режима не хватает. -->
+              <template x-if="detailedMode">
+                <div class="structure-field">
+                  <div class="sf-lbl">Чем питается / что питает (по опубликованной схеме)</div>
+                  <template x-if="structFeed(structInspector.id).measuredEdges.length===0">
+                    <div class="sf-val muted">Точка не назначена измерением ни одной опубликованной связи.</div>
+                  </template>
+                  <template x-for="f in structFeed(structInspector.id).measuredEdges" :key="f.edge.id">
+                    <div class="sf-val" style="margin-bottom:6px">
+                      <div class="muted" style="font-size:11px" x-text="'Измеряет связь: '+(f.edge.name||f.edge.code||('#'+f.edge.id))"></div>
+                      <div x-text="'Питается от: '+(f.fedBy.length?f.fedBy.map(x=>x.name||x.code).join(', '):'— (ввод / верхний узел схемы)')"></div>
+                      <div x-text="'Питает: '+(f.feeds.length?f.feeds.map(x=>x.name||x.code).join(', '):'— (конечных потребителей на схеме нет)')"></div>
+                    </div>
+                  </template>
+                </div>
+              </template>
 
               <div class="structure-field">
                 <div class="sf-lbl">Место установки</div>
@@ -1288,13 +1395,26 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               </div>
 
               <div class="structure-field">
-                <div class="sf-lbl">Группы</div>
+                <div class="sf-lbl">Группа</div>
                 <template x-if="structInspector.groups.length===0">
                   <div class="sf-val muted">Ни в одной группе</div>
                 </template>
                 <template x-for="g in structInspector.groups" :key="g.id">
-                  <span class="structure-chip" @click="openInspector('group', g.id)" x-text="g.name"></span>
+                  <div style="display:inline-flex;align-items:center;gap:4px;margin:0 6px 4px 0">
+                    <span class="structure-chip" @click="openInspector('group', g.id)"
+                          x-text="g.name" style="cursor:pointer"></span>
+                    <button class="btn btn-sm btn-danger" style="padding:0 6px" @click="simpleRemoveFromGroup(g.id)">✕</button>
+                  </div>
                 </template>
+                <div style="display:flex;gap:6px;margin-top:6px">
+                  <select x-model.number="structInspector.simpleGroupPick" style="flex:1">
+                    <option value="">— добавить в группу —</option>
+                    <template x-for="g in structGroups" :key="g.id">
+                      <option :value="g.id" x-text="g.name"></option>
+                    </template>
+                  </select>
+                  <button class="btn btn-secondary btn-sm" @click="simpleAddToGroup(structInspector.simpleGroupPick)">+</button>
+                </div>
               </div>
 
               <div class="structure-field">
@@ -1436,15 +1556,18 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   @click="openCreatePanel('location')">+ Место</button>
           <button class="btn btn-sm" :class="structCreatePanel==='point'?'btn-primary':'btn-secondary'"
                   @click="openCreatePanel('point')">+ Точка учёта</button>
-          <button class="btn btn-sm" :class="structCreatePanel==='node'?'btn-primary':'btn-secondary'"
+          <!-- Партия 6, задача 5 (§6): узлы/связи/публикация — только в
+               подробном режиме. В простом режиме то же самое делается через
+               «Это ввод»/«Питается от» прямо на карточке точки. -->
+          <button class="btn btn-sm" x-show="detailedMode" :class="structCreatePanel==='node'?'btn-primary':'btn-secondary'"
                   @click="openCreatePanel('node')">+ Узел сети</button>
-          <button class="btn btn-sm" :class="structCreatePanel==='edge'?'btn-primary':'btn-secondary'"
+          <button class="btn btn-sm" x-show="detailedMode" :class="structCreatePanel==='edge'?'btn-primary':'btn-secondary'"
                   @click="openCreatePanel('edge')">+ Связь</button>
-          <button class="btn btn-sm" :class="structCreatePanel==='publish'?'btn-primary':'btn-secondary'"
+          <button class="btn btn-sm" x-show="detailedMode" :class="structCreatePanel==='publish'?'btn-primary':'btn-secondary'"
                   @click="openCreatePanel('publish')">Публикация топологии</button>
         </div>
 
-        <div class="muted" style="font-size:11px;margin-bottom:10px;max-width:640px">
+        <div class="muted" style="font-size:11px;margin-bottom:10px;max-width:640px" x-show="detailedMode">
           Ввод объекта определяется автоматически: это точка измерения на связи,
           исходящей из узла типа «Ввод» (source) — отдельного действия «назначить
           ввод» нет. Чтобы точка стала вводом объекта, создайте узел типа «Ввод»,
@@ -3586,6 +3709,12 @@ function app(){ return {
   tab: (lsGet('wbem.uiSet', DEFAULT_UI_SET)=='v2') ? 'overviewv2' : 'dash',
   uiSet: lsGet('wbem.uiSet', DEFAULT_UI_SET),
   theme:lsGet('theme','dark'), loading:true,
+  // Партия 6, задача 5 (§6): 'Подробная схема' — узлы/связи/публикация
+  // напрямую. По умолчанию ВЫКЛЮЧЕНО (см. DEFAULT_UI_SET выше — тот же
+  // принцип: пока это не проверено в реальном браузере, включённое по
+  // умолчанию 'подробно' не должно быть дефолтом). Переключение режима
+  // НЕ меняет данные — это чисто видимость элементов интерфейса.
+  detailedMode: lsGet('wbem.detailedMode','0')==='1',
   meters:[], byStatus:{}, mqtt:{connected:false,messages:0,errors:0},
   version:'', uptime:0, detail:null,
   // consumption
@@ -3725,6 +3854,8 @@ function app(){ return {
   structInited:false, structLoading:false, structError:null,
   structQuery:'', structPoints:[], structLocations:[], structGroups:[],
   structNodes:[], structEdges:[], structSelectedLocationId:null,
+  locEditForm:null,  // партия 6, задача 3 — инлайн-редактирование места
+  simplePowerError:null, addConsumerError:null,  // партия 6, задача 1
   structInspector:null, structInspectorLoading:false, structInspectorError:null,
   _structSearchSeq:0,
   // Заведение структуры из интерфейса (ТЗ §8.3/партия 5, задача 1):
@@ -3801,6 +3932,13 @@ function app(){ return {
     // --err/--accent2) в момент отрисовки, не через var() внутри SVG —
     // после смены темы их нужно пересчитать явно.
     this.$nextTick(()=>{ if(typeof this._planApplyLiveStyles==='function') this._planApplyLiveStyles(); });
+  },
+  toggleDetailedMode(){
+    this.detailedMode = !this.detailedMode;
+    try{ localStorage.setItem('wbem.detailedMode', this.detailedMode?'1':'0'); }catch(e){}
+    // §6: "переключение режима не должно менять данные" — ничего не
+    // сохраняем на сервер и не перезагружаем структуру, это только
+    // видимость уже загруженных данных.
   },
   // Переключатель классический/новый интерфейс (UI_SET_TABS/DEFAULT_UI_SET
   // объявлены в начале <script> выше). Выбор запоминается в localStorage —
@@ -5663,6 +5801,49 @@ function app(){ return {
       }
     }catch(e){ /* поиск best-effort, не валим экран */ }
   },
+  // Партия 6, задача 3 (§4): переименование/архивация места без ухода
+  // с экрана «Структура». Раньше эти операции не были доступны из
+  // интерфейса вообще (LocationRepo.update_fields — тоже эта партия,
+  // см. location_repo.py).
+  openLocationEdit(locId){
+    const loc = (this.structLocations||[]).find(l=>l.id===locId);
+    if(!loc) return;
+    this.locEditForm = {id: locId, name: loc.name, code: loc.code||'', saving:false, error:null};
+  },
+  async saveLocationEdit(){
+    const f = this.locEditForm;
+    if(!f) return;
+    f.saving = true; f.error = null;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/locations/'+f.id, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({name: f.name, code: f.code||null, expected_revision: rev})});
+      const d = await r.json();
+      if(!r.ok){ f.error = this._apiErrorMessage(d, r.status); return; }
+      this.showToast('Место обновлено', true);
+      await this._loadStructureLists();
+    }catch(e){ f.error = e.message; }
+    finally{ f.saving = false; }
+  },
+  async archiveSelectedLocation(){
+    const f = this.locEditForm;
+    if(!f) return;
+    f.saving = true; f.error = null;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/locations/'+f.id, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({archived:true, expected_revision: rev})});
+      const d = await r.json();
+      if(!r.ok){ f.error = this._apiErrorMessage(d, r.status); return; }
+      this.showToast('Место архивировано', true);
+      this.structSelectedLocationId = null;
+      this.locEditForm = null;
+      await this._loadStructureLists();
+    }catch(e){ f.error = e.message; }
+    finally{ if(this.locEditForm) this.locEditForm.saving = false; }
+  },
   structLocationRows(){
     // Плоский отсортированный список мест с отступом по глубине —
     // визуально дерево, без рекурсивных Alpine-компонентов (тот же приём,
@@ -5721,6 +5902,15 @@ function app(){ return {
   structNodeName(nodeId){
     const n=(this.structNodes||[]).find(x=>x.id===nodeId);
     return n ? (n.name||n.code||('#'+nodeId)) : ('#'+nodeId);
+  },
+  // Партия 6, задача 3 (§4: "показать чего не хватает" в списке точек).
+  structMissingInfo(p){
+    const missing=[];
+    if(!p.bound) missing.push('нет прибора');
+    if(!p.location_id) missing.push('нет места');
+    if(!p.is_input && p.fed_from_point_id==null) missing.push('не указано питание');
+    if(!p.placed_on_plan) missing.push('не на плане');
+    return missing;
   },
   structPointName(pointId){
     const p=(this.structPoints||[]).find(x=>x.point_id===pointId);
@@ -5802,6 +5992,118 @@ function app(){ return {
     });
     return {measuredEdges};
   },
+  // ------------------------------------------------------------------
+  // Партия 6, задача 1 (§2, ГЛАВНАЯ задача партии): простой режим.
+  // Пишет исключительно через уже существующий PATCH /api/v2/points/<id>
+  // (is_input/fed_from_point_id) — см. simple_mode_service.py на
+  // бэкенде; здесь только форма и обновление карточки/списков после
+  // ответа сервера. При отказе (в т.ч. simple_mode_conflict — цикл,
+  // "ввод сам себе источник" и т.п., см. api_v2.py) откатываем локальное
+  // состояние перезагрузкой карточки — не оставляем на экране то, что
+  // сервер не сохранил.
+  // ------------------------------------------------------------------
+  structOtherPoints(excludeId){
+    return (this.structPoints||[]).filter(p=>p.point_id!==excludeId)
+      .slice().sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+  },
+  structConsumersOf(pointId){
+    return (this.structPoints||[]).filter(p=>p.fed_from_point_id===pointId);
+  },
+  async submitSimplePower(){
+    if(!this.structInspector || this.structInspector.kind!=='point') return;
+    const ps = this.structInspector.data.power_supply || {is_input:false, fed_from_point_id:null};
+    this.simplePowerError = null;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/points/'+this.structInspector.id, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          is_input: !!ps.is_input,
+          fed_from_point_id: ps.is_input ? null : (ps.fed_from_point_id||null),
+          expected_revision: rev,
+        })});
+      const d = await r.json();
+      if(!r.ok){
+        this.simplePowerError = this._apiErrorMessage(d, r.status);
+        await this._loadPointInspector(this.structInspector.id);
+        return;
+      }
+      this.showToast('Питание обновлено', true);
+      await this._loadPointInspector(this.structInspector.id);
+      await this._loadStructureLists();
+    }catch(e){
+      this.simplePowerError = 'Ошибка сети: '+e;
+      await this._loadPointInspector(this.structInspector.id);
+    }
+  },
+  async addConsumerToInput(){
+    if(!this.structInspector || this.structInspector.kind!=='point') return;
+    const otherId = this.structInspector.addConsumerPick;
+    if(!otherId){ this.addConsumerError='Выберите точку'; return; }
+    this.addConsumerError = null;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/points/'+otherId, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({is_input:false, fed_from_point_id:this.structInspector.id, expected_revision:rev})});
+      const d = await r.json();
+      if(!r.ok){ this.addConsumerError = this._apiErrorMessage(d, r.status); return; }
+      this.structInspector.addConsumerPick = '';
+      this.showToast('Потребитель добавлен', true);
+      await this._loadStructureLists();
+    }catch(e){ this.addConsumerError = 'Ошибка сети: '+e; }
+  },
+  async removeConsumerFeed(otherId){
+    this.addConsumerError = null;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/points/'+otherId, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({is_input:false, fed_from_point_id:null, expected_revision:rev})});
+      const d = await r.json();
+      if(!r.ok){ this.addConsumerError = this._apiErrorMessage(d, r.status); return; }
+      await this._loadStructureLists();
+    }catch(e){ this.addConsumerError = 'Ошибка сети: '+e; }
+  },
+  async submitSimpleNote(){
+    if(!this.structInspector || this.structInspector.kind!=='point') return;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/points/'+this.structInspector.id, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({description: this.structInspector.data.description||'', expected_revision: rev})});
+      const d = await r.json();
+      if(!r.ok){
+        this.showToast(this._apiErrorMessage(d, r.status), false);
+        await this._loadPointInspector(this.structInspector.id);
+        return;
+      }
+      await this._loadStructureLists();
+    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
+  },
+  async simpleAddToGroup(groupId){
+    if(!groupId || !this.structInspector) return;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/groups/'+groupId+'/members', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({point_id:this.structInspector.id, expected_revision:rev})});
+      const d = await r.json();
+      if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
+      this.structInspector.simpleGroupPick = '';
+      await this._loadPointInspector(this.structInspector.id);
+    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
+  },
+  async simpleRemoveFromGroup(groupId){
+    if(!this.structInspector) return;
+    try{
+      const rev = await this._structCurrentRev();
+      const r = await fetch('/api/v2/groups/'+groupId+'/members/'+this.structInspector.id+
+        '?expected_revision='+rev, {method:'DELETE'});
+      if(!r.ok){ const d = await r.json(); this.showToast(this._apiErrorMessage(d, r.status), false); return; }
+      await this._loadPointInspector(this.structInspector.id);
+    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
+  },
   async openInspector(kind, id){
     if(id==null) return;
     if(this.tab!=='structurev2'){ this.tab='structurev2'; }
@@ -5855,7 +6157,11 @@ function app(){ return {
       bindings: (bindings||[]).slice().sort((a,b)=>b.valid_from-a.valid_from),
       groups,
       consumption: null,
+      // Партия 6, задача 1 — состояние форм простого режима, живёт вместе
+      // с карточкой (сбрасывается при переходе на другую точку само собой).
+      addConsumerPick:'', simpleGroupPick:'',
     };
+    this.simplePowerError=null; this.addConsumerError=null;
     // Расход за период — отдельным запросом, чтобы карточка сразу
     // показывала остальное, даже если metrics/query недоступен/медленный.
     try{
