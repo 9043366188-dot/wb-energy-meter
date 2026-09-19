@@ -136,15 +136,42 @@ def _validate_xy_pair(pt: Any, width: Optional[float], height: Optional[float],
         raise ValueError(f"{what}: y={y} вне границ [0, {height}]")
 
 
+MIN_LOCATION_POLYGON_POINTS = 3
+
+
+def _validate_polygon(points: Any, width: Optional[float], height: Optional[float],
+                       what: str) -> None:
+    """Контур места — список точек [[x,y],...], минимум
+    MIN_LOCATION_POLYGON_POINTS (партия 6, docs/TZ-batch6-simple-mode.md
+    §3: "Разрешить полигон для элементов kind='location'" — раньше
+    _validate_xy_obj отвергала список безусловно, хотя схема
+    (plan_items.geometry) полигон всегда допускала)."""
+    if not isinstance(points, (list, tuple)):
+        raise ValueError(f'{what}: контур места должен быть массивом точек [[x,y],...]')
+    if len(points) < MIN_LOCATION_POLYGON_POINTS:
+        raise ValueError(
+            f"{what}: контур места должен содержать не менее "
+            f"{MIN_LOCATION_POLYGON_POINTS} точек")
+    for idx, pt in enumerate(points):
+        _validate_xy_pair(pt, width, height, f"{what}[{idx}]")
+
+
 def validate_plan_item_geometry(geometry: Any, coord_space: str,
-                                 width: Optional[float], height: Optional[float]) -> None:
-    """Валидация geometry для plan_item: всегда одиночная точка {x,y}
-    (полигоны мест — это location, не отдельная геометрия plan_item в
-    v2; контуры мест/зон представлены тем же point-item с меткой —
-    полноценные полигон-контуры мест не входят в этот срез, см. §7.1
-    "Контур места" как отдельное будущее действие редактора)."""
+                                 width: Optional[float], height: Optional[float],
+                                 kind: Optional[str] = None) -> None:
+    """Валидация geometry для plan_item. По умолчанию (и для всех kind
+    кроме 'location') — одиночная точка {x,y}. Для kind='location'
+    допускается ЛИБО точка (место как маркер), ЛИБО контур-полигон
+    [[x,y],...] (место как область, партия 6 §3) — разрешаем список
+    ТОЛЬКО когда вызывающий код явно передал kind='location', чтобы не
+    ослабить валидацию для point/group/node/port/annotation, для
+    которых полигон физически не имеет смысла и раньше (до партии 6)
+    гарантированно отвергался."""
     if coord_space not in VALID_COORD_SPACES:
         raise ValueError(f"неизвестный coord_space: {coord_space!r}")
+    if kind == "location" and isinstance(geometry, (list, tuple)):
+        _validate_polygon(geometry, width, height, "geometry")
+        return
     _validate_xy_obj(geometry, width, height, "geometry")
 
 

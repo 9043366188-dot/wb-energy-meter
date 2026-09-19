@@ -377,7 +377,8 @@ class PlanItemRepo:
         now = int(time.time())
         with self._db.transaction() as c:
             width, height = _plan_dims_for_geometry(c, plan_id)
-            plan_geo_v2.validate_plan_item_geometry(geometry, coord_space, width, height)
+            plan_geo_v2.validate_plan_item_geometry(
+                geometry, coord_space, width, height, kind=kind)
             try:
                 cur = c.execute(
                     "INSERT INTO plan_items (plan_id, kind, point_id, location_id, "
@@ -408,7 +409,8 @@ class PlanItemRepo:
         now = int(time.time())
         with self._db.transaction() as c:
             width, height = _plan_dims_for_geometry(c, existing.plan_id)
-            plan_geo_v2.validate_plan_item_geometry(geometry, cs, width, height)
+            plan_geo_v2.validate_plan_item_geometry(
+                geometry, cs, width, height, kind=existing.kind)
             c.execute(
                 "UPDATE plan_items SET geometry = ?, coord_space = ?, "
                 "updated_at = ? WHERE id = ?",
@@ -595,8 +597,13 @@ def save_plan_layout(db, plan_id: int, expected_revision: int, *,
                 continue
             geometry = op["geometry"]
             coord_space = op.get("coord_space", plan_geo_v2.COORD_SPACE_IMAGE_V2)
-            plan_geo_v2.validate_plan_item_geometry(geometry, coord_space, width, height)
             if op.get("id"):
+                existing_row = c.execute(
+                    "SELECT kind FROM plan_items WHERE id = ? AND plan_id = ?",
+                    (op["id"], plan_id)).fetchone()
+                item_kind = existing_row["kind"] if existing_row else None
+                plan_geo_v2.validate_plan_item_geometry(
+                    geometry, coord_space, width, height, kind=item_kind)
                 c.execute(
                     "UPDATE plan_items SET geometry = ?, coord_space = ?, "
                     "label = ?, sort_order = ?, updated_at = ? "
@@ -608,6 +615,8 @@ def save_plan_layout(db, plan_id: int, expected_revision: int, *,
                 kind = op["kind"]
                 if kind not in VALID_PLAN_ITEM_KINDS:
                     raise PlanError(f"неизвестный kind: {kind!r}")
+                plan_geo_v2.validate_plan_item_geometry(
+                    geometry, coord_space, width, height, kind=kind)
                 cur = c.execute(
                     "INSERT INTO plan_items (plan_id, kind, point_id, location_id, "
                     "group_id, node_id, target_plan_id, geometry, coord_space, "
