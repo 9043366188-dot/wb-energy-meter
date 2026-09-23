@@ -672,7 +672,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 </div>
                 <div x-show="ovDisclosureOpen.object" style="font-size:12px;margin-top:4px" class="muted">
                   Сумма назначенного ввода объекта (точки:
-                  <span x-text="(ovSummary.object_input_point_ids||[]).map(ovPointName).join(', ')||'—'"></span>)
+                  <span x-text="(ovSummary.object_input_point_ids||[]).map(id=>ovPointName(id)).join(', ')||'—'"></span>)
                 </div>
               </div>
             </template>

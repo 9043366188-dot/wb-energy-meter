@@ -290,3 +290,32 @@ jobs:
 
       - name: Verify self-update.sh syntax
         run: bash -n scripts/self-update.sh
+
+  browser:
+    name: Browser (Playwright/Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "paho-mqtt>=1.6,<3" "pyyaml>=5.4" "flask>=1.1" playwright
+
+      # Playwright — только тестовая зависимость, в рантайм не входит (AGENTS.md).
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run browser scenarios (tests/browser/run.py)
+        run: python tests/browser/run.py
+
+      - name: Upload screenshots on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-screenshots
+          path: tests/browser/_shots/
+          if-no-files-found: ignore

@@ -64,3 +64,6 @@ wb-energy-meter*.tar.gz
 # Локальные пометки разработчика
 TODO.local
 NOTES.local
+
+# Скриншоты браузерных тестов (tests/browser/, партия 7, этап 1)
+tests/browser/_shots/
