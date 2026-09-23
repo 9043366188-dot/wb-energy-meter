@@ -962,12 +962,22 @@ def register_v2_routes(app, state, json_response):
         # «План v3», §1: «поставить сюда счётчик» — назначить/снять
         # измеряющую точку у уже существующей (в т.ч. опубликованной)
         # связи. primary_point_id=None — снять измерение (линия без
-        # счётчика допустима, §1 задания).
+        # счётчика допустима, §1 задания). Партия 7, Этап 3, Э3/B5:
+        # карточка линии добавляет ещё три поля (name/rated_current_a/
+        # cable_note) — раньше колонки в БД были, а PATCH их не
+        # принимал вовсе. Всё в одном PATCH — одна транзакция, одна
+        # ревизия, даже если карточка сохраняет счётчик и имя разом.
+        mutate_fields = {}
         if "primary_point_id" in data:
+            mutate_fields["primary_point_id"] = data.get("primary_point_id")
+        for _f in ("name", "rated_current_a", "cable_note"):
+            if _f in data:
+                mutate_fields[_f] = data[_f]
+        if mutate_fields:
             try:
                 _, new_rev = with_revision_check(
                     db, data.get("expected_revision"),
-                    lambda: repo.set_primary_point(edge_id, data.get("primary_point_id")),
+                    lambda: repo.update_fields(edge_id, mutate_fields),
                     touched=[("electrical_edge", edge_id)])
             except GlobalRevisionConflict as e2:
                 return _revision_conflict(e2, ids=[edge_id])
@@ -978,6 +988,108 @@ def register_v2_routes(app, state, json_response):
             out["configuration_revision"] = new_rev
             return json_response(out)
         return json_response(_edge_to_dict(repo.get_by_id(edge_id)))
+
+    def _node_name_for_edge_target(edge):
+        node = _node_repo().get_by_id(edge.to_node_id)
+        return (node.name if node else None) or f"Точка линии {edge.id}"
+
+    @app.route("/api/v2/topology/edges/<int:edge_id>/attach-new-point", methods=["POST"])
+    def v2_topology_edge_attach_new_point(edge_id):
+        """Партия 7, Этап 3, B8: «счётчик из прибора прямо на линию»
+        одним действием — раньше единственный путь был три отдельных
+        шага (завести точку на «Структуре» → привязать прибор → вручную
+        выбрать её в списке счётчиков линии карточки узла). Здесь точка
+        → привязка (через общий _resolve_or_provision_meter_source, тот
+        же хелпер, что и POST /points/<id>/bindings) → set primary_point
+        — ОДНОЙ транзакцией и ОДНОЙ ревизией (with_revision_check сам
+        открывает внешнюю транзакцию, репозитории внутри присоединяются
+        к ней, а не открывают свою).
+
+        Тело: {device_id, name?, code?, channel_profile?="total_3p",
+        expected_revision}. Имя по умолчанию — имя узла-получателя линии.
+
+        Идемпотентность (устойчиво к повтору запроса после сетевого
+        сбоя, как и остальные провижининг-ручки этого файла): если линия
+        УЖЕ измеряется точкой, чья текущая открытая привязка — на этот
+        же device_id, вторая точка не создаётся — возвращается то же
+        состояние. Если линия уже измеряется ДРУГОЙ точкой — 409
+        (эта ручка только для «поставить на неизмеренную линию»;
+        осознанная замена уже стоящего счётчика — обычный PATCH
+        primary_point_id, как и раньше). Если сам прибор уже активно
+        привязан к другой точке — 409 double_counting (BindingConflict,
+        как и в /points/<id>/bindings)."""
+        edge_repo = _edge_repo()
+        edge = edge_repo.get_by_id(edge_id)
+        if edge is None:
+            body, status = _err("not_found", f"Связь {edge_id} не найдена", 404, ids=[edge_id])
+            return json_response(body, status)
+
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        device_id_raw = data.get("device_id")
+        if not device_id_raw:
+            body, status = _err(
+                "bad_request", "требуется device_id прибора", 400, fields=["device_id"])
+            return json_response(body, status)
+        try:
+            device_id = validate_device_id(device_id_raw)
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400, fields=["device_id"])
+            return json_response(body, status)
+
+        channel_profile = data.get("channel_profile") or "total_3p"
+
+        if edge.primary_point_id is not None:
+            existing_binding = _binding_repo().get_open_primary(edge.primary_point_id)
+            existing_source = (
+                MeterSourceRepo(db).get_by_id(existing_binding.meter_source_id)
+                if existing_binding is not None else None
+            )
+            if existing_source is not None and existing_source.device_id == device_id:
+                out = _edge_to_dict(edge)
+                with db.read() as c:
+                    out["configuration_revision"] = current_revision_id(c)
+                out["point_id"] = edge.primary_point_id
+                out["attached"] = "already"
+                return json_response(out)
+            body, status = _err(
+                "already_metered",
+                f"Линия {edge_id} уже измеряется другой точкой "
+                f"({edge.primary_point_id}) — сначала снимите её явно, прежде "
+                f"чем ставить новую через эту ручку",
+                409, ids=[edge_id, edge.primary_point_id])
+            return json_response(body, status)
+
+        default_name = data.get("name") or _node_name_for_edge_target(edge)
+        default_code = data.get("code") or f"pv3-att-{edge_id}-{int(time.time() * 1000)}"
+
+        def _create_bind_attach():
+            point = _point_repo().add(code=default_code, name=default_name)
+            source_id = _resolve_or_provision_meter_source(
+                None, {"device_id": device_id}, at=data.get("at"))
+            _binding_repo().open_binding(
+                point.id, source_id, channel_profile, role="primary",
+                valid_from=data.get("at"))
+            updated_edge = edge_repo.update_fields(edge_id, {"primary_point_id": point.id})
+            return point, source_id, updated_edge
+
+        try:
+            (point, source_id, updated_edge), new_rev = with_revision_check(
+                db, data.get("expected_revision"), _create_bind_attach,
+                touched=[("electrical_edge", edge_id), ("metering_point", "new")])
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e, ids=[edge_id])
+        except BindingConflict as e:
+            body, status = _err("double_counting", str(e), 409, ids=[edge_id])
+            return json_response(body, status)
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400, ids=[edge_id])
+            return json_response(body, status)
+
+        out = _edge_to_dict(updated_edge)
+        out["configuration_revision"] = new_rev
+        out["point"] = _point_to_dict(point)
+        out["meter_source_id"] = source_id
+        return json_response(out, 201)
 
     def _violations_to_json(violations):
         return [

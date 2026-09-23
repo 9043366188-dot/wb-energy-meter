@@ -227,9 +227,15 @@ class Harness:
         return m
 
     def create_plan(self, name="Смоук"):
-        rev = self.current_revision()
-        r = self.client.post("/api/v2/plans", json={
-            "name": name, "expected_revision": rev})
+        # POST /api/v2/plans читает multipart/form-data (request.form —
+        # см. api_v2.py::v2_plans, тот же контракт, что у v1 /api/plans),
+        # НЕ JSON — с json=... "name" всегда приходил пустым и падал
+        # "Имя плана не может быть пустым" (найдено при написании
+        # test_b03_planv3_flow.py). Пустой однолинейный план — тот же
+        # набор полей, что и planV3CreateEmptyPlan() во фронтенде.
+        r = self.client.post("/api/v2/plans", data={
+            "name": name, "plan_kind": "single_line",
+            "canvas_width": "2000", "canvas_height": "1200"})
         assert r.status_code == 201, r.get_json()
         return r.get_json()
 

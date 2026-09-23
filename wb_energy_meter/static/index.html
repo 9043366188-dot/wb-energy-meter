@@ -619,9 +619,18 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         </div>
         <div class="tile">
           <div class="lbl">Требует внимания</div>
-          <div class="val mono" x-text="overviewV2Problems().length"></div>
+          <!-- Э3/B10: раньше считались только проблемы УЖЕ заведённых
+               точек (overviewV2Problems()) — плитка честно показывала 0,
+               даже когда MQTT видит прибор, для которого точку ещё
+               никто не завёл (он попросту не входит в этот список).
+               planV3DevicesWithoutPoint() — тот же список "приборы без
+               точки", что и в правой панели «Плана v3» (Э3/B4). -->
+          <div class="val mono" x-text="overviewV2Problems().length+planV3DevicesWithoutPoint().length"></div>
           <div class="sub" x-show="overviewV2Problems().length>0"
                x-text="'не привязано: '+overviewV2Problems().filter(p=>p.kind==='unbound').length+' · нет связи: '+overviewV2Problems().filter(p=>p.kind==='no_connection').length+' · не подключалось: '+overviewV2Problems().filter(p=>p.kind==='never_seen').length+' · ошибка: '+overviewV2Problems().filter(p=>p.kind==='device_error').length"></div>
+          <div class="sub" x-show="planV3DevicesWithoutPoint().length>0"
+               x-text="'Обнаружено '+planV3DevicesWithoutPoint().length+' приборов без точек учёта → План v3'"
+               style="cursor:pointer" @click="tab='planv3'; openPlanV3Tab()"></div>
         </div>
         <div class="tile" x-show="overviewV2Snapshot">
           <div class="lbl">Снимок на</div>
@@ -666,43 +675,43 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                  вводы измеряются, unmetered_input), и вовсе не посчитан
                  (object_total=null — no_input_assigned). Разные сообщения
                  для разных причин, как того требует ТЗ. -->
-            <template x-if="ovSummary.object_total && ovSummary.object_total.value!=null">
+            <template x-if="(ovSummary||{}).object_total && (ovSummary||{}).object_total.value!=null">
               <div style="margin-bottom:12px">
                 <div class="val mono" style="font-size:28px">
-                  <span x-text="fmt(ovSummary.object_total.value,1)"></span>
-                  <small x-text="ovSummary.object_total.unit"></small>
+                  <span x-text="fmt(((ovSummary||{}).object_total||{}).value,1)"></span>
+                  <small x-text="((ovSummary||{}).object_total||{}).unit"></small>
                 </div>
                 <div class="muted" style="font-size:12px;cursor:pointer" @click="ovToggleDisclosure('object')">
                   <span x-text="ovDisclosureOpen.object?'▾':'▸'"></span> Из чего рассчитано
                 </div>
                 <div x-show="ovDisclosureOpen.object" style="font-size:12px;margin-top:4px" class="muted">
                   Сумма назначенного ввода объекта (точки:
-                  <span x-text="(ovSummary.object_input_point_ids||[]).map(id=>ovPointName(id)).join(', ')||'—'"></span>)
+                  <span x-text="((ovSummary||{}).object_input_point_ids||[]).map(id=>ovPointName(id)).join(', ')||'—'"></span>)
                 </div>
               </div>
             </template>
-            <template x-if="ovSummary.object_total && ovSummary.object_total.value==null">
+            <template x-if="(ovSummary||{}).object_total && (ovSummary||{}).object_total.value==null">
               <div style="margin-bottom:12px">
                 <div class="val mono" style="font-size:28px;color:var(--txt3)">—</div>
                 <div class="empty" style="text-align:left;font-size:12px">
                   Не все вводы объекта измеряются — честный итог посчитать нельзя
                   (сумма измеряемых вводов подряд была бы заниженной).
-                  <template x-if="ovSummary.object_total.known_value!=null">
+                  <template x-if="((ovSummary||{}).object_total||{}).known_value!=null">
                     <div style="margin-top:6px">
                       Известно по измеряемым вводам:
-                      <span class="mono" x-text="fmt(ovSummary.object_total.known_value,1)+' '+ovSummary.object_total.unit"></span>
+                      <span class="mono" x-text="fmt(((ovSummary||{}).object_total||{}).known_value,1)+' '+((ovSummary||{}).object_total||{}).unit"></span>
                     </div>
                   </template>
-                  <div style="margin-top:6px" x-show="(ovSummary.unmetered_inputs||[]).length>0">
+                  <div style="margin-top:6px" x-show="((ovSummary||{}).unmetered_inputs||[]).length>0">
                     Неизмеренные вводы:
-                    <template x-for="u in (ovSummary.unmetered_inputs||[])" :key="u.edge_id">
+                    <template x-for="u in ((ovSummary||{}).unmetered_inputs||[])" :key="u.edge_id">
                       <div x-text="'— '+u.from_node_name+' → '+u.to_node_name"></div>
                     </template>
                   </div>
                 </div>
               </div>
             </template>
-            <template x-if="!ovSummary.object_total && ovSummary.object_total_unavailable_reason==='no_input_assigned'">
+            <template x-if="!(ovSummary||{}).object_total && (ovSummary||{}).object_total_unavailable_reason==='no_input_assigned'">
               <div style="margin-bottom:12px">
                 <div class="empty" style="text-align:left">
                   Для объекта не назначен ввод — итог не может быть посчитан честно
@@ -714,9 +723,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 </div>
               </div>
             </template>
-            <template x-if="!ovSummary.object_total && ovSummary.object_total_unavailable_reason && ovSummary.object_total_unavailable_reason!=='no_input_assigned'">
+            <template x-if="!(ovSummary||{}).object_total && (ovSummary||{}).object_total_unavailable_reason && (ovSummary||{}).object_total_unavailable_reason!=='no_input_assigned'">
               <div class="empty" style="color:var(--err);text-align:left;margin-bottom:12px"
-                   x-text="ovSummary.object_total_unavailable_reason"></div>
+                   x-text="(ovSummary||{}).object_total_unavailable_reason"></div>
             </template>
 
             <!-- «Ветви сети» (network_branches, уровень 1 по электрической
@@ -724,19 +733,19 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                  из первого измерения на каждом отходе от вводов, участвуют
                  в небалансе. Неизмеренные ветви — отдельными строками без
                  чисел (нельзя выдумывать значение). -->
-            <table class="rep-table" x-show="(ovSummary.network_branches||[]).length>0 || (ovSummary.unmetered_branches||[]).length>0">
+            <table class="rep-table" x-show="((ovSummary||{}).network_branches||[]).length>0 || ((ovSummary||{}).unmetered_branches||[]).length>0">
               <thead><tr>
                 <th>Ветвь сети</th><th class="num">кВт·ч</th><th class="num">% объекта</th>
               </tr></thead>
               <tbody>
-                <template x-for="b in (ovSummary.network_branches||[])" :key="b.edge_id">
+                <template x-for="b in ((ovSummary||{}).network_branches||[])" :key="b.edge_id">
                   <tr>
                     <td x-text="b.name"></td>
                     <td class="num mono" x-text="b.result?fmt(b.result.value,1):'—'"></td>
                     <td class="num mono" x-text="b.percentage_of_object!=null?fmt(b.percentage_of_object,1)+'%':'—'"></td>
                   </tr>
                 </template>
-                <template x-for="u in (ovSummary.unmetered_branches||[])" :key="'u_'+u.edge_id">
+                <template x-for="u in ((ovSummary||{}).unmetered_branches||[])" :key="'u_'+u.edge_id">
                   <tr>
                     <td class="muted" x-text="'Неизмеренная ветвь: '+u.name"></td>
                     <td class="num mono">—</td>
@@ -749,8 +758,8 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px;padding:8px 0;
                         border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
               <span class="muted" style="font-size:12px">Небаланс:</span>
-              <span class="mono" :style="ovSummary.imbalance_value==null?'':(ovSummary.imbalance_value<0?'color:var(--err)':'color:var(--ok)')"
-                    x-text="ovSummary.imbalance_value!=null?(ovSummary.imbalance_value>0?'+':'')+fmt(ovSummary.imbalance_value,1)+' кВт·ч':'не определён ('+(ovSummary.imbalance_percent_reason==='object_total_incomplete'?'не все вводы измерены':'не все ветви известны')+')'"></span>
+              <span class="mono" :style="(ovSummary||{}).imbalance_value==null?'':((ovSummary||{}).imbalance_value<0?'color:var(--err)':'color:var(--ok)')"
+                    x-text="(ovSummary||{}).imbalance_value!=null?((ovSummary||{}).imbalance_value>0?'+':'')+fmt((ovSummary||{}).imbalance_value,1)+' кВт·ч':'не определён ('+((ovSummary||{}).imbalance_percent_reason==='object_total_incomplete'?'не все вводы измерены':'не все ветви известны')+')'"></span>
               <!-- A08: критерий требует «Небаланс −10, −10%» — процент часть
                    результата, а не украшение. Значение приходит с сервера
                    (imbalance_percent), на фронте НЕ считается: экран, отчёт и
@@ -758,19 +767,19 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                    При неопределённой или неположительной базе сервер вернёт
                    null с причиной — показываем прочерк, а не фиктивные 100%
                    (A11). -->
-              <span class="mono" x-show="ovSummary.imbalance_value!=null"
-                    :style="ovSummary.imbalance_percent==null?'color:var(--txt3)':(ovSummary.imbalance_percent<0?'color:var(--err)':'color:var(--ok)')"
-                    x-text="ovSummary.imbalance_percent!=null?'('+(ovSummary.imbalance_percent>0?'+':'')+ovSummary.imbalance_percent.toFixed(2)+'% от итога объекта)':'(% не определён)'"
-                    :title="ovSummary.imbalance_percent==null?('Процент не рассчитан: '+(ovSummary.imbalance_percent_reason||'нет данных')):''"></span>
+              <span class="mono" x-show="(ovSummary||{}).imbalance_value!=null"
+                    :style="(ovSummary||{}).imbalance_percent==null?'color:var(--txt3)':((ovSummary||{}).imbalance_percent<0?'color:var(--err)':'color:var(--ok)')"
+                    x-text="(ovSummary||{}).imbalance_percent!=null?'('+((ovSummary||{}).imbalance_percent>0?'+':'')+(ovSummary||{}).imbalance_percent.toFixed(2)+'% от итога объекта)':'(% не определён)'"
+                    :title="(ovSummary||{}).imbalance_percent==null?('Процент не рассчитан: '+((ovSummary||{}).imbalance_percent_reason||'нет данных')):''"></span>
             </div>
             <div class="muted" style="font-size:11px;margin-bottom:12px">
-              <template x-if="ovSummary.boundary_coverage==='verified'">
+              <template x-if="(ovSummary||{}).boundary_coverage==='verified'">
                 <span>все ветви измерены</span>
               </template>
-              <template x-if="ovSummary.boundary_coverage==='has_unmetered_branches'">
-                <span>есть неизмеренные ветви: <span x-text="(ovSummary.unmetered_branches||[]).map(b=>b.name).join(', ')"></span></span>
+              <template x-if="(ovSummary||{}).boundary_coverage==='has_unmetered_branches'">
+                <span>есть неизмеренные ветви: <span x-text="((ovSummary||{}).unmetered_branches||[]).map(b=>b.name).join(', ')"></span></span>
               </template>
-              <template x-if="!ovSummary.boundary_coverage">
+              <template x-if="!(ovSummary||{}).boundary_coverage">
                 <span>покрытие ветвей неизвестно</span>
               </template>
             </div>
@@ -780,15 +789,15 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                  группы могут пересекаться (одна точка в нескольких
                  группах), поэтому суммы здесь НЕ обязаны сходиться с
                  «Ветвями сети» и не участвуют в расчёте небаланса. -->
-            <template x-if="(ovSummary.branches||[]).length>0">
+            <template x-if="((ovSummary||{}).branches||[]).length>0">
               <div class="section-title" style="font-size:13px;margin-bottom:6px">Распределение по учётным группам</div>
             </template>
-            <table class="rep-table" x-show="(ovSummary.branches||[]).length>0">
+            <table class="rep-table" x-show="((ovSummary||{}).branches||[]).length>0">
               <thead><tr>
                 <th>Группа</th><th class="num">кВт·ч</th><th class="num">% объекта</th><th>Статус</th>
               </tr></thead>
               <tbody>
-                <template x-for="b in (ovSummary.branches||[])" :key="b.group_id">
+                <template x-for="b in ((ovSummary||{}).branches||[])" :key="b.group_id">
                   <tr>
                     <td x-text="b.name"></td>
                     <td class="num mono" x-text="b.mode==='sum'&&b.result?fmt(b.result.value,1):'—'"></td>
@@ -800,7 +809,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               </tbody>
             </table>
 
-            <template x-for="b in (ovSummary.branches||[]).filter(x=>x.mode==='comparison')" :key="'cmp_'+b.group_id">
+            <template x-for="b in ((ovSummary||{}).branches||[]).filter(x=>x.mode==='comparison')" :key="'cmp_'+b.group_id">
               <div style="margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px">
                 <div class="muted" x-text="b.name+' — '+(b.conflict_reason||'подтверждённое электрическое пересечение')"></div>
                 <template x-for="pid in Object.keys(b.points||{})" :key="pid">
@@ -812,10 +821,10 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               </div>
             </template>
 
-            <div class="muted" style="font-size:11px;margin-top:6px" x-show="(ovSummary.branches||[]).length>0"
-                 x-text="ovSummary.groups_note||'распределение по учётным группам; группы могут пересекаться, в небалансе не участвуют'"></div>
-            <div class="muted" style="font-size:11px;margin-top:6px" x-show="(ovSummary.ungrouped_point_ids||[]).length>0"
-                 x-text="(ovSummary.ungrouped_point_ids||[]).length+' точек не входит ни в одну группу'"></div>
+            <div class="muted" style="font-size:11px;margin-top:6px" x-show="((ovSummary||{}).branches||[]).length>0"
+                 x-text="(ovSummary||{}).groups_note||'распределение по учётным группам; группы могут пересекаться, в небалансе не участвуют'"></div>
+            <div class="muted" style="font-size:11px;margin-top:6px" x-show="((ovSummary||{}).ungrouped_point_ids||[]).length>0"
+                 x-text="((ovSummary||{}).ungrouped_point_ids||[]).length+' точек не входит ни в одну группу'"></div>
           </div>
         </template>
       </div>
@@ -833,7 +842,21 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           электросеть, группы) — она не заполняется автоматически, а старые счётчики
           и группы из классического интерфейса в неё не попадают сами собой.
           Перенесите их одной операцией (безопасно повторять, перед переносом
-          делается бэкап БД) — либо создайте точки вручную на вкладке «Настройки».
+          делается бэкап БД) — либо заведите схему с нуля на вкладке «План v3»
+          (узел → линия → счётчик прямо из прибора, без отдельного шага
+          «сначала точка»).
+          <!-- Э3/B10: убрано устаревшее "создайте точки вручную на
+               вкладке «Настройки»" — «Настройки» заводят точку только
+               старым, однонодовым способом (простой режим, которого с
+               Этапа 4 партии 7 не будет вовсе); правильный путь на
+               чистой базе — «План v3» (Этап 3), где узел/линия/счётчик
+               заводятся одним потоком (см. B8: «＋ новая точка из
+               прибора» прямо на линии). -->
+          <template x-if="planV3DevicesWithoutPoint().length>0">
+            <div class="muted" style="font-size:12px;margin-top:8px;cursor:pointer"
+                 @click="tab='planv3'; openPlanV3Tab()"
+                 x-text="'Обнаружено '+planV3DevicesWithoutPoint().length+' приборов без точек учёта → План v3'"></div>
+          </template>
           <div style="margin-top:12px">
             <button class="btn btn-primary" @click="migrateLegacyConfirm=true"
                     :disabled="migrateLegacyBusy">Перенести легаси-данные</button>
@@ -2361,7 +2384,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         </div>
       </template>
       <template x-if="planV3Tool=='zone'">
-        <div class="plan-toolbar" style="margin-top:-6px">
+        <div class="plan-toolbar" style="margin-top:-6px;flex-wrap:wrap">
           <select x-model.number="planV3ZoneGroupId" :disabled="planV3DrawingZone">
             <option value="">— выберите учётную группу —</option>
             <template x-for="g in structGroups" :key="g.id">
@@ -2370,9 +2393,26 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           </select>
           <button class="btn btn-sm btn-primary" :disabled="!planV3ZoneGroupId || planV3DrawingZone"
                   @click="planV3StartDrawZone()">Нарисовать контур</button>
+          <!-- Э3/B9: своя, отдельная от «Заведения структуры» кнопка —
+               чтобы завести группу под новую зону, не уходя со «Плана
+               v3» и не бросая уже выбранный инструмент. -->
+          <button class="btn btn-sm btn-secondary" x-show="!planV3NewZoneGroupOpen" :disabled="planV3DrawingZone"
+                  @click="planV3NewZoneGroupOpen=true">＋ Новая группа</button>
+          <template x-if="planV3NewZoneGroupOpen">
+            <span style="display:flex;gap:6px;align-items:center">
+              <input type="text" x-model="planV3NewZoneGroupName" placeholder="название группы" style="max-width:180px">
+              <button class="btn btn-sm btn-primary" :disabled="!planV3NewZoneGroupName.trim()"
+                      @click="planV3CreateGroupInline()">Создать</button>
+              <button class="btn btn-sm btn-secondary"
+                      @click="planV3NewZoneGroupOpen=false; planV3NewZoneGroupName=''; planV3NewZoneGroupError=null">Отмена</button>
+            </span>
+          </template>
           <span class="muted" style="font-size:11px" x-show="planV3DrawingZone">
             Рисуйте контур на карте, двойной клик — завершить (Esc — отмена)
           </span>
+          <template x-if="planV3NewZoneGroupError">
+            <div class="warn-item" x-text="planV3NewZoneGroupError" style="width:100%"></div>
+          </template>
         </div>
       </template>
 
@@ -2384,18 +2424,92 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 
       <div class="plan-layout plan-edit-open">
         <div id="site-plan-v3-map" x-ref="planV3Map"
-             :class="{'planv3-placing': planV3Tool=='node' || planV3Tool=='edge'}"></div>
+             :class="{'planv3-placing': planV3Tool=='node' || planV3Tool=='node-existing' || planV3Tool=='edge'}"></div>
 
         <div class="plan-side">
           <template x-if="structInspectorLoading"><div class="muted">Загрузка…</div></template>
           <template x-if="structInspectorError"><div class="warn-item" x-text="structInspectorError"></div></template>
 
           <template x-if="!structInspector && !structInspectorLoading">
-            <div class="muted" style="font-size:12px;line-height:1.6">
-              <template x-if="!planV3Tool"><span>Кликните узел на карте, чтобы открыть его карточку, либо выберите инструмент выше.</span></template>
-              <template x-if="planV3Tool=='node'"><span>Заполните форму выше и кликните на карте, чтобы разместить узел.</span></template>
-              <template x-if="planV3Tool=='edge'"><span>Кликните узел-источник, затем узел-получатель, чтобы провести линию.</span></template>
-              <template x-if="planV3Tool=='zone'"><span>Выберите учётную группу и нажмите «Нарисовать контур», затем обведите её на карте (двойной клик — завершить).</span></template>
+            <div>
+              <div class="muted" style="font-size:12px;line-height:1.6;margin-bottom:10px">
+                <template x-if="!planV3Tool"><span>Кликните узел на карте, чтобы открыть его карточку, либо выберите инструмент выше.</span></template>
+                <template x-if="planV3Tool=='node'"><span>Заполните форму выше и кликните на карте, чтобы разместить узел.</span></template>
+                <template x-if="planV3Tool=='node-existing'"><span>Кликните на карте, чтобы разместить выбранный узел.</span></template>
+                <template x-if="planV3Tool=='edge'"><span>Кликните узел-источник, затем узел-получатель, чтобы провести линию.</span></template>
+                <template x-if="planV3Tool=='zone'"><span>Выберите учётную группу и нажмите «Нарисовать контур», затем обведите её на карте (двойной клик — завершить).</span></template>
+              </div>
+
+              <!-- Э3/B4: обзор объектов плана, когда ничего не выбрано —
+                   те же данные, что уже загружены (structNodes/
+                   structEdges/structGroups/structPoints/
+                   structKnownDevices), просто сведены в один список со
+                   счётчиками, а не разбросаны по вкладке «Структура».
+                   Клик по строке выбирает объект — как клик по карте. -->
+              <div class="structure-field">
+                <div class="sf-lbl" x-text="'Узлы ('+structNodes.length+')'"></div>
+                <template x-if="structNodes.length===0">
+                  <div class="muted" style="font-size:11px">Узлов нет — нажмите «+ Узел» выше.</div>
+                </template>
+                <template x-for="n in structNodes" :key="n.id">
+                  <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:3px">
+                    <span class="sf-val" style="font-size:12px" :style="planV3NodePlaced(n.id)?'cursor:pointer':''"
+                          @click="planV3NodePlaced(n.id) && openInspectorInPlace('node', n.id)"
+                          x-text="n.name+' ('+structNodeKindLabel(n.kind)+')'"></span>
+                    <button class="btn btn-sm btn-secondary" x-show="!planV3NodePlaced(n.id)"
+                            :disabled="planV3PanelUnplacedBusy===n.id"
+                            @click="planV3StartPlaceExistingNode(n.id)">Разместить на карте</button>
+                  </div>
+                </template>
+              </div>
+
+              <div class="structure-field">
+                <div class="sf-lbl" x-text="'Линии ('+structEdges.length+')'"></div>
+                <template x-if="structEdges.length===0">
+                  <div class="muted" style="font-size:11px">Линий нет.</div>
+                </template>
+                <template x-for="e in structEdges" :key="e.id">
+                  <div class="sf-val" style="font-size:12px;cursor:pointer;margin-bottom:3px"
+                       @click="openInspectorInPlace('edge', e.id)"
+                       x-text="structNodeName(e.from_node_id)+' → '+structNodeName(e.to_node_id)+' — '+
+                               (e.primary_point_id!=null ? structPointName(e.primary_point_id) : 'без счётчика')"></div>
+                </template>
+              </div>
+
+              <div class="structure-field">
+                <div class="sf-lbl" x-text="'Зоны ('+structGroups.length+')'"></div>
+                <template x-if="structGroups.length===0">
+                  <div class="muted" style="font-size:11px">Учётных групп нет.</div>
+                </template>
+                <template x-for="g in structGroups" :key="g.id">
+                  <div class="sf-val" style="font-size:12px;cursor:pointer;margin-bottom:3px"
+                       @click="openInspectorInPlace('group', g.id)" x-text="g.name"></div>
+                </template>
+              </div>
+
+              <div class="structure-field">
+                <div class="sf-lbl" x-text="'Точки учёта ('+structPoints.length+')'"></div>
+                <template x-if="structPoints.length===0">
+                  <div class="muted" style="font-size:11px">Точек нет.</div>
+                </template>
+                <template x-for="p in structPoints" :key="p.point_id">
+                  <div class="sf-val" style="font-size:12px;cursor:pointer;margin-bottom:3px"
+                       @click="openInspector('point', p.point_id)">
+                    <span x-text="p.name||p.code"></span>
+                    <span class="muted" x-show="!planV3PointOnLine(p.point_id)"> — не стоит на линии</span>
+                  </div>
+                </template>
+              </div>
+
+              <div class="structure-field" x-show="planV3DevicesWithoutPoint().length>0">
+                <div class="sf-lbl" x-text="'Приборы без точки учёта ('+planV3DevicesWithoutPoint().length+')'"></div>
+                <div class="muted" style="font-size:11px;margin-bottom:4px">
+                  Заведите точку через «Структуру» либо «＋ новая точка из прибора» на карточке линии.
+                </div>
+                <template x-for="d in planV3DevicesWithoutPoint()" :key="d.device_id">
+                  <div class="muted" style="font-size:11px" x-text="d.label"></div>
+                </template>
+              </div>
             </div>
           </template>
 
@@ -2408,9 +2522,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             <div>
               <div style="display:flex;justify-content:space-between;align-items:flex-start">
                 <div>
-                  <h3 style="margin:0 0 2px" x-text="structInspector.data.name"></h3>
+                  <h3 style="margin:0 0 2px" x-text="((structInspector||{}).data||{}).name"></h3>
                   <div class="muted" style="font-size:12px"
-                       x-text="structNodeKindLabel(structInspector.data.kind)+' · код '+structInspector.data.code"></div>
+                       x-text="structNodeKindLabel(((structInspector||{}).data||{}).kind)+' · код '+((structInspector||{}).data||{}).code"></div>
                 </div>
                 <button class="ico-btn" @click="closeInspector()">✕</button>
               </div>
@@ -2436,10 +2550,10 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 
               <div class="structure-field">
                 <div class="sf-lbl">Линии этого узла</div>
-                <template x-if="!(structInspector.lines) || structInspector.lines.length===0">
+                <template x-if="!((structInspector||{}).lines) || (structInspector||{}).lines.length===0">
                   <div class="muted" style="font-size:11px">Линий нет.</div>
                 </template>
-                <template x-for="ln in (structInspector.lines||[])" :key="ln.edge_id">
+                <template x-for="ln in ((structInspector||{}).lines||[])" :key="ln.edge_id">
                   <div style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px">
                     <div class="sf-val" x-text="(ln.direction==='in'?'← от ':'→ к ')+ln.other_node_name"></div>
                     <div class="muted" style="font-size:11px" x-text="ln.name||ln.code"></div>
@@ -2453,13 +2567,109 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                         </template>
                       </select>
                     </div>
+                    <!-- Э3/B7: P-now (живой снимок, 5с) + E-за-период
+                         (тот же расчёт, что и в отчётах, reports/query
+                         dimension="point", A43) — обе части необязательные
+                         (x-show), пока не пришли/линия без счётчика. -->
+                    <div class="muted mono" style="font-size:11px;margin-top:4px"
+                         x-show="ln.primary_point_id!=null &&
+                                 (((structInspector||{}).lineLive||{})[ln.primary_point_id]!=null
+                                  || ((structInspector||{}).lineEnergy||{})[ln.primary_point_id]!=null)">
+                      <span x-show="(((structInspector||{}).lineLive||{})[ln.primary_point_id]||{}).power_w!=null"
+                            x-text="'сейчас: '+((((structInspector||{}).lineLive||{})[ln.primary_point_id]||{}).power_w/1000).toFixed(2)+' кВт'"></span>
+                      <span x-show="((structInspector||{}).lineEnergy||{})[ln.primary_point_id]!=null"
+                            x-text="' · за период: '+((((structInspector||{}).lineEnergy||{})[ln.primary_point_id]||{}).value!=null
+                                      ? fmt((((structInspector||{}).lineEnergy||{})[ln.primary_point_id]||{}).value,1)+' кВт·ч'
+                                      : ((((structInspector||{}).lineEnergy||{})[ln.primary_point_id]||{}).known_value!=null
+                                          ? '≥'+fmt((((structInspector||{}).lineEnergy||{})[ln.primary_point_id]||{}).known_value,1)+' кВт·ч'
+                                          : 'нет данных'))"></span>
+                    </div>
+                    <!-- Э3/H7: тот же приём, что и в карточке линии (B5/B8) —
+                         не заставлять сперва вручную заводить точку на
+                         «Структуре», можно прямо здесь по device_id прибора. -->
+                    <template x-if="planV3AttachEdgeId!==ln.edge_id">
+                      <button class="btn btn-sm btn-secondary" style="margin-top:4px"
+                              @click="planV3ToggleAttachForm(ln.edge_id)">＋ новая точка из прибора…</button>
+                    </template>
+                    <template x-if="planV3AttachEdgeId===ln.edge_id">
+                      <div style="display:flex;flex-direction:column;gap:6px;margin-top:4px">
+                        <div style="display:flex;gap:6px">
+                          <input type="text" x-model="planV3AttachDeviceId" placeholder="device_id прибора" style="flex:1">
+                          <button class="btn btn-sm btn-primary" :disabled="!planV3AttachDeviceId"
+                                  @click="planV3AttachNewPointSubmit(ln.edge_id)">Подключить</button>
+                          <button class="btn btn-sm btn-secondary" @click="planV3ToggleAttachForm(ln.edge_id)">Отмена</button>
+                        </div>
+                        <template x-if="planV3AttachError">
+                          <div class="warn-item" x-text="planV3AttachError"></div>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+
+              <!-- Э3/B7: «Баланс щита» — Э2.5 (/api/v2/topology/nodes/<id>/
+                   balance), тот же расчётный приём, что у небаланса
+                   объекта на «Обзоре» (тот же fmt(), тот же процент из
+                   explanation.percentage, A43 — не своя вторая формула
+                   для карточки). Период — ovFrom/ovTo, тот же, что на
+                   «Обзоре»: карточка не переспрашивает даты второй раз. -->
+              <div class="structure-field">
+                <div class="sf-lbl">Баланс щита за период
+                  <span class="muted" style="font-size:10px" x-text="'('+(ovFrom||'—')+' — '+(ovTo||'—')+', как на «Обзоре»)'"></span>
+                </div>
+                <template x-if="(structInspector||{}).balanceLoading">
+                  <div class="muted" style="font-size:11px">считаем…</div>
+                </template>
+                <template x-if="!(structInspector||{}).balanceLoading && (structInspector||{}).balanceError">
+                  <div class="warn-item" x-text="(structInspector||{}).balanceError"></div>
+                </template>
+                <!-- Защита от гонки: между "балансовый объект пришёл" и
+                     перерисовкой вложенных <template x-if> может
+                     проскочить обновление structInspector целиком (клик
+                     по ДРУГОМУ узлу — _loadNodeInspector пересоздаёт весь
+                     объект с balance:null, см. debug браузерного прогона
+                     test_b02 — "Cannot read properties of null (reading
+                     'unavailable_reason')"). Ниже — везде
+                     ((structInspector||{}).balance||{}) вместо прямого
+                     (structInspector||{}).balance.*, чтобы вложенный x-if не
+                     падал, даже если сработает на кадре с уже
+                     обнулённым balance. -->
+                <template x-if="!(structInspector||{}).balanceLoading && !(structInspector||{}).balanceError && (structInspector||{}).balance">
+                  <div>
+                    <template x-if="((structInspector||{}).balance||{}).unavailable_reason==='no_incoming_line'">
+                      <div class="muted" style="font-size:11px">У узла нет входящей линии — баланс щита не определён (это ввод/висячий узел).</div>
+                    </template>
+                    <template x-if="((structInspector||{}).balance||{}).unavailable_reason==='input_unmetered'">
+                      <div class="muted" style="font-size:11px">Входящая линия без счётчика — баланс щита посчитать нельзя.</div>
+                    </template>
+                    <template x-if="((structInspector||{}).balance||{}).unavailable_reason==='no_outgoing_lines'">
+                      <div class="muted" style="font-size:11px">У узла нет ни отходящих линий, ни неизмеренных ветвей — считать баланс не с чем.</div>
+                    </template>
+                    <template x-if="(structInspector||{}).balance && !(structInspector||{}).balance.unavailable_reason">
+                      <div>
+                        <div style="display:flex;gap:8px;align-items:baseline">
+                          <span class="mono"
+                                :style="((structInspector||{}).balance||{}).value==null?'':(((structInspector||{}).balance||{}).value<0?'color:var(--err)':'color:var(--ok)')"
+                                x-text="((structInspector||{}).balance||{}).value!=null?((((structInspector||{}).balance||{}).value>0?'+':'')+fmt(((structInspector||{}).balance||{}).value,1)+' кВт·ч'):'не определён'"></span>
+                          <span class="mono" x-show="((structInspector||{}).balance||{}).explanation && ((structInspector||{}).balance||{}).explanation.percentage!=null"
+                                :style="((((structInspector||{}).balance||{}).explanation)&&(((structInspector||{}).balance||{}).explanation.percentage<0))?'color:var(--err)':'color:var(--ok)'"
+                                x-text="((((structInspector||{}).balance||{}).explanation)&&(((structInspector||{}).balance||{}).explanation.percentage!=null))?('('+((((structInspector||{}).balance||{}).explanation.percentage>0)?'+':'')+((structInspector||{}).balance||{}).explanation.percentage.toFixed(2)+'%)'):''"></span>
+                        </div>
+                        <div class="muted" style="font-size:11px;margin-top:2px">
+                          <span x-show="((structInspector||{}).balance||{}).boundary_coverage==='verified'">все ветви измерены</span>
+                          <span x-show="((structInspector||{}).balance||{}).boundary_coverage==='has_unmetered_branches'"
+                                x-text="'есть неизмеренные ветви: '+(((structInspector||{}).balance||{}).unmetered_branches||[]).map(b=>b.name).join(', ')"></span>
+                        </div>
+                      </div>
+                    </template>
                   </div>
                 </template>
               </div>
 
               <div class="structure-field">
                 <div class="sf-lbl">Добавить отходящую линию</div>
-                <template x-if="structInspector.data.kind!=='load'">
+                <template x-if="((structInspector||{}).data||{}).kind!=='load'">
                   <div>
                     <div style="display:flex;gap:6px">
                       <input type="text" x-model="planV3AddConsumerName" placeholder="что питает линия" style="flex:1">
@@ -2471,9 +2681,140 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     </template>
                   </div>
                 </template>
-                <div class="muted" style="font-size:11px" x-show="structInspector.data.kind==='load'">
+                <div class="muted" style="font-size:11px" x-show="((structInspector||{}).data||{}).kind==='load'">
                   У потребителя не может быть отходящих линий.
                 </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- карточка линии (Э3/B5): тот же structInspector, что и клик
+               по линии на «Структуре»/«Плане v2», но здесь — с
+               редактированием (имя/номинал/кабель), живыми числами
+               (ток/загрузка/мощность из _planEdgeLiveMetrics) и формой
+               «＋ новая точка из прибора» (Э3/B8, planV3AttachNewPointSubmit).
+               Стиль полей — как у карточки узла выше; ток/загрузка — как
+               в planV2EdgeInfo (index.html~2137), чтобы не расходились. -->
+          <template x-if="!structInspectorLoading && !structInspectorError && structInspector && structInspector.kind==='edge'">
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                <div>
+                  <h3 style="margin:0 0 2px"
+                      x-text="((structInspector||{}).data||{}).name || ((structInspector||{}).data||{}).code || (structNodeName(((structInspector||{}).data||{}).from_node_id)+' → '+structNodeName(((structInspector||{}).data||{}).to_node_id))"></h3>
+                  <div class="muted" style="font-size:12px"
+                       x-text="'от: '+structNodeName(((structInspector||{}).data||{}).from_node_id)+' → к: '+structNodeName(((structInspector||{}).data||{}).to_node_id)"></div>
+                </div>
+                <button class="ico-btn" @click="closeInspector()">✕</button>
+              </div>
+
+              <div class="structure-field" style="margin-top:14px"
+                   x-show="(structInspector||{}).currentA!=null || ((structInspector||{}).data||{}).rated_current_a!=null || (structInspector||{}).power_w!=null">
+                <div class="sf-lbl">Ток / загрузка / мощность</div>
+                <div class="sf-val mono"
+                     x-text="((structInspector||{}).currentA!=null?(structInspector||{}).currentA.toFixed(1)+' А':'ток неизвестен')
+                             +((structInspector||{}).loadPct!=null?(' · '+(structInspector||{}).loadPct+'% от номинала'):'')
+                             +((structInspector||{}).power_w!=null?(' · '+((structInspector||{}).power_w/1000).toFixed(2)+' кВт'):'')"></div>
+              </div>
+
+              <div class="structure-field">
+                <div class="sf-lbl">Название</div>
+                <div style="display:flex;gap:6px">
+                  <input type="text" x-model="(structInspector||{}).nameDraft" style="flex:1">
+                  <button class="btn btn-sm" @click="planV3SaveEdgeCard()">Сохранить</button>
+                </div>
+              </div>
+              <div class="structure-field">
+                <div class="sf-lbl">Номинальный ток, А</div>
+                <div style="display:flex;gap:6px">
+                  <input type="number" step="0.1" min="0" x-model="(structInspector||{}).ratedDraft" style="flex:1">
+                  <button class="btn btn-sm" @click="planV3SaveEdgeCard()">Сохранить</button>
+                </div>
+              </div>
+              <div class="structure-field">
+                <div class="sf-lbl">Кабель / примечание</div>
+                <div style="display:flex;gap:6px">
+                  <input type="text" x-model="(structInspector||{}).cableDraft" style="flex:1">
+                  <button class="btn btn-sm" @click="planV3SaveEdgeCard()">Сохранить</button>
+                </div>
+              </div>
+              <template x-if="planV3EdgeCardError">
+                <div class="warn-item" x-text="planV3EdgeCardError"></div>
+              </template>
+
+              <div class="structure-field">
+                <div class="sf-lbl">Точка измерения</div>
+                <div style="display:flex;gap:6px;align-items:center">
+                  <select style="flex:1"
+                          @change="planV3AssignMeter((structInspector||{}).id, $event.target.value?Number($event.target.value):null)">
+                    <option value="">— без счётчика —</option>
+                    <template x-for="p in structPoints" :key="p.point_id">
+                      <option :value="p.point_id" :selected="p.point_id===((structInspector||{}).data||{}).primary_point_id"
+                              x-text="p.name||p.code"></option>
+                    </template>
+                  </select>
+                </div>
+                <template x-if="planV3AttachEdgeId!==(structInspector||{}).id">
+                  <button class="btn btn-sm btn-secondary" style="margin-top:6px"
+                          @click="planV3ToggleAttachForm((structInspector||{}).id)">＋ новая точка из прибора…</button>
+                </template>
+                <template x-if="planV3AttachEdgeId===(structInspector||{}).id">
+                  <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">
+                    <div style="display:flex;gap:6px">
+                      <input type="text" x-model="planV3AttachDeviceId" placeholder="device_id прибора" style="flex:1">
+                      <button class="btn btn-sm btn-primary" :disabled="!planV3AttachDeviceId"
+                              @click="planV3AttachNewPointSubmit((structInspector||{}).id)">Подключить</button>
+                      <button class="btn btn-sm btn-secondary" @click="planV3ToggleAttachForm((structInspector||{}).id)">Отмена</button>
+                    </div>
+                    <template x-if="planV3AttachError">
+                      <div class="warn-item" x-text="planV3AttachError"></div>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </template>
+
+          <!-- карточка зоны (Э3/B6): та же учётная группа, что и на
+               «Структуре» (_loadGroupInspector, состав через
+               effective-members, расход тем же вызовом metrics/query
+               mode=sum) — здесь без ухода с «Плана v3». Небаланс НЕ
+               показываем — сознательное отступление от текста §2
+               партии 6 (см. CHANGELOG): зона — учётная группа (может
+               пересекаться с другими и не совпадать с электрической
+               границей щита), а небаланс по Э2.1-Э2.5 считается строго
+               по топологии — "небаланс зоны" повторил бы саму ошибку
+               ревью, которую чинит Этап 2 (Обзор считал небаланс по
+               учётным группам вместо реальной схемы). -->
+          <template x-if="!structInspectorLoading && !structInspectorError && structInspector && structInspector.kind==='group'">
+            <div>
+              <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                <div>
+                  <h3 style="margin:0 0 2px" x-text="((structInspector||{}).data||{}).name"></h3>
+                  <div class="muted" style="font-size:12px" x-text="((structInspector||{}).data||{}).category||'учётная группа (зона)'"></div>
+                </div>
+                <button class="ico-btn" @click="closeInspector()">✕</button>
+              </div>
+              <div class="structure-field" style="margin-top:14px">
+                <div class="sf-lbl">Состав (рекурсивно, дедуплицирован)</div>
+                <template x-for="m in ((structInspector||{}).members||[])" :key="m.point_id">
+                  <div class="sf-val" style="font-size:12px;margin-bottom:3px;cursor:pointer"
+                       @click="openInspector('point', m.point_id)">
+                    <span x-text="m.name||m.code"></span>
+                    <span class="muted" x-show="m.via && m.via.length>1" x-text="' (через: '+m.via.join(', ')+')'"></span>
+                  </div>
+                </template>
+                <div class="muted" style="font-size:11px" x-show="((structInspector||{}).members||[]).length===0">Пусто</div>
+              </div>
+              <div class="structure-field">
+                <div class="sf-lbl">Расход за период</div>
+                <div class="sf-val"
+                     x-text="!(structInspector||{}).sum?'—':(((structInspector||{}).sum||{}).value!=null?fmt(((structInspector||{}).sum||{}).value,2)+' '+((structInspector||{}).sum||{}).unit:'нет данных ('+((structInspector||{}).sum||{}).availability+')')"></div>
+                <div class="muted" style="font-size:11px" x-show="(structInspector||{}).sum && (((structInspector||{}).sum||{}).quality_flags||[]).length"
+                     x-text="(((structInspector||{}).sum||{}).quality_flags||[]).join(', ')"></div>
+                <div class="muted" style="font-size:11px" x-text="structPeriodLabel()"></div>
+              </div>
+              <div class="muted" style="font-size:11px;margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
+                Небаланс у зоны не показывается: баланс считается по щитам — выберите узел.
               </div>
             </div>
           </template>
@@ -4141,6 +4482,18 @@ function app(){ return {
   planV3ZoneGroupId:'', planV3DrawingZone:false,
   planV3AddConsumerName:'', planV3AddConsumerError:null,
   planV3NodeCardError:null,
+  // Этап 3, B5: карточка линии — ошибка сохранения имени/номинала/кабеля.
+  planV3EdgeCardError:null,
+  // Этап 3, B8: инлайн-форма «＋ новая точка из прибора» — какая линия
+  // сейчас её показывает (edge_id или null) и введённый device_id.
+  planV3AttachEdgeId:null, planV3AttachDeviceId:'', planV3AttachError:null,
+  // Этап 3, B4: список объектов плана в правой панели, когда ничего не
+  // выбрано (узлы/линии/зоны/точки/приборы без точки). Busy — id узла,
+  // для которого сейчас идёт «Разместить на карте» (ждём клика по карте).
+  planV3PanelUnplacedBusy:null,
+  planV3PlacingExistingNodeId:null,
+  // Этап 3, B9: имя новой учётной группы («＋ Новая группа» у инструмента «Зона»).
+  planV3NewZoneGroupName:'', planV3NewZoneGroupOpen:false, planV3NewZoneGroupError:null,
   // перенос легаси-данных
   migrateLegacyConfirm:false, migrateLegacyBusy:false,
   migrateLegacyResult:null, migrateLegacyError:null,
@@ -4231,6 +4584,10 @@ function app(){ return {
       // иначе открытый попап зоны закрывался бы на каждый тик.
       if(this.tab=='plan') this.loadPlanLive();
       if(this.tab=='overviewv2') this.loadOverviewV2Snapshot();
+      // Партия 7, Этап 3, Э3/B7: "новый таймер не заводить" — P-now по
+      // линиям открытой карточки узла/тока-загрузки открытой карточки
+      // линии на «Плане v3» обновляются тем же тиком.
+      if(this.tab=='planv3') this._planV3PollLiveCard();
     },5000);
     // Партия 6, баг из браузера (§5: "рисование линии/контура никогда не
     // завершается" — режим рисования оставался включённым). Escape —
@@ -5720,8 +6077,17 @@ function app(){ return {
   async openOverviewV2Tab(){
     if(!this.overviewV2Inited){
       this.overviewV2Inited=true;
-      await Promise.all([this.loadOverviewV2Snapshot(), this.loadOverviewV2Groups(),
-                          this.initOvAccounting(), this.loadValidation()]);
+      const loads=[this.loadOverviewV2Snapshot(), this.loadOverviewV2Groups(),
+                   this.initOvAccounting(), this.loadValidation()];
+      // Э3/B10: «Требует внимания» не должен молчать про приборы, которые
+      // вообще ещё не стали точкой учёта (раньше считались только
+      // ПРОБЛЕМЫ УЖЕ ЗАВЕДЁННЫХ точек, overviewV2Problems() ниже) — нужны
+      // structPoints (meter_device_id занятых точек) и структурный список
+      // устройств (_loadKnownDevices), тот же, что у «Плана v3»
+      // (planV3DevicesWithoutPoint() переиспользуется как есть).
+      if(!this.structInited){ this.structInited=true; loads.push(this._loadStructureLists()); }
+      if(!this.structKnownDevicesLoaded) loads.push(this._loadKnownDevices());
+      await Promise.all(loads);
     }
   },
   async loadValidation(){
@@ -5893,6 +6259,15 @@ function app(){ return {
     // напрямую (periods.py::parse_user_datetime) — конвертация в unix
     // делается на сервере, здесь не нужна.
     if(!this.ovFrom || !this.ovTo) return;
+    // Оба поля дат независимые (у каждого свой @change="loadOvSummary()"),
+    // поэтому при редактировании ovFrom/ovTo по очереди на мгновение
+    // возможно временное from>to (второе поле ещё не подтянулось) —
+    // сервер честно отвечает 400 (periods.py::build_period: "ts_to
+    // должен быть больше ts_from"), но это не ошибка пользователя, а
+    // промежуточное состояние формы. Не дёргаем сервер и не показываем
+    // "не удалось посчитать" — подождём, когда оба поля устаканятся
+    // (второй @change перезапустит расчёт с уже верным диапазоном).
+    if(this.ovFrom > this.ovTo) return;
     this.ovLoading=true; this.ovError=null;
     try{
       const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
@@ -6249,6 +6624,27 @@ function app(){ return {
     const p=(this.structPoints||[]).find(x=>x.point_id===pointId);
     return p ? (p.name||p.code||('#'+pointId)) : ('#'+pointId);
   },
+  // Э3/B4: правая панель «Плана v3», когда ничего не выбрано —
+  // «Узлы»/«Точки учёта»/«Приборы без точки учёта» нужны эти три
+  // хелпера, чтобы не дублировать логику фильтрации внутри разметки.
+  planV3NodePlaced(nodeId){
+    return !!(this.planV3Current && this.planV3Current.items || [])
+      .find(it=>it.kind==='node' && it.node_id===nodeId);
+  },
+  planV3PointOnLine(pointId){
+    return (this.structEdges||[]).some(e=>e.primary_point_id===pointId);
+  },
+  // «Приборы из _loadKnownDevices(), у которых нет открытой основной
+  // привязки» (Э3/B4) — structPoints уже несёт meter_device_id для
+  // каждой ТОЧКИ с открытой привязкой (bound:true, см. api_v2.py::
+  // v2_structure_points); прибор "занят", если его device_id встретился
+  // хоть у одной такой точки.
+  planV3DevicesWithoutPoint(){
+    const bound=new Set((this.structPoints||[])
+      .filter(p=>p.bound && p.meter_device_id)
+      .map(p=>p.meter_device_id));
+    return (this.structKnownDevices||[]).filter(d=>!bound.has(d.device_id));
+  },
   // Партия 6, задача 6 (баг: "выбор связи на плане v2 не показывает
   // информацию" — раньше в панели был только 'edge_id: N'). Тянет то же,
   // что структуре — концы/измерение/кабель — плюс живой ток по точке
@@ -6274,6 +6670,29 @@ function app(){ return {
     this.planV2SelectedEdgeView=v;
     this._planV2LoadEdgeInfo(v.edge_id);
   },
+  // Общий хелпер (партия 6 «План v2» — карточка связи; партия 7, Этап 3,
+  // Э3/B5 — карточка линии «Плана v3»): живой ток (худшая, то есть
+  // максимальная, фаза — именно она определяет реальную загрузку
+  // кабеля/автомата, не среднее) и % загрузки от rated_current_a по
+  // точке измерения линии. Раньше расчёт был только внутри
+  // _planV2LoadEdgeInfo — вынесено сюда, чтобы карточка линии «Плана
+  // v3» не писала то же самое второй раз иначе.
+  async _planEdgeLiveMetrics(edge){
+    if(!edge || edge.primary_point_id==null) return {currentA:null, loadPct:null, phases:null};
+    try{
+      const sr=await fetch('/api/v2/snapshot?point_ids='+edge.primary_point_id);
+      if(!sr.ok) return {currentA:null, loadPct:null, phases:null};
+      const snap=(await sr.json()).points||[];
+      const point=snap[0]||null;
+      const cur=point && point.current_a;
+      if(!cur) return {currentA:null, loadPct:null, phases:null, power_w: point?point.power_w:null};
+      const vals=[cur.L1,cur.L2,cur.L3].filter(x=>x!=null);
+      if(!vals.length) return {currentA:null, loadPct:null, phases:cur, power_w: point.power_w};
+      const currentA=Math.max(...vals);
+      const loadPct=edge.rated_current_a ? Math.round(currentA/edge.rated_current_a*100) : null;
+      return {currentA, loadPct, phases:cur, power_w: point.power_w};
+    }catch(e){ return {currentA:null, loadPct:null, phases:null}; }
+  },
   async _planV2LoadEdgeInfo(edgeId){
     this.planV2EdgeInfo={loading:true, edgeId};
     try{
@@ -6281,26 +6700,7 @@ function app(){ return {
       const r=await fetch('/api/v2/topology/edges/'+edgeId);
       if(!r.ok) throw new Error('связь не найдена (HTTP '+r.status+')');
       const edge=await r.json();
-      let currentA=null, loadPct=null;
-      if(edge.primary_point_id!=null){
-        try{
-          const sr=await fetch('/api/v2/snapshot?point_ids='+edge.primary_point_id);
-          if(sr.ok){
-            const snap=(await sr.json()).points||[];
-            const cur=snap[0] && snap[0].current_a;
-            if(cur){
-              // "ток" в карточке связи — худшая (максимальная) фаза: именно
-              // она определяет реальную загрузку кабеля/автомата, а не
-              // среднее по фазам.
-              const vals=[cur.L1,cur.L2,cur.L3].filter(x=>x!=null);
-              if(vals.length){
-                currentA=Math.max(...vals);
-                if(edge.rated_current_a) loadPct=Math.round(currentA/edge.rated_current_a*100);
-              }
-            }
-          }
-        }catch(e){ /* живых данных может не быть — карточка всё равно показывает статическое */ }
-      }
+      const {currentA, loadPct}=await this._planEdgeLiveMetrics(edge);
       if(this.planV2EdgeInfo && this.planV2EdgeInfo.edgeId===edgeId){
         this.planV2EdgeInfo={loading:false, edgeId, edge, currentA, loadPct};
       }
@@ -6560,15 +6960,186 @@ function app(){ return {
       locationText = loc ? loc.name : '';
     }
     this.structInspector = {kind:'node', id, data, lines,
-      nameDraft: data.name, locationTextDraft: locationText};
+      nameDraft: data.name, locationTextDraft: locationText,
+      lineLive:{}, lineEnergy:{}, balance:null, balanceLoading:false, balanceError:null};
     this.planV3NodeCardError = null;
     this.planV3AddConsumerError = null; this.planV3AddConsumerName = '';
+    // Э3/B7: живые P-now/E-за-период по линиям и «Баланс щита» — только
+    // на «Плане v3» (та же карточка на «Структуре» — read-only снимок
+    // конфигурации, без живых запросов на каждый клик по дереву).
+    if(this.tab==='planv3'){
+      this._planV3RefreshNodeLiveNow();
+      this._planV3LoadNodeLineEnergy();
+      this._planV3LoadNodeBalance(id);
+    }
   },
   async _loadEdgeInspector(id){
     const r = await fetch('/api/v2/topology/edges/'+id);
     if(!r.ok) throw new Error('связь не найдена (HTTP '+r.status+')');
     const data = await r.json();
-    this.structInspector = {kind:'edge', id, data};
+    // Партия 7, Этап 3, Э3/B5: карточка линии «Плана v3» переиспользует
+    // этот же loader (общий structInspector) — «Структура» показывает
+    // его read-only (см. HTML ниже), «План v3» добавляет редактирование
+    // и живые числа поверх тех же данных.
+    const {currentA, loadPct, phases, power_w}=await this._planEdgeLiveMetrics(data);
+    this.structInspector = {
+      kind:'edge', id, data, currentA, loadPct, phases, power_w,
+      nameDraft: data.name||'',
+      ratedDraft: data.rated_current_a!=null ? String(data.rated_current_a) : '',
+      cableDraft: data.cable_note||'',
+    };
+    this.planV3EdgeCardError=null;
+    this.planV3AttachEdgeId=null; this.planV3AttachDeviceId=''; this.planV3AttachError=null;
+  },
+  // Э3/B5: сохранить имя/номинальный ток/кабель линии одним PATCH —
+  // раньше эти поля вообще не принимались бэкендом (см. api_v2.py).
+  async planV3SaveEdgeCard(){
+    if(!this.structInspector || this.structInspector.kind!=='edge') return;
+    this.planV3EdgeCardError=null;
+    const id=this.structInspector.id;
+    const ratedRaw=(this.structInspector.ratedDraft||'').toString().trim();
+    try{
+      const rev=await this._structCurrentRev();
+      const r=await fetch('/api/v2/topology/edges/'+id, {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          name: this.structInspector.nameDraft || null,
+          rated_current_a: ratedRaw==='' ? null : Number(ratedRaw),
+          cable_note: this.structInspector.cableDraft || null,
+          expected_revision: rev,
+        })});
+      const d=await r.json();
+      if(!r.ok){ this.planV3EdgeCardError=this._apiErrorMessage(d, r.status); return; }
+      this.showToast('Линия обновлена', true);
+      await this._loadStructureLists();
+      if(this.planV3Current) await this.reloadPlanV3Items();
+      else await this.openInspectorInPlace('edge', id);
+    }catch(e){ this.planV3EdgeCardError='Ошибка сети: '+e; }
+  },
+  // Э3/B8: «＋ Новая точка из прибора…» — инлайн-форма в карточке линии
+  // и в списке линий узла (см. planV3ToggleAttachForm ниже).
+  planV3ToggleAttachForm(edgeId){
+    this.planV3AttachEdgeId = this.planV3AttachEdgeId===edgeId ? null : edgeId;
+    this.planV3AttachDeviceId=''; this.planV3AttachError=null;
+  },
+  async planV3AttachNewPointSubmit(edgeId){
+    const deviceId=(this.planV3AttachDeviceId||'').trim();
+    if(!deviceId){ this.planV3AttachError='Укажите device_id прибора'; return; }
+    this.planV3AttachError=null;
+    try{
+      const rev=await this._structCurrentRev();
+      const r=await fetch('/api/v2/topology/edges/'+edgeId+'/attach-new-point', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({device_id: deviceId, expected_revision: rev})});
+      const d=await r.json();
+      if(!r.ok){ this.planV3AttachError=this._apiErrorMessage(d, r.status); return; }
+      const pointName=d.point ? (d.point.name||d.point.code) : '';
+      this.showToast(
+        d.attached==='already' ? 'Уже подключена ('+pointName+')'
+                                : 'Точка «'+pointName+'» подключена и поставлена на линию',
+        true);
+      this.planV3AttachEdgeId=null; this.planV3AttachDeviceId='';
+      await this._loadStructureLists();
+      this._planV3RenderItems();
+      if(this.structInspector){
+        await this.openInspectorInPlace(this.structInspector.kind, this.structInspector.id);
+      }
+    }catch(e){ this.planV3AttachError='Ошибка сети: '+e; }
+  },
+  // Э3/B7, "P-now": снимок одним запросом по всем точкам линий узла
+  // разом (не по одной, как _planEdgeLiveMetrics — там для ОДНОЙ линии).
+  // Дешёвая, живая часть — дёргается и при открытии карточки, и на
+  // каждый тик существующего 5-секундного таймера (_planV3PollLiveCard
+  // ниже), пока карточка узла открыта на «Плане v3».
+  async _planV3RefreshNodeLiveNow(){
+    if(!this.structInspector || this.structInspector.kind!=='node') return;
+    const nodeId=this.structInspector.id;
+    const pointIds=[...new Set((this.structInspector.lines||[])
+      .filter(l=>l.primary_point_id!=null).map(l=>l.primary_point_id))];
+    if(!pointIds.length) return;
+    try{
+      const r=await fetch('/api/v2/snapshot?point_ids='+pointIds.join(','));
+      if(!r.ok) return;
+      const pts=(await r.json()).points||[];
+      if(!this.structInspector || this.structInspector.kind!=='node' || this.structInspector.id!==nodeId) return;
+      const live={};
+      pts.forEach(p=>{ live[p.point_id]={power_w:p.power_w, current_a:p.current_a}; });
+      this.structInspector.lineLive=live;
+    }catch(e){ /* необязательно — просто не покажем P-now */ }
+  },
+  // "E-за-период" по каждой линии — та же формула, что и везде в отчётах
+  // (reports/query, dimension="point"; A43 — одно и то же число, не своя
+  // отдельная формула для карточки узла), период — как на «Обзоре»
+  // (ovFrom/ovTo). Один раз при открытии карточки — это агрегат за
+  // период, а не живое значение, гонять его на каждый тик 5с таймера
+  // незачем и дорого для БД.
+  async _planV3LoadNodeLineEnergy(){
+    if(!this.structInspector || this.structInspector.kind!=='node') return;
+    const nodeId=this.structInspector.id;
+    const pointIds=[...new Set((this.structInspector.lines||[])
+      .filter(l=>l.primary_point_id!=null).map(l=>l.primary_point_id))];
+    if(!pointIds.length) return;
+    if(!this.ovFrom || !this.ovTo){
+      const d=this._ovDefaultDates(); this.ovFrom=this.ovFrom||d.from; this.ovTo=this.ovTo||d.to;
+    }
+    try{
+      const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
+      const r=await fetch('/api/v2/reports/query', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({dimension:'point', scope_ids:pointIds,
+                               from:this.ovFrom, to:this.ovTo, timezone:tz})});
+      if(!r.ok) return;
+      const rows=(await r.json()).rows||[];
+      if(!this.structInspector || this.structInspector.kind!=='node' || this.structInspector.id!==nodeId) return;
+      const energy={};
+      rows.forEach(row=>{ energy[row.id]=row.result; });
+      this.structInspector.lineEnergy=energy;
+    }catch(e){ /* необязательно */ }
+  },
+  // Э3/B7: «Баланс щита» — тот же расчёт (Э2.5, overview_service.
+  // balance_node через /api/v2/topology/nodes/<id>/balance), который
+  // видел бы этот щит, будь он единственным объектом; период — тот же,
+  // что выбран на «Обзоре» (ovFrom/ovTo) — не переспрашиваем даты
+  // второй раз в карточке узла.
+  async _planV3LoadNodeBalance(nodeId){
+    if(!this.ovFrom || !this.ovTo){
+      const d=this._ovDefaultDates(); this.ovFrom=this.ovFrom||d.from; this.ovTo=this.ovTo||d.to;
+    }
+    if(this.structInspector && this.structInspector.id===nodeId) this.structInspector.balanceLoading=true;
+    try{
+      const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
+      const r=await fetch('/api/v2/topology/nodes/'+nodeId+'/balance', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({from:this.ovFrom, to:this.ovTo, timezone:tz})});
+      const d=await r.json();
+      if(!this.structInspector || this.structInspector.kind!=='node' || this.structInspector.id!==nodeId) return;
+      this.structInspector.balanceLoading=false;
+      if(!r.ok){ this.structInspector.balanceError=this._apiErrorMessage(d, r.status); this.structInspector.balance=null; return; }
+      this.structInspector.balance=d; this.structInspector.balanceError=null;
+    }catch(e){
+      if(this.structInspector && this.structInspector.kind==='node' && this.structInspector.id===nodeId){
+        this.structInspector.balanceLoading=false;
+        this.structInspector.balanceError='Ошибка сети: '+e;
+      }
+    }
+  },
+  // Э3/B7: "новый таймер не заводить" — используется существующий
+  // 5-секундный (см. this._timer=setInterval выше, ветка
+  // if(this.tab=='planv3')). Опрашиваем ТОЛЬКО точки уже открытой
+  // карточки — не весь снимок, чтобы не грузить сервер зря, когда
+  // карточка вообще не открыта.
+  async _planV3PollLiveCard(){
+    if(!this.structInspector) return;
+    if(this.structInspector.kind==='edge'){
+      const edgeId=this.structInspector.id;
+      const {currentA, loadPct, phases, power_w}=await this._planEdgeLiveMetrics(this.structInspector.data);
+      if(this.structInspector && this.structInspector.kind==='edge' && this.structInspector.id===edgeId){
+        this.structInspector.currentA=currentA; this.structInspector.loadPct=loadPct;
+        this.structInspector.phases=phases; this.structInspector.power_w=power_w;
+      }
+    } else if(this.structInspector.kind==='node'){
+      await this._planV3RefreshNodeLiveNow();
+    }
   },
 
   // ------------------------------------------------------------------
@@ -7627,19 +8198,62 @@ function app(){ return {
       this.planV3Inited=true;
       const loads=[this.loadPlanV3List()];
       if(!this.structInited){ this.structInited=true; loads.push(this._loadStructureLists()); }
+      // Э3/B4: «Приборы без точки учёта» в правой панели, когда ничего
+      // не выбрано — тот же список, что структура грузит по требованию
+      // (см. openStructureTab), здесь нужен сразу.
+      if(!this.structKnownDevicesLoaded) loads.push(this._loadKnownDevices());
       await Promise.all(loads);
     }
-    this.$nextTick(()=>{ if(_planV3Map) _planV3Map.invalidateSize(); });
+    // Партия 7, Этап 3, B1: контейнер карты мог быть невидим (display:none
+    // за x-show), когда _planV3RenderBase() уже пытался вписать план —
+    // Leaflet вписывает в нулевой размер и остаётся на zoom=-4 насовсем.
+    // Здесь, после $nextTick (контейнер уже получил реальный размер),
+    // довписываем то, что не удалось раньше (_planV3NeedsFit).
+    this.$nextTick(()=>{ if(_planV3Map){ _planV3Map.invalidateSize(); this._planV3TryFit(); } });
   },
   initPlanV3Map(){
     if(_planV3Map) return;
     const el=this.$refs.planV3Map;
-    _planV3Map=L.map(el, {crs:L.CRS.Simple, minZoom:-4, zoomControl:true,
+    // Э3/B1, доп. правка: zoomSnap:0 — без этого Leaflet округляет
+    // fitBounds() до ЦЕЛОГО уровня зума (zoomSnap=1 по умолчанию) вниз
+    // до ближайшего, который ТОЧНО помещается — план у которого
+    // соотношение сторон не попадает ровно на степень двойки от
+    // контейнера, вписывается с запасом ДО ПОЛОВИНЫ контейнера пустым
+    // полем (один шаг зума — это 2×), а не "впритык". Итог на браузерном
+    // прогоне test_b02: клик в верхнюю левую четверть ХОЛСТА (контейнера
+    // карты) попадал за пределы реально нарисованного плана ("Точка вне
+    // границ плана"), хотя пользователь целился именно в план — то же
+    // самое произошло бы и у живого пользователя на объекте с планом
+    // нестандартных пропорций. С zoomSnap:0 fitBounds() вписывает план
+    // впритык (дробный зум), без резкого запаса вдвое.
+    _planV3Map=L.map(el, {crs:L.CRS.Simple, minZoom:-4, zoomSnap:0, zoomControl:true,
                           attributionControl:false});
     _planV3Map.setView([0,0],0);
     _planV3Map.on('click', (e)=>this._planV3OnMapClick(e));
     _planV3Map.on('pm:create', (e)=>this._planV3OnPmCreate(e));
     window.addEventListener('resize', ()=>{ if(_planV3Map) _planV3Map.invalidateSize(); });
+    // Э3/B1, доп. правка (найдено браузерным прогоном test_b02 ПОСЛЕ
+    // первой версии фикса выше): $nextTick после смены вкладки/выбора
+    // плана НЕ гарантирует, что x-show родительского контейнера
+    // (planV3Plans.length>0) уже применился к DOM в тот же тик — на
+    // практике Alpine иногда применяет его позже. Тогда _planV3TryFit(),
+    // вызванный из $nextTick в openPlanV3Tab()/selectPlanV3(), видит
+    // контейнер ещё нулевого размера и оставляет _planV3NeedsFit висеть
+    // НАВСЕГДА — больше никто не пробует ещё раз: план визуально
+    // виден, но карта осталась на zoom/центре из setView([0,0],0) выше,
+    // а не вписанной по границам — из-за этого клик по видимой части
+    // холста давал координату вне логических границ плана ("Точка вне
+    // границ плана"), хотя пользователь кликал ровно там, где нарисован
+    // план. ResizeObserver — сигнал, не зависящий от того, чем именно
+    // вызвано появление контейнера (Alpine, смена вкладки, ресайз окна,
+    // сворачивание/разворачивание DevTools): на каждое изменение размера
+    // пробуем довписать отложенные границы; когда вписывать нечего
+    // (_planV3NeedsFit уже null) — _planV3TryFit() дешёвый no-op.
+    if(window.ResizeObserver){
+      new ResizeObserver(()=>{
+        if(_planV3Map){ _planV3Map.invalidateSize(); this._planV3TryFit(); }
+      }).observe(el);
+    }
   },
   async loadPlanV3List(){
     this.planV3Loading=true;
@@ -7674,6 +8288,14 @@ function app(){ return {
     }catch(e){ this.showToast('Ошибка сети: '+e, false); }
     finally{ this.planV3Saving=false; }
   },
+  // Полная загрузка плана + фон + вписывание вида — только при смене
+  // плана (селектор) или первом входе (Э3/B2). Все действия ПОСЛЕ этого
+  // (узел, перетаскивание, линия, отходящая линия, зона, счётчик)
+  // должны звать reloadPlanV3Items() ниже, а не эту функцию — иначе
+  // каждое действие сбрасывает zoom/центр обратно к fitBounds (это и
+  // была причина «зум сбрасывается после каждого действия», найденная в
+  // test_b02 после Этапа 1). Образец — разделение
+  // _planV2RenderBase/_planV2RenderItems «Плана v2».
   async selectPlanV3(id){
     if(!id) return;
     this.planV3CancelTool();
@@ -7685,6 +8307,27 @@ function app(){ return {
       this.planV3Current=await r.json();
     }catch(e){ console.error(e); return; }
     this._planV3RenderBase();
+    // Б1: контейнер мог стать видимым ТОЛЬКО что (например, только что
+    // созданный первый план — x-show="planV3Plans.length>0" переключился
+    // синхронно с этим же тиком) — $nextTick ждёт, пока Alpine применит
+    // DOM-патч, и тогда пробуем вписать ещё раз.
+    this.$nextTick(()=>this._planV3TryFit());
+  },
+  // Перечитать план и перерисовать элементы/линии БЕЗ смены вида (zoom/
+  // центр), активного инструмента и открытой карточки — карточку того
+  // же объекта перечитываем (Э3/B2). Используется всеми действиями на
+  // карте вместо полного selectPlanV3().
+  async reloadPlanV3Items(){
+    if(!this.planV3Current) return;
+    try{
+      const r=await fetch('/api/v2/plans/'+this.planV3Current.id);
+      if(!r.ok) return;
+      this.planV3Current=await r.json();
+    }catch(e){ console.error(e); return; }
+    this._planV3RenderItems();
+    if(this.structInspector && (this.structInspector.kind==='node' || this.structInspector.kind==='edge')){
+      await this.openInspectorInPlace(this.structInspector.kind, this.structInspector.id);
+    }
   },
   _planV3EffectiveDims(plan){
     if(plan.image_width && plan.image_height) return [plan.image_width, plan.image_height];
@@ -7705,18 +8348,60 @@ function app(){ return {
     this.planV3Tool=null;
     this.planV3EdgeFirstItem=null;
     this.planV3ZoneGroupId='';
+    this.planV3PlacingExistingNodeId=null;
     this._planV3CancelDrawZone();
   },
 
   // --- узлы: разместить бланк-узел одним кликом (§1 задания) ---
   _planV3OnMapClick(e){
-    if(!this.planV3Current || this.planV3Tool!=='node') return;
-    const name=(this.planV3PendingNodeForm.name||'').trim();
-    if(!name){ this.showToast('Укажите название узла', false); return; }
-    const [W,H]=this._planV3EffectiveDims(this.planV3Current);
-    const [x,y]=this._planV3LatLngToXy(e.latlng, H);
-    if(x<0||x>W||y<0||y>H){ this.showToast('Точка вне границ плана', false); return; }
-    this.planV3PlaceNode(x,y);
+    if(!this.planV3Current) return;
+    if(this.planV3Tool==='node'){
+      const name=(this.planV3PendingNodeForm.name||'').trim();
+      if(!name){ this.showToast('Укажите название узла', false); return; }
+      const [W,H]=this._planV3EffectiveDims(this.planV3Current);
+      const [x,y]=this._planV3LatLngToXy(e.latlng, H);
+      if(x<0||x>W||y<0||y>H){ this.showToast('Точка вне границ плана', false); return; }
+      this.planV3PlaceNode(x,y);
+      return;
+    }
+    // Э3/B4: «Разместить на карте» у уже заведённого, но ещё не
+    // нанесённого узла — тот же клик по карте, что и «+ Узел», только
+    // без создания нового узла (id уже есть, см. planV3StartPlaceExistingNode).
+    if(this.planV3Tool==='node-existing' && this.planV3PlacingExistingNodeId!=null){
+      const [W,H]=this._planV3EffectiveDims(this.planV3Current);
+      const [x,y]=this._planV3LatLngToXy(e.latlng, H);
+      if(x<0||x>W||y<0||y>H){ this.showToast('Точка вне границ плана', false); return; }
+      this.planV3PlaceExistingNode(x,y);
+    }
+  },
+  // Э3/B4: строка «Узлы» в правой панели (ничего не выбрано) — начать
+  // размещение уже существующего, но ещё не нанесённого на ЭТОТ план
+  // узла. Дальше — обычный клик по карте (_planV3OnMapClick выше).
+  planV3StartPlaceExistingNode(nodeId){
+    this.planV3CancelTool();
+    this.planV3Tool='node-existing';
+    this.planV3PlacingExistingNodeId=nodeId;
+    this.showToast('Кликните на карте, чтобы разместить узел', true);
+  },
+  async planV3PlaceExistingNode(x,y){
+    const nodeId=this.planV3PlacingExistingNodeId;
+    if(nodeId==null) return;
+    const node=(this.structNodes||[]).find(n=>n.id===nodeId);
+    this.planV3PanelUnplacedBusy=nodeId;
+    try{
+      const ir=await fetch('/api/v2/plans/'+this.planV3Current.id+'/items', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({kind:'node', node_id:nodeId, geometry:{x,y},
+          coord_space:this._planV3CoordSpace(), label:node?node.name:''})});
+      const id_=await ir.json();
+      if(!ir.ok){ this.showToast(this._apiErrorMessage(id_, ir.status), false); return; }
+      this.showToast('Узел «'+(node?node.name:nodeId)+'» размещён на плане', true);
+      this.planV3PlacingExistingNodeId=null; this.planV3Tool=null;
+      await this._loadStructureLists();
+      await this.reloadPlanV3Items();
+      await this.openInspectorInPlace('node', nodeId);
+    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
+    finally{ this.planV3PanelUnplacedBusy=null; }
   },
   async planV3PlaceNode(x,y){
     const form=this.planV3PendingNodeForm;
@@ -7736,7 +8421,7 @@ function app(){ return {
       this.showToast('Узел «'+name+'» размещён', true);
       this.planV3PendingNodeForm={kind:form.kind, name:''};
       await this._loadStructureLists();
-      await this.selectPlanV3(this.planV3Current.id);
+      await this.reloadPlanV3Items();
       await this.openInspectorInPlace('node', nd.id);
     }catch(e){ this.showToast('Ошибка сети: '+e, false); }
   },
@@ -7750,7 +8435,7 @@ function app(){ return {
         method:'PATCH', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({geometry:{x,y}, coord_space:item.coord_space})});
       if(!r.ok){ const d=await r.json(); this.showToast(this._apiErrorMessage(d, r.status), false); }
-      await this.selectPlanV3(this.planV3Current.id);
+      await this.reloadPlanV3Items();
     }catch(e){ this.showToast('Ошибка сети: '+e, false); }
   },
   _planV3OnNodeMarkerClick(item){
@@ -7786,9 +8471,31 @@ function app(){ return {
                                view_kind:'structural'})});
       this.showToast('Линия проведена', true);
       await this._loadStructureLists();
-      await this.selectPlanV3(this.planV3Current.id);
+      await this.reloadPlanV3Items();
     }catch(e){ this.showToast('Ошибка сети: '+e, false); }
     finally{ this.planV3Tool=null; }
+  },
+
+  // Э3/B9: «＋ Новая группа» рядом с выбором учётной группы у инструмента
+  // «Зона» — не заставлять уходить на «Структуру», чтобы завести группу
+  // под совсем новую зону. POST /api/v2/groups не требует
+  // expected_revision (см. api_v2.py::v2_groups — bump_revision внутри
+  // сам создаёт и коммитит), поэтому здесь нет протокола ревизий.
+  async planV3CreateGroupInline(){
+    const name=(this.planV3NewZoneGroupName||'').trim();
+    if(!name) return;
+    this.planV3NewZoneGroupError=null;
+    try{
+      const r=await fetch('/api/v2/groups', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({name})});
+      const d=await r.json();
+      if(!r.ok){ this.planV3NewZoneGroupError=this._apiErrorMessage(d, r.status); return; }
+      this.structGroups.push(d);
+      this.planV3ZoneGroupId=d.id;
+      this.planV3NewZoneGroupOpen=false; this.planV3NewZoneGroupName='';
+      this.showToast('Группа «'+d.name+'» создана', true);
+    }catch(e){ this.planV3NewZoneGroupError='Ошибка сети: '+e; }
   },
 
   // --- зоны: учётные группы контуром поверх карты (§3 задания — раньше
@@ -7824,7 +8531,7 @@ function app(){ return {
       if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
       this.showToast('Зона нанесена', true);
       this.planV3Tool=null; this.planV3ZoneGroupId='';
-      await this.selectPlanV3(this.planV3Current.id);
+      await this.reloadPlanV3Items();
     }catch(e){ this.showToast('Ошибка сети: '+e, false); }
   },
 
@@ -7847,8 +8554,11 @@ function app(){ return {
       this.showToast('Узел обновлён', true);
       const id=this.structInspector.id;
       await this._loadStructureLists();
-      await this.openInspectorInPlace('node', id);
-      if(this.planV3Current) await this.selectPlanV3(this.planV3Current.id);
+      // reloadPlanV3Items() сама перечитывает открытую карточку того же
+      // узла (structInspector.id уже равен id здесь) — отдельный
+      // openInspectorInPlace не нужен, не дублируем запрос (Э3/B2).
+      if(this.planV3Current) await this.reloadPlanV3Items();
+      else await this.openInspectorInPlace('node', id);
     }catch(e){ this.planV3NodeCardError='Ошибка сети: '+e; }
   },
   // «поставить счётчик на линию» / «снять» (§1 задания) — существующая
@@ -7864,8 +8574,12 @@ function app(){ return {
       if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
       this.showToast(pointId?'Счётчик назначен':'Счётчик снят', true);
       await this._loadStructureLists();
-      if(this.structInspector && this.structInspector.kind==='node'){
-        await this.openInspectorInPlace('node', this.structInspector.id);
+      // Линия на карте должна сразу перекраситься/перестать быть
+      // пунктирной (Э3/B3) — без этого цвет обновлялся только при
+      // следующей полной перезагрузке плана.
+      this._planV3RenderItems();
+      if(this.structInspector && (this.structInspector.kind==='node' || this.structInspector.kind==='edge')){
+        await this.openInspectorInPlace(this.structInspector.kind, this.structInspector.id);
       }
     }catch(e){ this.showToast('Ошибка сети: '+e, false); }
   },
@@ -7911,8 +8625,10 @@ function app(){ return {
       this.planV3AddConsumerName='';
       const id=this.structInspector.id;
       await this._loadStructureLists();
-      if(this.planV3Current) await this.selectPlanV3(this.planV3Current.id);
-      await this.openInspectorInPlace('node', id);
+      // reloadPlanV3Items() перечитывает уже открытую карточку родителя
+      // (structInspector.id всё ещё id родителя здесь) сама — Э3/B2.
+      if(this.planV3Current) await this.reloadPlanV3Items();
+      else await this.openInspectorInPlace('node', id);
     }catch(e){ this.planV3AddConsumerError='Ошибка сети: '+e; }
   },
 
@@ -7938,6 +8654,13 @@ function app(){ return {
     const color=colors[node?node.kind:'']||'#3dd6c0';
     const latlng=this._planV3XyToLatLng(item.geometry.x, item.geometry.y, height);
     const layer=L.circleMarker(latlng, {radius:9, color, fillColor:color, fillOpacity:.8, weight:2});
+    // Э3/B3: постоянная подпись узла (не только по наведению) — иначе
+    // на плане с десятком узлов не разобрать, где что, не кликая по
+    // каждому. Leaflet вставляет текст как HTML — _planEscapeHtml (A45).
+    if(node){
+      layer.bindTooltip(_planEscapeHtml(node.name||node.code||''),
+        {permanent:true, direction:'right', className:'planv3-node-tip'});
+    }
     layer.on('click', (e)=>{
       if(e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
       this._planV3OnNodeMarkerClick(item);
@@ -7971,14 +8694,23 @@ function app(){ return {
       const latlngs=[this._planV3XyToLatLng(fromIt.geometry.x, fromIt.geometry.y, H),
                      this._planV3XyToLatLng(toIt.geometry.x, toIt.geometry.y, H)];
       const edge=(this.structEdges||[]).find(e2=>e2.id===v.edge_id);
-      const color=edge && edge.primary_point_id ? _planCssVar('--ok') : '#e0995f';
-      const line=L.polyline(latlngs, {color, weight:3});
+      const metered=!!(edge && edge.primary_point_id);
+      const color=metered ? _planCssVar('--ok') : '#e0995f';
+      // Э3/B3: линии без счётчика — пунктиром, не только другим цветом
+      // (различимо и без цвета, например при дальтонизме/ч-б печати).
+      const line=L.polyline(latlngs, {color, weight:3, dashArray: metered?null:'6,6'});
+      // Э3/B3: подпись по наведению — имя связи или «A → B» по концам.
+      if(edge){
+        const label=edge.name || edge.code ||
+          (this.structNodeName(edge.from_node_id)+' → '+this.structNodeName(edge.to_node_id));
+        line.bindTooltip(_planEscapeHtml(label), {sticky:true});
+      }
       line.on('click', (e)=>{
         if(e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
-        // У линии нет своей карточки в Плане v3 — счётчик назначается
-        // из карточки узла (список «Линии этого узла»); клик по линии
-        // открывает карточку узла-источника, откуда она видна.
-        if(edge) this.openInspectorInPlace('node', edge.from_node_id);
+        // Э3/B5: у линии теперь своя карточка (имя/номинал/кабель,
+        // счётчик, живой ток/загрузка) — до этой партии клика было
+        // некуда деть, счётчик назначался только из карточки узла.
+        if(edge) this.openInspectorInPlace('edge', edge.id);
       });
       line.addTo(_planV3Map);
       _planV3EdgeLayers.set(String(v.id), line);
@@ -7995,8 +8727,30 @@ function app(){ return {
     }else{
       _planV3ImageLayer=L.rectangle(bounds, {color:_planCssVar('--line'), weight:1, fill:false, dashArray:'4,4'}).addTo(_planV3Map);
     }
-    _planV3Map.fitBounds(bounds);
+    // Э3/B1: fitBounds НЕ вызывается напрямую здесь — если контейнер в
+    // этот момент невидим/нулевого размера (x-show ещё не применился),
+    // Leaflet вписывает в нулевой прямоугольник и дальше держит
+    // zoom=-4 насовсем, даже когда контейнер потом появляется. Вместо
+    // этого запоминаем границы и пробуем вписать сразу; если не вышло —
+    // openPlanV3Tab()/selectPlanV3() довписывают через $nextTick, когда
+    // контейнер уже получил реальный размер.
+    _planV3NeedsFit=bounds;
     this._planV3RenderItems();
+    this._planV3TryFit();
+  },
+  // Вписать план в границы, если контейнер уже имеет ненулевой размер;
+  // иначе оставить флаг _planV3NeedsFit — следующий вызов (после
+  // $nextTick/invalidateSize) попробует снова. Возвращает true, если
+  // вписывание реально произошло.
+  _planV3TryFit(){
+    if(!_planV3Map || !_planV3NeedsFit) return false;
+    const el=this.$refs.planV3Map;
+    if(!el || el.offsetWidth===0 || el.offsetHeight===0) return false;
+    const bounds=_planV3NeedsFit;
+    _planV3NeedsFit=null;
+    _planV3Map.invalidateSize();
+    _planV3Map.fitBounds(bounds);
+    return true;
   },
 
   showToast(msg, ok=true){
@@ -8026,6 +8780,10 @@ let _planV3Map=null;
 let _planV3ImageLayer=null;
 const _planV3ItemLayers=new Map();   // item_id (String) -> layer
 const _planV3EdgeLayers=new Map();   // plan_edge_view id (String) -> polyline
+// Партия 7, Этап 3, B1: границы плана, ожидающие fitBounds, пока
+// контейнер карты невидим/нулевого размера — см. _planV3RenderBase/
+// _planV3TryFit. null, если вписывание уже произошло (или план не грузился).
+let _planV3NeedsFit=null;
 function _planV2KindColor(kind){
   const colors={point:'#3dd6c0', location:'#8a7cff', group:'#f0a83c',
                 node:'#4fa8f5', port:'#e05fae', annotation:'#9aa0a8'};

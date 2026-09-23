@@ -523,13 +523,37 @@ class ElectricalEdgeRepo:
         только один раз, при создании черновика (add_draft) — изменить
         его у уже существующей связи (в том числе опубликованной) было
         нечем. point_id=None снимает измерение с линии (линия без
-        счётчика допустима, §1 большого ТЗ).
+        счётчика допустима, §1 большого ТЗ). Тонкая обёртка над
+        update_fields (партия 7, Э3/B5) — оставлена отдельным методом,
+        имя используется в докстрингах фронта, поведение не менялось."""
+        return self.update_fields(edge_id, {"primary_point_id": point_id}, at=at)
+
+    def update_fields(self, edge_id, fields, at=None):
+        """Обновить поля СУЩЕСТВУЮЩЕЙ связи одним действием — партия 7,
+        Этап 3, Э3/B5 «карточка линии»: имя, номинал (`rated_current_a`),
+        кабель (`cable_note`) — раньше эти три поля были в схеме БД и в
+        dataclass ElectricalEdge, но PATCH .../topology/edges/<id> их не
+        принимал вовсе (только `primary_point_id`, из партии 6). Плюс
+        сам `primary_point_id` (назначить/снять счётчик) — теперь через
+        тот же метод, чтобы карточка могла сохранить оба вида полей
+        ОДНИМ PATCH-запросом, одной транзакцией, без двойного расхода
+        ревизии. `fields` — словарь с любым подмножеством ключей
+        {"primary_point_id", "name", "rated_current_a", "cable_note"};
+        отсутствующие ключи не трогаются, лишние — молча игнорируются.
 
         Уникальность «одна точка — максимум одна ДЕЙСТВУЮЩАЯ связь»
         (idx_electrical_edges_one_point, только для state='published' И
         valid_to IS NULL) уже гарантирована схемой — здесь она только
         транслируется в понятный ValueError вместо голого
         sqlite3.IntegrityError."""
+        allowed_meta = ("name", "rated_current_a", "cable_note")
+        has_point = "primary_point_id" in fields
+        meta = [(k, fields[k]) for k in allowed_meta if k in fields]
+        if not has_point and not meta:
+            existing = self.get_by_id(edge_id)
+            if existing is None:
+                raise ValueError(f"Связь {edge_id} не найдена")
+            return existing
         now = at or int(time.time())
         with self._db.transaction() as c:
             row = c.execute(
@@ -537,14 +561,25 @@ class ElectricalEdgeRepo:
             ).fetchone()
             if row is None:
                 raise ValueError(f"Связь {edge_id} не найдена")
+            set_parts = []
+            params = []
+            if has_point:
+                set_parts.append("primary_point_id = ?")
+                params.append(fields["primary_point_id"])
+            for k, v in meta:
+                set_parts.append(f"{k} = ?")
+                params.append(v)
+            set_parts.append("updated_at = ?")
+            params.append(now)
+            params.append(edge_id)
             try:
                 c.execute(
-                    "UPDATE electrical_edges SET primary_point_id = ?, "
-                    "updated_at = ? WHERE id = ?",
-                    (point_id, now, edge_id)
+                    f"UPDATE electrical_edges SET {', '.join(set_parts)} "
+                    f"WHERE id = ?",
+                    params,
                 )
             except Exception as e:
-                if "unique" in str(e).lower():
+                if has_point and "unique" in str(e).lower():
                     raise ValueError(
                         "Эта точка уже измеряет другую действующую линию — "
                         "сначала снимите её оттуда"
