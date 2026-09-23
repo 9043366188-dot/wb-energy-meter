@@ -160,30 +160,62 @@ def test_reports_group_dimension_sum_and_member_ids():
 
 
 def test_reports_branch_dimension_no_scope_ids_needed():
-    """dimension=branch: scope_ids не требуется — берутся все группы
-    верхнего уровня (list_children(None)), как в Обзоре."""
+    """Партия 7, Этап 2 (Э2.6): dimension=branch БОЛЬШЕ НЕ дубль
+    dimension=group (учётные группы) — это сетевые ветви уровня 1 из
+    того же overview_service, что и Обзор (A43: одинаковые числа на
+    экране, в отчёте и в CSV). scope_ids по-прежнему не требуется —
+    ветви уровня 1 берутся из действующей электрической схемы, а не из
+    ручного состава групп. До партии 7 этот тест проверял старое
+    (ошибочное, см. docs/review-2026-09-23.md, находка №1) поведение
+    dimension=branch=dimension=group; теперь branch независим от групп
+    вообще — группа "Ветвь А" ниже НЕ появляется в dimension=branch,
+    строки идут по сетевым линиям Ввод→ГРЩ→{B1,B2}."""
     client, db, path = make_client()
     try:
         rig = Rig(db)
+        p_a = rig.make_point("A", 30.0)
         p1 = rig.make_point("B1", 21.0)
         p2 = rig.make_point("B2", 9.0)
-        ga = client.post("/api/v2/groups", json={"name": "Ветвь А"}).get_json()
-        gb = client.post("/api/v2/groups", json={"name": "Ветвь Б"}).get_json()
-        client.post(f"/api/v2/groups/{ga['id']}/members",
-                    json={"point_id": p1.id, "valid_from": 0, "expected_revision": current_rev(client)})
-        client.post(f"/api/v2/groups/{gb['id']}/members",
-                    json={"point_id": p2.id, "valid_from": 0, "expected_revision": current_rev(client)})
+
+        n_src = client.post("/api/v2/topology/nodes",
+                             json={"code": "SRC", "name": "Ввод", "kind": "source"}).get_json()
+        n_top = client.post("/api/v2/topology/nodes",
+                             json={"code": "TOP", "name": "ГРЩ", "kind": "panel"}).get_json()
+        n_b1 = client.post("/api/v2/topology/nodes",
+                            json={"code": "NB1", "name": "Ветвь А", "kind": "load"}).get_json()
+        n_b2 = client.post("/api/v2/topology/nodes",
+                            json={"code": "NB2", "name": "Ветвь Б", "kind": "load"}).get_json()
+        e1 = client.post("/api/v2/topology/edges", json={
+            "from_node_id": n_src["id"], "to_node_id": n_top["id"],
+            "primary_point_id": p_a.id}).get_json()
+        e2 = client.post("/api/v2/topology/edges", json={
+            "from_node_id": n_top["id"], "to_node_id": n_b1["id"],
+            "primary_point_id": p1.id}).get_json()
+        e3 = client.post("/api/v2/topology/edges", json={
+            "from_node_id": n_top["id"], "to_node_id": n_b2["id"],
+            "primary_point_id": p2.id}).get_json()
+        client.post("/api/v2/topology/publish", json={
+            "edge_ids": [e1["id"], e2["id"], e3["id"]],
+            "expected_configuration_revision": current_rev(client)})
 
         r = client.post("/api/v2/reports/query", json={
             "dimension": "branch", "from": 0, "to": HOUR, "timezone": "UTC",
         })
         assert r.status_code == 200, r.get_json()
         rows = r.get_json()["rows"]
-        assert len(rows) == 2
+        assert len(rows) == 2, rows
         by_name = {row["name"]: row for row in rows}
         assert approx(by_name["Ветвь А"]["result"]["value"], 21.0)
         assert approx(by_name["Ветвь Б"]["result"]["value"], 9.0)
-        print("[OK] reports/query dimension=branch: автоматически все ветви верхнего уровня")
+
+        overview = client.post("/api/v2/overview/summary", json={
+            "from": 0, "to": HOUR, "timezone": "UTC"}).get_json()
+        by_name_ov = {b["name"]: b["result"]["value"] for b in overview["network_branches"]}
+        assert by_name_ov == {"Ветвь А": 21.0, "Ветвь Б": 9.0}, (
+            "A43: dimension=branch должен давать те же числа, что "
+            "network_branches на Обзоре", overview)
+        print("[OK] reports/query dimension=branch: сетевые ветви уровня 1 "
+              "(не учётные группы), числа совпадают с Обзором (A43)")
     finally:
         db.close(); os.unlink(path)
 

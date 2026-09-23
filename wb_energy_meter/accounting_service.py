@@ -259,25 +259,20 @@ def sum_points(point_binding_repo, aggregates_repo, meter_source_repo, edge_repo
 # balance — §5.2: R = ΣE_in − ΣE_out, подписанный небаланс.
 # ---------------------------------------------------------------------
 
-def balance(db, point_binding_repo, aggregates_repo, meter_source_repo, edge_repo,
-            balance_scope_id, ts_from, ts_to, timezone="UTC"):
-    """§5.2 A08/A09: R = ΣE_in − ΣE_out сохраняет знак; неполнота
-    обязательного входа/выхода делает строгий небаланс null (value=None),
-    но известные части остаются отдельно подписанными в known_value."""
-    with db.read() as c:
-        scope = c.execute(
-            "SELECT * FROM balance_scopes WHERE id = ?", (balance_scope_id,)
-        ).fetchone()
-        if scope is None:
-            raise ValueError(f"Граница баланса {balance_scope_id} не найдена")
-        members = c.execute(
-            "SELECT * FROM balance_members WHERE scope_id = ? AND valid_to IS NULL",
-            (balance_scope_id,)
-        ).fetchall()
-
-    input_ids = [m["point_id"] for m in members if m["side"] == "input"]
-    output_ids = [m["point_id"] for m in members if m["side"] == "output"]
-
+def balance_from_point_sets(point_binding_repo, aggregates_repo, meter_source_repo,
+                             edge_repo, input_ids, output_ids, ts_from, ts_to,
+                             timezone="UTC"):
+    """§5.2 A08/A09, ядро (партия 7, Этап 2, Э2.2): R = ΣE_in − ΣE_out
+    сохраняет знак; неполнота обязательного входа/выхода делает строгий
+    небаланс null (value=None), но известные части остаются отдельно
+    подписанными в known_value. Семантика ТА ЖЕ, что была в balance() до
+    партии 7 — просто вынесена из-под чтения balance_scopes, чтобы её же
+    использовал баланс по электрической схеме (overview_service.py):
+    входы/выходы там — не члены ручной "границы баланса", а точки,
+    вычисленные из топологии (назначенный ввод узла/объекта и
+    first_measurements). balance() ниже — тонкая обёртка над этим ядром
+    для balance_scopes; test_step17/test_step28 не должны увидеть разницы
+    в поведении."""
     in_result = (
         sum_points(point_binding_repo, aggregates_repo, meter_source_repo, edge_repo,
                    input_ids, ts_from, ts_to, timezone)
@@ -344,6 +339,32 @@ def balance(db, point_binding_repo, aggregates_repo, meter_source_repo, edge_rep
             "percentage": pct,
             "percentage_reason": pct_reason,
         },
+    )
+
+
+def balance(db, point_binding_repo, aggregates_repo, meter_source_repo, edge_repo,
+            balance_scope_id, ts_from, ts_to, timezone="UTC"):
+    """§5.2 — граница баланса (ручной состав input/output): резолвит
+    input_ids/output_ids из balance_scope_members и делегирует расчёт
+    ядру balance_from_point_sets() (Э2.2, партия 7). Публичное поведение
+    не изменилось — только реализация."""
+    with db.read() as c:
+        scope = c.execute(
+            "SELECT * FROM balance_scopes WHERE id = ?", (balance_scope_id,)
+        ).fetchone()
+        if scope is None:
+            raise ValueError(f"Граница баланса {balance_scope_id} не найдена")
+        members = c.execute(
+            "SELECT * FROM balance_members WHERE scope_id = ? AND valid_to IS NULL",
+            (balance_scope_id,)
+        ).fetchall()
+
+    input_ids = [m["point_id"] for m in members if m["side"] == "input"]
+    output_ids = [m["point_id"] for m in members if m["side"] == "output"]
+
+    return balance_from_point_sets(
+        point_binding_repo, aggregates_repo, meter_source_repo, edge_repo,
+        input_ids, output_ids, ts_from, ts_to, timezone,
     )
 
 

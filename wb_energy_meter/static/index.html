@@ -661,7 +661,12 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 
         <template x-if="!ovLoading && ovSummary">
           <div>
-            <template x-if="ovSummary.object_total">
+            <!-- Партия 7, Э2.8: итог объекта — три исхода: полный (value
+                 не null), частичный (объект есть, но value=null — не все
+                 вводы измеряются, unmetered_input), и вовсе не посчитан
+                 (object_total=null — no_input_assigned). Разные сообщения
+                 для разных причин, как того требует ТЗ. -->
+            <template x-if="ovSummary.object_total && ovSummary.object_total.value!=null">
               <div style="margin-bottom:12px">
                 <div class="val mono" style="font-size:28px">
                   <span x-text="fmt(ovSummary.object_total.value,1)"></span>
@@ -673,6 +678,27 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <div x-show="ovDisclosureOpen.object" style="font-size:12px;margin-top:4px" class="muted">
                   Сумма назначенного ввода объекта (точки:
                   <span x-text="(ovSummary.object_input_point_ids||[]).map(id=>ovPointName(id)).join(', ')||'—'"></span>)
+                </div>
+              </div>
+            </template>
+            <template x-if="ovSummary.object_total && ovSummary.object_total.value==null">
+              <div style="margin-bottom:12px">
+                <div class="val mono" style="font-size:28px;color:var(--txt3)">—</div>
+                <div class="empty" style="text-align:left;font-size:12px">
+                  Не все вводы объекта измеряются — честный итог посчитать нельзя
+                  (сумма измеряемых вводов подряд была бы заниженной).
+                  <template x-if="ovSummary.object_total.known_value!=null">
+                    <div style="margin-top:6px">
+                      Известно по измеряемым вводам:
+                      <span class="mono" x-text="fmt(ovSummary.object_total.known_value,1)+' '+ovSummary.object_total.unit"></span>
+                    </div>
+                  </template>
+                  <div style="margin-top:6px" x-show="(ovSummary.unmetered_inputs||[]).length>0">
+                    Неизмеренные вводы:
+                    <template x-for="u in (ovSummary.unmetered_inputs||[])" :key="u.edge_id">
+                      <div x-text="'— '+u.from_node_name+' → '+u.to_node_name"></div>
+                    </template>
+                  </div>
                 </div>
               </div>
             </template>
@@ -693,11 +719,38 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                    x-text="ovSummary.object_total_unavailable_reason"></div>
             </template>
 
-            <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:12px;padding:8px 0;
+            <!-- «Ветви сети» (network_branches, уровень 1 по электрической
+                 схеме) — не путать с блоком учётных групп ниже: это ветви
+                 из первого измерения на каждом отходе от вводов, участвуют
+                 в небалансе. Неизмеренные ветви — отдельными строками без
+                 чисел (нельзя выдумывать значение). -->
+            <table class="rep-table" x-show="(ovSummary.network_branches||[]).length>0 || (ovSummary.unmetered_branches||[]).length>0">
+              <thead><tr>
+                <th>Ветвь сети</th><th class="num">кВт·ч</th><th class="num">% объекта</th>
+              </tr></thead>
+              <tbody>
+                <template x-for="b in (ovSummary.network_branches||[])" :key="b.edge_id">
+                  <tr>
+                    <td x-text="b.name"></td>
+                    <td class="num mono" x-text="b.result?fmt(b.result.value,1):'—'"></td>
+                    <td class="num mono" x-text="b.percentage_of_object!=null?fmt(b.percentage_of_object,1)+'%':'—'"></td>
+                  </tr>
+                </template>
+                <template x-for="u in (ovSummary.unmetered_branches||[])" :key="'u_'+u.edge_id">
+                  <tr>
+                    <td class="muted" x-text="'Неизмеренная ветвь: '+u.name"></td>
+                    <td class="num mono">—</td>
+                    <td class="num mono">—</td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+
+            <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px;padding:8px 0;
                         border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
               <span class="muted" style="font-size:12px">Небаланс:</span>
               <span class="mono" :style="ovSummary.imbalance_value==null?'':(ovSummary.imbalance_value<0?'color:var(--err)':'color:var(--ok)')"
-                    x-text="ovSummary.imbalance_value!=null?(ovSummary.imbalance_value>0?'+':'')+fmt(ovSummary.imbalance_value,1)+' кВт·ч':'не определён (не все ветви известны)'"></span>
+                    x-text="ovSummary.imbalance_value!=null?(ovSummary.imbalance_value>0?'+':'')+fmt(ovSummary.imbalance_value,1)+' кВт·ч':'не определён ('+(ovSummary.imbalance_percent_reason==='object_total_incomplete'?'не все вводы измерены':'не все ветви известны')+')'"></span>
               <!-- A08: критерий требует «Небаланс −10, −10%» — процент часть
                    результата, а не украшение. Значение приходит с сервера
                    (imbalance_percent), на фронте НЕ считается: экран, отчёт и
@@ -710,10 +763,29 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     x-text="ovSummary.imbalance_percent!=null?'('+(ovSummary.imbalance_percent>0?'+':'')+ovSummary.imbalance_percent.toFixed(2)+'% от итога объекта)':'(% не определён)'"
                     :title="ovSummary.imbalance_percent==null?('Процент не рассчитан: '+(ovSummary.imbalance_percent_reason||'нет данных')):''"></span>
             </div>
+            <div class="muted" style="font-size:11px;margin-bottom:12px">
+              <template x-if="ovSummary.boundary_coverage==='verified'">
+                <span>все ветви измерены</span>
+              </template>
+              <template x-if="ovSummary.boundary_coverage==='has_unmetered_branches'">
+                <span>есть неизмеренные ветви: <span x-text="(ovSummary.unmetered_branches||[]).map(b=>b.name).join(', ')"></span></span>
+              </template>
+              <template x-if="!ovSummary.boundary_coverage">
+                <span>покрытие ветвей неизвестно</span>
+              </template>
+            </div>
 
+            <!-- Учётные группы (branches, старое поле) — распределение
+                 живого снимка по группам, отдельно от небаланса выше:
+                 группы могут пересекаться (одна точка в нескольких
+                 группах), поэтому суммы здесь НЕ обязаны сходиться с
+                 «Ветвями сети» и не участвуют в расчёте небаланса. -->
+            <template x-if="(ovSummary.branches||[]).length>0">
+              <div class="section-title" style="font-size:13px;margin-bottom:6px">Распределение по учётным группам</div>
+            </template>
             <table class="rep-table" x-show="(ovSummary.branches||[]).length>0">
               <thead><tr>
-                <th>Ветвь</th><th class="num">кВт·ч</th><th class="num">% объекта</th><th>Статус</th>
+                <th>Группа</th><th class="num">кВт·ч</th><th class="num">% объекта</th><th>Статус</th>
               </tr></thead>
               <tbody>
                 <template x-for="b in (ovSummary.branches||[])" :key="b.group_id">
@@ -740,8 +812,10 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               </div>
             </template>
 
+            <div class="muted" style="font-size:11px;margin-top:6px" x-show="(ovSummary.branches||[]).length>0"
+                 x-text="ovSummary.groups_note||'распределение по учётным группам; группы могут пересекаться, в небалансе не участвуют'"></div>
             <div class="muted" style="font-size:11px;margin-top:6px" x-show="(ovSummary.ungrouped_point_ids||[]).length>0"
-                 x-text="(ovSummary.ungrouped_point_ids||[]).length+' точек не входит ни в одну ветвь'"></div>
+                 x-text="(ovSummary.ungrouped_point_ids||[]).length+' точек не входит ни в одну группу'"></div>
           </div>
         </template>
       </div>

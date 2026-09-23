@@ -81,6 +81,8 @@ from .accounting_contract import ContractViolation, resolve_percentage
 from .accounting_service import (
     AccountingConflict, measured_point, sum_points, balance, comparison,
 )
+from . import overview_service
+from .overview_service import BalanceAlgorithmError
 from .binding_service import BindingConflict, PointBindingRepo
 from .location_repo import LocationRepo
 from .model import PHASES
@@ -1118,6 +1120,118 @@ def register_v2_routes(app, state, json_response):
             return json_response(body, status)
         return json_response({"lines": lines})
 
+    @app.route("/api/v2/topology/nodes/<int:node_id>/balance", methods=["POST"])
+    def v2_topology_node_balance(node_id):
+        """Э2.5 (партия 7, Этап 2): баланс ОДНОГО узла (щита) по
+        электрической схеме — то же ядро (`overview_service.balance_node`),
+        что использует `/api/v2/overview/summary` для итога всего
+        объекта, только для одного узла вместо всего дерева от source.
+        Тело — как у overview/summary: {"from", "to", "timezone",
+        "configuration_revision_id"?}. Ответ — MetricResult
+        (metric="imbalance", mode="balance") с добавленными node_id/
+        input/outputs/unmetered_branches/boundary_coverage/
+        unavailable_reason (Э2.3: если баланс недоступен — value=null,
+        известные части всё равно возвращаются)."""
+        node_repo = _node_repo()
+        node = node_repo.get_by_id(node_id)
+        if node is None:
+            body, status = _err("not_found", f"Узел {node_id} не найден", 404, ids=[node_id])
+            return json_response(body, status)
+
+        data = request.get_json(silent=True) or {}
+        timezone_name = data.get("timezone", "UTC")
+        try:
+            ts_from = _parse_ts(data.get("from"), "from")
+            ts_to = _parse_ts(data.get("to"), "to")
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400, fields=["from", "to"])
+            return json_response(body, status)
+        if ts_to <= ts_from:
+            body, status = _err("bad_request", "to должно быть позже from", 400,
+                                 fields=["from", "to"])
+            return json_response(body, status)
+
+        requested_revision = data.get("configuration_revision_id")
+        binding_repo = _binding_repo()
+        aggregates_repo = _aggregates_repo()
+        source_repo = _source_repo()
+        edge_repo = _edge_repo()
+
+        with db.read() as c:
+            if requested_revision is not None:
+                try:
+                    requested_revision = int(requested_revision)
+                except (TypeError, ValueError):
+                    body, status = _err(
+                        "bad_request", "configuration_revision_id должен быть целым числом",
+                        400, fields=["configuration_revision_id"])
+                    return json_response(body, status)
+                if not revision_exists(c, requested_revision):
+                    body, status = _err(
+                        "not_found", f"Ревизия конфигурации {requested_revision} не найдена",
+                        404, ids=[requested_revision])
+                    return json_response(body, status)
+                pinned_revision = requested_revision
+            else:
+                pinned_revision = current_revision_id(c)
+
+            try:
+                nb = overview_service.balance_node(
+                    binding_repo, aggregates_repo, source_repo, edge_repo, node_repo,
+                    node_id, ts_from, ts_to, timezone_name)
+            except BalanceAlgorithmError as e:
+                log.exception("Ошибка алгоритма баланса узла %s: %s", node_id, e)
+                body, status = _err(
+                    "internal", "внутренняя ошибка расчёта баланса узла", 500)
+                return json_response(body, status)
+            except ContractViolation as e:
+                log.exception(
+                    "ContractViolation при topology/nodes/%s/balance: %s", node_id, e)
+                body, status = _err(
+                    "internal", "внутренняя ошибка формирования результата", 500)
+                return json_response(body, status)
+
+            input_entry = None
+            if nb.input is not None:
+                input_entry = dict(nb.input)
+                if input_entry["result"] is not None:
+                    _tag_result(input_entry["result"], pinned_revision)
+                    input_entry["result"] = input_entry["result"].to_dict()
+
+            outputs = []
+            for o in nb.outputs:
+                entry = dict(o)
+                _tag_result(entry["result"], pinned_revision)
+                entry["result"] = entry["result"].to_dict()
+                outputs.append(entry)
+
+            if nb.result is not None:
+                _tag_result(nb.result, pinned_revision)
+                response = nb.result.to_dict()
+            else:
+                response = {
+                    "metric": "imbalance", "unit": "kWh", "mode": "balance",
+                    "value": None, "known_value": None, "availability": "missing",
+                    "quality_flags": [], "structure_quality": "verified",
+                    "source": "calculated", "expected_count": 0, "valid_count": 0,
+                    "missing_ids": [],
+                    "configuration_revision_id": pinned_revision,
+                    "configuration_revision_ids": [pinned_revision],
+                    "as_of": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "period": {"from": str(ts_from), "to": str(ts_to),
+                               "timezone": timezone_name},
+                }
+
+        response.update({
+            "node_id": node_id,
+            "input": input_entry,
+            "outputs": outputs,
+            "unmetered_branches": nb.unmetered_branches,
+            "boundary_coverage": nb.boundary_coverage,
+            "unavailable_reason": nb.unavailable_reason,
+        })
+        return json_response(response)
+
     # ----------------------------------------------------- balance-scopes
 
     @app.route("/api/v2/balance-scopes", methods=["GET", "POST"])
@@ -1854,22 +1968,42 @@ def register_v2_routes(app, state, json_response):
                 pinned_revision = current_revision_id(c)
 
             try:
-                input_point_ids = _resolve_object_input_point_ids(node_repo, edge_repo)
-                object_total = None
-                object_total_unavailable_reason = None
-                if not input_point_ids:
-                    # §8.2: "Без назначенного ввода показывать действие
-                    # 'Настроить границу объекта', а не ложное число" —
-                    # никакой суммы всех счётчиков вместо этого.
-                    object_total_unavailable_reason = "no_input_assigned"
-                else:
-                    try:
-                        object_total = _tag_result(
-                            sum_points(binding_repo, aggregates_repo, source_repo, edge_repo,
-                                       input_point_ids, ts_from, ts_to, timezone_name),
-                            pinned_revision)
-                    except AccountingConflict as e:
-                        object_total_unavailable_reason = f"input_overlap_conflict: {e}"
+                try:
+                    summary = overview_service.object_summary(
+                        binding_repo, aggregates_repo, source_repo, edge_repo, node_repo,
+                        ts_from, ts_to, timezone_name)
+                except BalanceAlgorithmError as e:
+                    log.exception("Ошибка алгоритма баланса при overview/summary: %s", e)
+                    body, status = _err(
+                        "internal", "внутренняя ошибка расчёта баланса по схеме", 500)
+                    return json_response(body, status)
+
+                input_point_ids = summary.input_point_ids
+                object_total = summary.object_total
+                object_total_unavailable_reason = summary.object_total_unavailable_reason
+                if object_total is not None:
+                    _tag_result(object_total, pinned_revision)
+
+                network_branches = []
+                for nb in summary.network_branches:
+                    _tag_result(nb["result"], pinned_revision)
+                    network_branches.append({
+                        "edge_id": nb["edge_id"], "point_id": nb["point_id"],
+                        "name": nb["name"], "result": nb["result"].to_dict(),
+                        "percentage_of_object": nb["percentage_of_object"],
+                        "percentage_of_object_reason": nb["percentage_of_object_reason"],
+                    })
+                unmetered_branches = summary.unmetered_branches
+                unmetered_inputs = summary.unmetered_inputs
+                boundary_coverage = summary.boundary_coverage
+
+                imbalance_value = summary.imbalance_value
+                imbalance_percent = summary.imbalance_percent
+                imbalance_percent_reason = summary.imbalance_percent_reason
+                imbalance_dict = None
+                if summary.imbalance is not None:
+                    _tag_result(summary.imbalance, pinned_revision)
+                    imbalance_dict = summary.imbalance.to_dict()
 
                 branches = []
                 for g in group_repo.list_children(None):
@@ -1907,29 +2041,18 @@ def register_v2_routes(app, state, json_response):
                         }
                     branches.append(entry)
 
-                # §8.2: "Небаланс — отдельной строкой, знак сохраняется".
-                # Считается только если известны и итог объекта, и ВСЕ
-                # ветви режима sum с числовым result.value; иначе
-                # неизвестен целиком (не подменяется нулём/частичной
-                # суммой — тот же инвариант A08/A09, что и в balance()).
-                imbalance_value = None
-                if (object_total is not None and object_total.value is not None
-                        and all(b["mode"] == "sum" and b.get("result") is not None
-                                and b["result"]["value"] is not None for b in branches)):
-                    branches_sum = sum(b["result"]["value"] for b in branches)
-                    imbalance_value = round(object_total.value - branches_sum, 6)
-
-                # A08 буквально требует «Небаланс −10, −10%»: одного
-                # значения в кВт·ч недостаточно, процент от итога объекта
-                # входит в критерий. Считаем ТЕМ ЖЕ resolve_percentage,
-                # что и проценты ветвей, — он один отвечает за правило
-                # A11 (нет базы или база <= 0 -> None с причиной, без
-                # деления на ноль и фиктивных 100%). Не считать процент
-                # на фронте: экран, отчёт и CSV обязаны брать одно и то
-                # же число из одного расчёта (A43).
-                imbalance_percent, imbalance_percent_reason = resolve_percentage(
-                    imbalance_value,
-                    object_total.value if object_total is not None else None)
+                # Партия 7, Этап 2 (главная находка ревью 23.09.2026):
+                # imbalance_value/imbalance_percent/imbalance_percent_reason
+                # ТЕПЕРЬ приходят из overview_service.object_summary() —
+                # небаланс по ЭЛЕКТРИЧЕСКОЙ СХЕМЕ (итог объекта минус
+                # сетевые ветви уровня 1, см. summary выше), а НЕ по
+                # ручным учётным группам "branches" ниже. До этой партии
+                # вычиталась сумма корневых групп — если схема была
+                # собрана без единой группы, небаланс показывал 100%; если
+                # точка входила в две группы, уходил в минус из-за
+                # двойного счёта (docs/review-2026-09-23.md, находка №1).
+                # Имена полей сохранены — поменялся только смысл, это
+                # исправление ошибки, а не новый контракт (Э2.4).
 
                 ungrouped_ids = None
                 if object_total is not None or branches:
@@ -1951,13 +2074,21 @@ def register_v2_routes(app, state, json_response):
             "configuration_revision_id": pinned_revision,
             "as_of": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "period": {"from": str(ts_from), "to": str(ts_to), "timezone": timezone_name},
+            "structure_mode": "current",
             "object_input_point_ids": input_point_ids,
             "object_total": object_total.to_dict() if object_total is not None else None,
             "object_total_unavailable_reason": object_total_unavailable_reason,
             "imbalance_value": imbalance_value,
             "imbalance_percent": imbalance_percent,
             "imbalance_percent_reason": imbalance_percent_reason,
+            "imbalance": imbalance_dict,
+            "boundary_coverage": boundary_coverage,
+            "network_branches": network_branches,
+            "unmetered_branches": unmetered_branches,
+            "unmetered_inputs": unmetered_inputs,
             "branches": branches,
+            "groups_note": ("распределение по учётным группам; группы могут "
+                             "пересекаться, в небалансе не участвуют"),
             "ungrouped_point_ids": ungrouped_ids,
         })
 
@@ -2088,6 +2219,7 @@ def register_v2_routes(app, state, json_response):
         aggregates_repo = _aggregates_repo()
         source_repo = _source_repo()
         edge_repo = _edge_repo()
+        node_repo = _node_repo()
         group_repo = _group_repo_v2()
         point_repo = _point_repo()
 
@@ -2119,9 +2251,17 @@ def register_v2_routes(app, state, json_response):
                             return json_response(body, status)
                         targets.append((p.id, p.name, [p.id]))
                 elif dimension == "branch":
-                    for g in group_repo.list_children(None):
-                        pts = _reports_resolve_group_points(group_repo, g.id, composition_mode, ts_from)
-                        targets.append((g.id, g.name, pts))
+                    # Партия 7, Этап 2, Э2.6: "branch" = сетевые ветви
+                    # уровня 1 из overview_service (те же числа, что на
+                    # Обзоре, A43) — БОЛЬШЕ НЕ дубль dimension="group".
+                    # composition_mode/ts_from здесь не участвуют:
+                    # структура сети — только "текущая" (Э2.1, историческая
+                    # топология вне объёма), в отличие от исторического
+                    # состава учётных групп у dimension="group" ниже.
+                    for nb in overview_service.network_branches_for_reports(
+                            binding_repo, aggregates_repo, source_repo, edge_repo,
+                            node_repo, ts_from, ts_to, timezone_name):
+                        targets.append((nb["edge_id"], nb["name"], [nb["point_id"]]))
                 elif dimension == "group":
                     for gid in scope_ids:
                         g = group_repo.get_by_id(gid)
@@ -2167,10 +2307,15 @@ def register_v2_routes(app, state, json_response):
                     }
 
                     if compare is not None:
-                        if dimension in ("branch", "group"):
+                        if dimension == "group":
                             cmp_point_ids = _reports_resolve_group_points(
                                 group_repo, scope_id, composition_mode, cmp_ts_from)
                         else:
+                            # "branch" (Э2.6, партия 7): структура сети —
+                            # только текущая (Э2.1), у сетевой ветви нет
+                            # исторического состава, в отличие от учётной
+                            # группы — тот же point_id сравнивается за
+                            # оба периода.
                             cmp_point_ids = point_ids
 
                         if dimension == "balance_scope":
@@ -2198,7 +2343,7 @@ def register_v2_routes(app, state, json_response):
                         # False (это и есть смысл режима "current").
                         composition_changed = (
                             sorted(member_ids or []) != sorted(cmp_member_ids or [])
-                            if dimension in ("branch", "group") else False
+                            if dimension == "group" else False
                         )
 
                         delta_value = None
