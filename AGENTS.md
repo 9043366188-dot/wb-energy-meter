@@ -33,7 +33,11 @@ wb_energy_meter/
   config.py          чтение /etc/wb-energy-meter.conf
   model.py, logger.py
   migrations/*.sql   схема БД (применяются по порядку)
-  static/index.html  весь веб-интерфейс: один файл, Alpine.js локально
+  static/index.html  разметка + инлайн-скрипт с заглушкой «интерфейс не
+                      запустился» + функция app() (чистый сборщик
+                      window.WBEM.parts, партия 9/F5, v0.19.0)
+  static/js/*.js      JS интерфейса, по одному файлу на экран + core.js —
+                      см. таблицу «Экран → файл» ниже (партия 9/F5)
   updater.py         самообновление из GitHub (v0.9.0): проверка версии,
                       статус, запуск self-update.sh через systemd-run
   wb_serial_config.py диагностика канала Uptime и точечная правка
@@ -53,10 +57,51 @@ scripts/             install.sh, install-from-github.sh, uninstall.sh,
                       self-update.sh, пример конфига
 ```
 
-Веб-интерфейс — **один файл** `wb_energy_meter/static/index.html` на Alpine.js.
-Сборки нет. С v0.11.0 все библиотеки (Alpine, Leaflet, Leaflet-Geoman) лежат
-локально в `static/vendor/` — **не возвращайте ссылки на CDN**: на объекте
-в изолированной сети интернета в браузере нет, и интерфейс просто не откроется.
+Веб-интерфейс на Alpine.js, сборки нет. До v0.19.0 весь JS жил одним куском в
+`wb_energy_meter/static/index.html`; партия 9 (F5,
+`docs/TZ-batch9-split-frontend.md`) разнесла его по файлам
+`wb_energy_meter/static/js/*.js` — см. «Экран → файл» ниже. `index.html`
+по-прежнему держит всю HTML-разметку, инлайн-скрипт с заглушкой «интерфейс не
+запустился» (`div#boot-error`) и саму функцию `app()`, которая стала чистым
+сборщиком: каждый `static/js/*.js` при загрузке кладёт фабрику своих полей в
+`window.WBEM.parts`, `app()` собирает их в один объект через
+`Object.defineProperty`/`Object.getOwnPropertyDescriptor` (не простым
+присваиванием — в объекте есть computed-поля через `get xyz(){...}`,
+присваивание превратило бы геттер в статическое значение и молча сломало бы
+реактивность Alpine). Совпадения имён между файлами пишутся в
+`window.WBEM.conflicts`, а не бросают исключение — заглушка в index.html
+остаётся последней линией обороны против белого экрана.
+
+**Новый экран — новый файл в `static/js/`, никогда не дописывается в
+`index.html`.** Общие хелперы, используемые 2+ экранами (форматтеры,
+`lsGet`/`lsGetJSON`, `_planCssVar` и т.п.), — в `core.js`. Модульные
+переменные и однопользовательские хелперы конкретного экрана (карты
+Leaflet, `_planV3Map` и т.п.) объявляются как обычные top-level
+`let`/`const`/`function` СНАРУЖИ IIFE файла — classic-скрипты на одной
+странице делят общую глобальную лексическую область, и другие файлы/тесты
+(`tests/browser/test_b02_planv3_clean.py` обращается к `_planV3Map` через
+`page.evaluate()`) ожидают их именно там, а не спрятанными в замыкании.
+Порядок `<script>`: vendor → `core.js` → остальные части (без
+`defer`/`type=module`) → `alpine.min.js` с `defer`. Никогда не кладите
+`?v=...` в `src` — резолвер `/api/selfcheck` не отрезает query string и
+решит, что файла нет (проверяется `tests/test_step44_ui_parts.py`).
+
+### Экран → файл (партия 9/F5, v0.19.0)
+
+| Экран / назначение | Файл |
+|---|---|
+| Общие хелперы приложения, жизненный цикл (`init`/`refresh`/тема/статус) | `static/js/core.js` |
+| «Дашборд» | `static/js/dashboard.js` |
+| «Потребление» | `static/js/consumption.js` |
+| «Настройки» (включая CRUD зон/групп) | `static/js/settings.js` |
+| Массовое назначение зоны (bulk-assignment) | `static/js/zones.js` |
+| «План» v1 (Leaflet, зоны на схеме) | `static/js/plan-v1.js` |
+| «План» v2 (элементы + трассы) | `static/js/plan-v2.js` |
+| «План v3» (узлы/линии/зоны на карте) | `static/js/plan-v3.js` |
+| «Обзор v2» | `static/js/overview-v2.js` |
+| Отчёты v2 | `static/js/reports-v2.js` |
+| «Структура» | `static/js/structure.js` |
+
 Вкладки переключаются через `tab=='...'` (исключение — вкладка «План», см.
 грабли про Leaflet ниже).
 
@@ -75,7 +120,9 @@ python tests/test_step9_updater.py           # самообновление (upd
 python tests/test_step10_wbserial.py         # канал Uptime и правка wb-mqtt-serial.conf
 python tests/test_step11_plan.py             # план объекта: зоны на схеме и связи
 python tests/test_step12_selfcheck.py         # самопроверка интерфейса + заглушка (v0.11.1)
+python tests/test_step44_ui_parts.py          # целостность static/js/*.js (партия 9/F5, v0.19.0)
 bash -n scripts/install.sh scripts/uninstall.sh scripts/self-update.sh
+node --check wb_energy_meter/static/js/*.js   # синтаксис вынесенных JS-частей
 ```
 
 Тесты — не pytest, а самостоятельные скрипты; часть e2e-тестов требует локального
@@ -706,6 +753,35 @@ curl -s https://api.github.com/repos/9043366188-dot/wb-energy-meter/commits/main
   журнал изменений/историческая топология «как было» и нагрузочная
   проверка на ~100 точках — сознательно отложена ДО партии 5, теперь
   идёт следующей (см. `CHANGELOG.md` → Unreleased → Запланировано).
+- **Партия 9 (F5, `docs/TZ-batch9-split-frontend.md`, v0.19.0):**
+  `static/index.html` разнесён по `static/js/*.js` — 11 файлов, по одному
+  на экран + `core.js` (см. таблицу «Экран → файл» выше). Задача
+  сугубо файловая, поведение не менялось: механический перенос кода по
+  точным границам (парсинг через acorn, а не ручная перепечатка),
+  один экран — один коммит, полный прогон (оба стека + 4 браузерных
+  сценария, включая `test_b04_app_surface.py` на неизменном baseline
+  из 564 полей) после каждого. Ассемблер в `app()` собирает части через
+  `Object.defineProperty` (а не `out[k]=frag[k]` из буквального текста
+  §3.2 ТЗ) — в объекте есть `get xyz(){...}`-геттеры
+  (`groupedMeters`, `totalPowerKw` и т.п.), и присваивание молча
+  сломало бы реактивность Alpine; решение согласовано с пользователем
+  через явный вопрос, а не принято единолично. Модульные
+  переменные/хелперы каждого экрана намеренно оставлены СНАРУЖИ IIFE
+  (не как в буквальном примере ТЗ) — иначе `_planV3Map` и подобные
+  ломают `test_b02_planv3_clean.py`, ожидающий их в общей глобальной
+  области видимости classic-скриптов. По ходу партии проактивным полным
+  прогоном тестов на обоих стеках после каждой экстракции (а не только
+  по списку, явно названному в §4 ТЗ) найдены и исправлены четыре теста,
+  читавших JS-методы `app()` напрямую из `index.html`
+  (`test_step6_webui.py`, `test_step12_selfcheck.py`,
+  `test_step28_reports_query.py`, `test_step32_structure_search.py`) —
+  переведены на поиск по объединению `index.html` + `static/js/*.js`.
+  Новый `test_step44_ui_parts.py` проверяет саму механику разбиения
+  (подключение файлов, порядок `<script>`, реакцию `/api/selfcheck` на
+  пропажу файла, отсутствие `?v=`). Все 10 запланированных экранов и
+  `core.js` дошли до конца за один проход — партия не потребовала
+  досрочной остановки на частичном результате, хотя такой исход был
+  явно допустим по заданию.
 
 ## Стиль ответов
 

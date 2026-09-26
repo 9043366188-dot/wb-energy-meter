@@ -181,6 +181,9 @@ jobs:
       - name: "Run unit tests (v2: удаление простого режима, партия 8)"
         run: python tests/test_step42_simple_mode_removed.py
 
+      - name: "Run unit tests (F5: целостность static/js/*.js, партия 9)"
+        run: python tests/test_step44_ui_parts.py
+
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
 
@@ -275,6 +278,7 @@ jobs:
           python tests/test_step40_topology_balance.py
           python tests/test_step41_planv3_api.py
           python tests/test_step42_simple_mode_removed.py
+          python tests/test_step44_ui_parts.py
 
   lint:
     name: Basic checks
@@ -298,6 +302,13 @@ jobs:
 
       - name: Verify self-update.sh syntax
         run: bash -n scripts/self-update.sh
+
+      - name: "Syntax check static/js/*.js (F5, партия 9)"
+        run: |
+          for f in wb_energy_meter/static/js/*.js; do
+            echo "node --check $f"
+            node --check "$f"
+          done
 
   browser:
     name: Browser (Playwright/Chromium)
