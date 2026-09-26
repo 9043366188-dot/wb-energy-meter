@@ -4292,6 +4292,33 @@ function app(){
       Object.defineProperty(out, k, Object.getOwnPropertyDescriptor(frag, k));
     }
   }
+  // Конфликт имён между частями — узкая полоса сверху, НЕ полноэкранная
+  // заглушка #boot-error: интерфейс при дубликате стартует и работает,
+  // просто один из двух одноимённых методов молча проиграл. Полный
+  // блокирующий экран на работающем интерфейсе был бы враньём в другую
+  // сторону. Проверка в CI — tests/browser/test_b04_app_surface.py; эта
+  // полоса на случай, если сборку выкатили мимо CI. Idempotent по id,
+  // потому что app() может вызываться не один раз.
+  if (reg.conflicts && reg.conflicts.length) {
+    try {
+      var show = function(){
+        if (document.getElementById('wbem-parts-conflict')) return;
+        var uniq = Array.from(new Set(reg.conflicts));
+        var bar = document.createElement('div');
+        bar.id = 'wbem-parts-conflict';
+        bar.setAttribute('style', 'position:fixed;top:0;left:0;right:0;z-index:99998;' +
+          'background:#b45309;color:#fff;font:13px/1.4 system-ui,sans-serif;' +
+          'padding:8px 12px');
+        bar.textContent = 'Конфликт имён между частями интерфейса (' +
+          uniq.length + '): ' + uniq.join(', ') +
+          '. Один из одноимённых методов перекрыт — экран может вести себя ' +
+          'неправильно. Это ошибка сборки, см. tests/browser/test_b04_app_surface.py.';
+        document.body.appendChild(bar);
+      };
+      if (document.body) show();
+      else document.addEventListener('DOMContentLoaded', show);
+    } catch (e) { /* предупреждение не должно ломать интерфейс */ }
+  }
   return out;
 }
 
