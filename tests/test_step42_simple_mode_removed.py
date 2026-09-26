@@ -268,7 +268,57 @@ def test_patch_is_input_rejected_field_removed():
         os.unlink(path)
 
 
+def test_measured_edge_label_is_human_not_internal_code():
+    """ПРОБЛЕМА (найдено при проверке 26.09.2026): подпись измеряемой
+    линии строилась как `edge.name or edge.code or "A → B"`, а код у
+    линии есть ВСЕГДА (connect_nodes/add_consumer генерируют
+    `pv3-e-<from>-<to>-<нс>`). Значит, у каждой неименованной линии в
+    интерфейсе стоял бы `pv3-e-3-4-1790434002725159`, а ветка «A → B»
+    была недостижима. Это тот же баг, что уже чинили в партии 6, §5
+    («подпись связи edge_id: 1»).
+
+    ЛЕГИТИМНЫЙ СЛУЧАЙ: у линии есть своё имя — показывается оно."""
+    client, db, path = make_client()
+    try:
+        nodes = ElectricalNodeRepo(db)
+        edges = ElectricalEdgeRepo(db)
+        src = nodes.add(code="n-src", name="Ввод", kind="source")
+        shr = nodes.add(code="n-shr", name="ЩР-1", kind="panel")
+        load = nodes.add(code="n-load", name="Станки", kind="load")
+
+        p_unnamed = _make_point(client, "pu", "Точка безымянной линии")
+        p_named = _make_point(client, "pn", "Точка именованной линии")
+        _bind_meter(client, p_unnamed["id"], "dev-u", "U")
+        _bind_meter(client, p_named["id"], "dev-n", "N")
+
+        e_unnamed = edges.add_draft(src.id, shr.id,
+                                     code="pv3-e-1-2-1790434002725159",
+                                     primary_point_id=p_unnamed["id"])
+        e_named = edges.add_draft(shr.id, load.id, code="pv3-e-2-3-179043400272",
+                                   name="Фидер 3", primary_point_id=p_named["id"])
+        edges.publish_edges([e_unnamed.id, e_named.id])
+
+        rows = client.get("/api/v2/structure/points").get_json()["points"]
+        by_id = {r["point_id"]: r for r in rows}
+
+        label = by_id[p_unnamed["id"]]["measured_edge_label"]
+        assert label == "Ввод → ЩР-1", (
+            "у безымянной линии подпись обязана строиться по концам, а не "
+            "быть внутренним кодом", label)
+        assert "pv3-e-" not in label, label
+
+        assert by_id[p_named["id"]]["measured_edge_label"] == "Фидер 3", (
+            "ЛЕГИТИМНЫЙ СЛУЧАЙ сломан: своё имя линии должно побеждать",
+            by_id[p_named["id"]]["measured_edge_label"])
+
+        print("[OK] measured_edge_label: безымянная линия -> «Ввод → ЩР-1», "
+              "именованная -> своё имя; внутренний код наружу не течёт")
+    finally:
+        db.close(); os.unlink(path)
+
+
 if __name__ == "__main__":
     test_legacy_simple_mode_data_keeps_working_after_removal()
     test_patch_is_input_rejected_field_removed()
+    test_measured_edge_label_is_human_not_internal_code()
     print("\nВсе тесты удаления простого режима (Шаг 42) пройдены.")

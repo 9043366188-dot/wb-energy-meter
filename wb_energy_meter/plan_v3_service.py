@@ -247,7 +247,21 @@ def resolve_location_text(location_repo, text: Optional[str]):
 
 
 def _edge_display_label(edge, from_name: str, to_name: str) -> str:
-    return edge.name or edge.code or f"{from_name} → {to_name}"
+    """Человеческая подпись линии: своё имя, иначе «Ввод → ЩР-1» по
+    концам. Код связи — только если у концов не нашлось имён.
+
+    Порядок именно такой, а не «имя или код»: код здесь всегда есть
+    (`connect_nodes`/`add_consumer` генерируют `pv3-e-<from>-<to>-<нс>`),
+    поэтому вариант с кодом на первом месте означал бы, что у каждой
+    неименованной линии в интерфейсе стоит `pv3-e-3-4-1790434002725159`,
+    а ветка «A → B» недостижима. Это ровно тот баг, который уже чинили в
+    партии 6, §5 («подпись связи edge_id: 1 — показывать имя или
+    „Ввод → ЩР-1“ по концам; число только как запасной вариант»)."""
+    if edge.name:
+        return edge.name
+    if from_name and to_name:
+        return f"{from_name} → {to_name}"
+    return edge.code or f"#{edge.id}"
 
 
 def describe_point_supply(node_repo, edge_repo, point_id) -> dict:
@@ -256,8 +270,9 @@ def describe_point_supply(node_repo, edge_repo, point_id) -> dict:
     Точка не имеет своего узла — она измеряет линию
     (electrical_edges.primary_point_id). Возвращает:
     - measured_edge_id/measured_edge_label — какую опубликованную линию
-      измеряет точка (label — имя/код связи, иначе "A → B" по узлам),
-      либо None, если точка не назначена измерением ни одной линии;
+      измеряет точка (label — имя связи, иначе "A → B" по узлам; код —
+      только если у концов нет имён, см. _edge_display_label), либо
+      None, если точка не назначена измерением ни одной линии;
     - is_input — эта линия выходит из узла-ввода (kind='source');
     - fed_from_point_id — точка, измеряющая ближайшую вверх по дереву
       измеряемую линию (немереные промежуточные сегменты пропускаются),
