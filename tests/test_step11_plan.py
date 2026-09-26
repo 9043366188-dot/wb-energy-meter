@@ -327,6 +327,63 @@ def test_link_validation():
           "отрицательный rated_current_a -> 400")
 
 
+def test_link_patch_empty_body_400_not_silent_200():
+    """Партия 10, этап A ("заодно проверить тем же взглядом"): у соседа
+    api_plan_update уже была проверка "нечего менять" (`if not kwargs`),
+    а у api_plan_link_update — нет. PlanLinkRepo.update() безусловно
+    выполняет UPDATE, перезаписывая from_zone_id/to_zone_id их же
+    текущими значениями и продвигая updated_at, даже когда ни одно
+    известное поле не передано — раньше это проходило как 200 без
+    видимых изменений."""
+    with tempfile.TemporaryDirectory() as tmp:
+        app, db, groups_repo, meters_repo, prepo, zrepo, lrepo, pdir = _make_app(tmp)[:8]
+        c = app.test_client()
+        png = make_png(100, 100)
+        r = c.post("/api/plans", data={"name": "П", "file": (io.BytesIO(png), "a.png")},
+                   content_type="multipart/form-data")
+        plan_id = r.get_json()["id"]
+        g1 = groups_repo.create("Зона 1")
+        g2 = groups_repo.create("Зона 2")
+        geom = [[0, 0], [0, 10], [10, 10]]
+        c.put(f"/api/plans/{plan_id}/zones/{g1.id}",
+             data=json.dumps({"geometry": geom}), content_type="application/json")
+        c.put(f"/api/plans/{plan_id}/zones/{g2.id}",
+             data=json.dumps({"geometry": geom}), content_type="application/json")
+        z1 = zrepo.get(plan_id, g1.id)
+        z2 = zrepo.get(plan_id, g2.id)
+        r = c.post(f"/api/plans/{plan_id}/links",
+                   data=json.dumps({"from_zone_id": z1.id, "to_zone_id": z2.id,
+                                     "rated_current_a": 25, "label": "L1"}),
+                   content_type="application/json")
+        assert r.status_code == 201, r.get_data(as_text=True)
+        link_id = r.get_json()["id"]
+        updated_before = lrepo.get_by_id(link_id).updated_at
+
+        r = c.patch(f"/api/plans/{plan_id}/links/{link_id}",
+                    data=json.dumps({}), content_type="application/json")
+        assert r.status_code == 400, r.get_data(as_text=True)
+        unchanged = lrepo.get_by_id(link_id)
+        assert unchanged.rated_current_a == 25
+        assert unchanged.label == "L1"
+        assert unchanged.updated_at == updated_before, \
+            "пустое тело не должно было продвигать updated_at"
+
+        # опечатка в имени поля -- тоже 400, а не молчаливая перезапись
+        r = c.patch(f"/api/plans/{plan_id}/links/{link_id}",
+                    data=json.dumps({"lable": "опечатка"}), content_type="application/json")
+        assert r.status_code == 400, r.get_data(as_text=True)
+        assert lrepo.get_by_id(link_id).updated_at == updated_before
+
+        # легитимный запрос по-прежнему работает
+        r = c.patch(f"/api/plans/{plan_id}/links/{link_id}",
+                    data=json.dumps({"rated_current_a": 40}), content_type="application/json")
+        assert r.status_code == 200, r.get_data(as_text=True)
+        assert r.get_json()["rated_current_a"] == 40
+        db.close()
+    print("[OK] PATCH связи плана: пустое тело/опечатка в поле -> 400 без изменений; "
+          "легитимный запрос с rated_current_a по-прежнему работает")
+
+
 # ---------------------------------------------------------------------
 # 8. Каскад удаления
 # ---------------------------------------------------------------------
@@ -615,6 +672,7 @@ if __name__ == "__main__":
     test_geometry_validation_via_api_rejects_and_writes_nothing()
     test_pixel_leaflet_roundtrip()
     test_link_validation()
+    test_link_patch_empty_body_400_not_silent_200()
     test_cascade_delete_plan_and_group()
     test_live_no_meters_no_data()
     test_static_vendor_traversal_blocked()

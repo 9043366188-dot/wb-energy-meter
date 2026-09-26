@@ -205,6 +205,57 @@ def test_patch_edge_stale_revision_rejected_legitimate_still_works():
         db.close(); os.unlink(path)
 
 
+def test_patch_edge_empty_body_400_not_silent_200():
+    """Партия 10, этап A: тело без единого знакомого поля -> 400, а не
+    200 без изменений. Тот же класс, что уже исправлен у узла (a1ecf33).
+    Найдено 27.09.2026 на живом контроллере через {"archived": true} —
+    отдельная проверка ниже — но пустое тело ломает ровно так же."""
+    client, db, path = make_client()
+    try:
+        n1 = make_node(client, "n1", "Ввод", "source")
+        n2 = make_node(client, "n2", "ЩР-1", "panel")
+        e = connect(client, n1["id"], n2["id"])
+        name_before = get_edge(client, e["id"])["name"]
+
+        r = patch_edge(client, e["id"])
+        assert r.status_code == 400, r.get_json()
+        assert get_edge(client, e["id"])["name"] == name_before
+
+        r = patch_edge(client, e["id"], name="Ввод → ЩР-1")
+        assert r.status_code == 200, r.get_json()
+        assert get_edge(client, e["id"])["name"] == "Ввод → ЩР-1"
+        print("[OK] PATCH edges/<id>: пустое тело -> 400 без изменений; "
+              "легитимный запрос с name по-прежнему работает")
+    finally:
+        db.close(); os.unlink(path)
+
+
+def test_patch_edge_unknown_field_archived_400_not_silent_200():
+    """Регрессия 27.09.2026 (живой контроллер): у связи поле называется
+    "retire", а не "archived" — {"archived": true} прошло раньше как
+    200 без единого изменения на всех четырёх линиях сразу, уборка после
+    теста «прошла успешно» и оставила мусор."""
+    client, db, path = make_client()
+    try:
+        n1 = make_node(client, "n1", "Ввод", "source")
+        n2 = make_node(client, "n2", "ЩР-1", "panel")
+        e = connect(client, n1["id"], n2["id"])
+
+        r = patch_edge(client, e["id"], archived=True)
+        assert r.status_code == 400, r.get_json()
+        got = get_edge(client, e["id"])
+        assert got.get("archived_at") is None
+        assert got.get("state") != "archived"
+
+        r = patch_edge(client, e["id"], retire=True)
+        assert r.status_code == 200, r.get_json()
+        print("[OK] PATCH edges/<id>: {\"archived\": true} (не то поле) -> 400, "
+              "связь не выведена из работы; {\"retire\": true} по-прежнему "
+              "работает")
+    finally:
+        db.close(); os.unlink(path)
+
+
 # ---------------------------------------------------------------------
 # B8: POST edges/<id>/attach-new-point
 # ---------------------------------------------------------------------
@@ -370,6 +421,8 @@ if __name__ == "__main__":
     test_patch_edge_accepts_name_rated_current_cable_note()
     test_patch_edge_combines_metadata_and_primary_point_in_one_call()
     test_patch_edge_stale_revision_rejected_legitimate_still_works()
+    test_patch_edge_empty_body_400_not_silent_200()
+    test_patch_edge_unknown_field_archived_400_not_silent_200()
     test_attach_new_point_success_creates_point_binds_and_sets_primary()
     test_attach_new_point_repeat_same_device_is_idempotent_no_duplicate()
     test_attach_new_point_rejected_when_edge_already_metered_by_other_point()

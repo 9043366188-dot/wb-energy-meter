@@ -114,7 +114,65 @@ def test_patch_point_unknown_location_rejected_but_legit_still_works():
         db.close(); os.unlink(path)
 
 
+def test_patch_point_empty_body_400_not_silent_200():
+    """Партия 10, этап A: тело без единого знакомого поля -> 400, ревизия
+    не продвигается, точка не меняется. Раньше здесь был молчаливый 200 —
+    хуже, чем у связи/узла: with_revision_check безусловно создаёт новую
+    запись в истории ревизий, даже когда _mutate() ничего не сделал."""
+    client, db, path = make_client()
+    try:
+        r = client.post("/api/v2/points", json={"code": "p35.3", "name": "Точка 35.3"})
+        point_id = r.get_json()["id"]
+        rev_before = current_rev(client)
+
+        r = client.patch(f"/api/v2/points/{point_id}", json={"expected_revision": rev_before})
+        assert r.status_code == 400, r.get_json()
+        assert r.get_json()["code"] == "bad_request"
+        assert current_rev(client) == rev_before, "пустое тело не должно продвигать ревизию"
+        assert client.get(f"/api/v2/points/{point_id}").get_json()["name"] == "Точка 35.3"
+
+        r = client.patch(f"/api/v2/points/{point_id}", json={
+            "name": "Точка 35.3 (переименована)", "expected_revision": rev_before,
+        })
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()["name"] == "Точка 35.3 (переименована)"
+        print("[OK] PATCH точки: пустое тело -> 400, ревизия не продвинута; "
+              "легитимный запрос с name по-прежнему работает")
+    finally:
+        db.close(); os.unlink(path)
+
+
+def test_patch_point_unknown_field_400_not_silent_200():
+    """Тот же класс, что и пустое тело: если в теле только незнакомые
+    ключи (опечатка в имени поля), результат должен быть той же 400, а
+    не молчаливым 200 без изменений."""
+    client, db, path = make_client()
+    try:
+        r = client.post("/api/v2/points", json={"code": "p35.4", "name": "Точка 35.4"})
+        point_id = r.get_json()["id"]
+        rev_before = current_rev(client)
+
+        r = client.patch(f"/api/v2/points/{point_id}", json={
+            "lable": "опечатка вместо label/name", "expected_revision": rev_before,
+        })
+        assert r.status_code == 400, r.get_json()
+        assert current_rev(client) == rev_before
+        assert client.get(f"/api/v2/points/{point_id}").get_json()["name"] == "Точка 35.4"
+
+        r = client.patch(f"/api/v2/points/{point_id}", json={
+            "enabled": False, "expected_revision": rev_before,
+        })
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()["enabled"] is False
+        print("[OK] PATCH точки: незнакомое поле -> 400 без изменений; "
+              "легитимный запрос с enabled по-прежнему работает")
+    finally:
+        db.close(); os.unlink(path)
+
+
 if __name__ == "__main__":
     test_patch_point_sets_and_clears_location()
     test_patch_point_unknown_location_rejected_but_legit_still_works()
+    test_patch_point_empty_body_400_not_silent_200()
+    test_patch_point_unknown_field_400_not_silent_200()
     print("\nВсе тесты Шага 35 пройдены.")

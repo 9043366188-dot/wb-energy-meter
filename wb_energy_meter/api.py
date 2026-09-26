@@ -1632,6 +1632,14 @@ def create_app(state):
             kwargs["waypoints"] = body["waypoints"]
         if "label" in fields:
             kwargs["label"] = body["label"]
+        # Партия 10, этап A ("заодно проверить тем же взглядом"): без этой
+        # проверки тело без единого знакомого поля (пустое или с опечаткой
+        # в имени поля) всё равно доходило до PlanLinkRepo.update — а тот
+        # безусловно перезаписывает from_zone_id/to_zone_id их же текущими
+        # значениями и продвигает updated_at, даже когда kwargs пуст (см.
+        # plan_repo.py). Сосед api_plan_update эту проверку уже делает.
+        if not kwargs:
+            return json_response({"error": "nothing to update"}, 400)
         try:
             link = state.plan_link_repo.update(
                 link_id, state.plan_zone_repo, plan=plan, _fields=fields,

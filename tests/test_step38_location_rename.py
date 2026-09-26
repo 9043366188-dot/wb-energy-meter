@@ -162,9 +162,61 @@ def test_structure_points_exposes_what_is_missing():
         os.unlink(path)
 
 
+def test_location_patch_empty_body_400_not_silent_200():
+    """Партия 10, этап A ("заодно проверить тем же взглядом"): тело без
+    единого знакомого поля -> 400, а не молчаливый 200 с продвинутой
+    ревизией (with_revision_check вызывает create_revision безусловно —
+    без проверки здесь пустой PATCH оставлял пустую запись в истории
+    ревизий, хотя в данных ничего не менялось)."""
+    client, db, path = make_client()
+    try:
+        r = client.post("/api/v2/locations", json={"name": "Место A", "kind": "room"})
+        loc = r.get_json()
+        rev_before = current_rev(client)
+
+        r = client.patch(f"/api/v2/locations/{loc['id']}", json={"expected_revision": rev_before})
+        assert r.status_code == 400, r.get_json()
+        assert r.get_json()["code"] == "bad_request"
+        assert current_rev(client) == rev_before, "пустое тело не должно продвигать ревизию"
+        assert client.get(f"/api/v2/locations/{loc['id']}").get_json()["name"] == "Место A"
+
+        r = client.patch(f"/api/v2/locations/{loc['id']}", json={
+            "name": "Место A (переименовано)", "expected_revision": rev_before})
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()["name"] == "Место A (переименовано)"
+        print("[OK] PATCH места: пустое тело -> 400, ревизия не продвинута; "
+              "легитимный запрос с name по-прежнему работает")
+    finally:
+        db.close(); os.unlink(path)
+
+
+def test_location_patch_unknown_field_400_not_silent_200():
+    client, db, path = make_client()
+    try:
+        r = client.post("/api/v2/locations", json={"name": "Место B", "kind": "room"})
+        loc = r.get_json()
+        rev_before = current_rev(client)
+
+        r = client.patch(f"/api/v2/locations/{loc['id']}", json={
+            "archived": False, "expected_revision": rev_before})
+        assert r.status_code == 400, r.get_json()
+        assert current_rev(client) == rev_before
+        assert client.get(f"/api/v2/locations/{loc['id']}").get_json()["name"] == "Место B"
+
+        r = client.patch(f"/api/v2/locations/{loc['id']}", json={
+            "parent_id": None, "expected_revision": rev_before})
+        assert r.status_code == 200, r.get_json()
+        print("[OK] PATCH места: archived=false (незначащее) -> 400 без изменений; "
+              "легитимный запрос с parent_id по-прежнему работает")
+    finally:
+        db.close(); os.unlink(path)
+
+
 if __name__ == "__main__":
     test_location_rename_and_recode()
     test_location_rename_empty_name_rejected_valid_still_works()
     test_location_rename_duplicate_code_rejected_unique_still_works()
     test_structure_points_exposes_what_is_missing()
+    test_location_patch_empty_body_400_not_silent_200()
+    test_location_patch_unknown_field_400_not_silent_200()
     print("\nВсе тесты редактирования мест (Шаг 38) пройдены.")

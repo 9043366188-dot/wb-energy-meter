@@ -293,6 +293,49 @@ def test_group_effective_members_bad_at_400():
         db.close(); os.unlink(path)
 
 
+def test_group_patch_empty_body_400_not_silent_200():
+    """Партия 10, этап A ("заодно проверить тем же взглядом"): группа
+    признаёт единственное поле — parent_id (переименование/цвет
+    сознательно не сделаны). Тело без него раньше проходило через
+    with_revision_check и молча продвигало ревизию, отдавая группу
+    200 неизменной."""
+    client, db, path = make_client()
+    try:
+        g = client.post("/api/v2/groups", json={"name": "Группа X"}).get_json()["id"]
+        rev_before = current_rev(client)
+
+        r = client.patch(f"/api/v2/groups/{g}", json={"expected_revision": rev_before})
+        assert r.status_code == 400, r.get_json()
+        assert r.get_json()["code"] == "bad_request"
+        assert current_rev(client) == rev_before, "пустое тело не должно продвигать ревизию"
+
+        b = client.post("/api/v2/groups", json={"name": "Группа Y"}).get_json()["id"]
+        r = client.patch(f"/api/v2/groups/{g}",
+                          json={"parent_id": b, "expected_revision": current_rev(client)})
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()["parent_id"] == b
+        print("[OK] PATCH группы: пустое тело -> 400, ревизия не продвинута; "
+              "легитимный запрос с parent_id по-прежнему работает")
+    finally:
+        db.close(); os.unlink(path)
+
+
+def test_group_patch_unknown_field_400_not_silent_200():
+    client, db, path = make_client()
+    try:
+        g = client.post("/api/v2/groups", json={"name": "Группа Z"}).get_json()["id"]
+        rev_before = current_rev(client)
+
+        r = client.patch(f"/api/v2/groups/{g}", json={
+            "name": "Другое имя", "expected_revision": rev_before})
+        assert r.status_code == 400, r.get_json()
+        assert current_rev(client) == rev_before
+        assert client.get(f"/api/v2/groups/{g}").get_json()["name"] == "Группа Z"
+        print("[OK] PATCH группы: незнакомое поле (name) -> 400 без изменений")
+    finally:
+        db.close(); os.unlink(path)
+
+
 if __name__ == "__main__":
     test_groups_crud_and_list_filters()
     test_group_not_found_404()
@@ -306,4 +349,6 @@ if __name__ == "__main__":
     test_group_remove_member_without_membership_404()
     test_group_effective_members_dedup_via_http()
     test_group_effective_members_bad_at_400()
+    test_group_patch_empty_body_400_not_silent_200()
+    test_group_patch_unknown_field_400_not_silent_200()
     print("[ALL OK] test_step25_api_v2_groups")

@@ -356,6 +356,26 @@ def register_v2_routes(app, state, json_response):
                 ids=[point_id], fields=["is_input", "fed_from_point_id"])
             return json_response(body, status)
 
+        # Партия 10, этап A: тело без единого знакомого поля раньше всё
+        # равно проходило через with_revision_check — та ЖЕ ревизия
+        # молча продвигалась (create_revision вызывается безусловно),
+        # точка возвращалась 200 неизменной. Хуже, чем у узла/связи: там
+        # хотя бы револю не трогало. Проверка ДО with_revision_check —
+        # тело без действия не должно порождать пустую запись в истории
+        # ревизий.
+        if not (
+            "enabled" in data
+            or ("archived" in data and data["archived"])
+            or any(k in data for k in ("name", "description", "installation_note"))
+            or "installation_location_id" in data
+        ):
+            body, status = _err(
+                "bad_request",
+                "нечего менять: укажите enabled, archived, name, description, "
+                "installation_note или installation_location_id",
+                400, ids=[point_id])
+            return json_response(body, status)
+
         def _mutate():
             result = p
             if "enabled" in data:
@@ -578,6 +598,22 @@ def register_v2_routes(app, state, json_response):
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
 
+        # Партия 10, этап A ("заодно проверить тем же взглядом"): та же
+        # дыра, что была у связи (docs/TZ-batch10-reliability-and-load.md
+        # §1) — тело без единого знакомого поля раньше проходило через
+        # with_revision_check и молча продвигало ревизию (create_revision
+        # безусловна), возвращая место 200 неизменным.
+        if not (
+            "parent_id" in data
+            or any(k in data for k in ("name", "code"))
+            or data.get("archived")
+        ):
+            body, status = _err(
+                "bad_request",
+                "нечего менять: укажите parent_id, name, code или archived",
+                400, ids=[location_id])
+            return json_response(body, status)
+
         def _mutate():
             result = l
             if "parent_id" in data:
@@ -667,6 +703,17 @@ def register_v2_routes(app, state, json_response):
             return json_response(_group_to_dict(g))
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+
+        # Партия 10, этап A ("заодно проверить тем же взглядом"): группа
+        # v2 признаёт только parent_id (переименование/архивация групп
+        # сознательно не сделаны — см. журнал изменений); тело без него
+        # раньше всё равно проходило через with_revision_check и молча
+        # продвигало ревизию, возвращая группу 200 неизменной.
+        if "parent_id" not in data:
+            body, status = _err(
+                "bad_request", "нечего менять: укажите parent_id", 400,
+                ids=[group_id])
+            return json_response(body, status)
 
         def _mutate():
             result = g
@@ -1031,7 +1078,20 @@ def register_v2_routes(app, state, json_response):
             out = _edge_to_dict(repo.get_by_id(edge_id))
             out["configuration_revision"] = new_rev
             return json_response(out)
-        return json_response(_edge_to_dict(repo.get_by_id(edge_id)))
+        # Ни одного знакомого поля в теле: раньше здесь был молчаливый
+        # 200 с неизменённой связью — тот же класс, что уже исправлен у
+        # узла выше (a1ecf33). Пойман 27.09.2026 на живом контроллере:
+        # PATCH связи с {"archived": true} (у связи правильное поле —
+        # "retire") вернул 200 на все четыре линии, ни одна не была
+        # выведена из работы (docs/TZ-batch10-reliability-and-load.md
+        # §1). Ответ 200 на запрос, который ничего не изменил, — худший
+        # вид ошибки: клиент ей верит.
+        body, status = _err(
+            "bad_request",
+            "нечего менять: укажите retire, primary_point_id, name, "
+            "rated_current_a или cable_note",
+            400, ids=[edge_id])
+        return json_response(body, status)
 
     def _node_name_for_edge_target(edge):
         node = _node_repo().get_by_id(edge.to_node_id)
@@ -1451,6 +1511,22 @@ def register_v2_routes(app, state, json_response):
         # закрываем то, что больше не входит, открываем новое, версионируя
         # (тот же принцип, что и в других *_bindings таблицах этапа B).
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+
+        # Партия 10, этап A ("заодно проверить тем же взглядом"): без
+        # единого знакомого поля раньше транзакция всё равно открывалась
+        # и create_revision вызывалась безусловно в конце — граница
+        # баланса возвращалась 200 неизменной, а в истории ревизий
+        # оставалась пустая запись. Проверка ДО транзакции, а не внутри —
+        # чтобы не открывать её напрасно.
+        if not any(k in data for k in
+                   ("input_point_ids", "output_point_ids", "name", "description")):
+            body, status = _err(
+                "bad_request",
+                "нечего менять: укажите input_point_ids, output_point_ids, "
+                "name или description",
+                400, ids=[scope_id])
+            return json_response(body, status)
+
         now = int(time.time())
         try:
             with db.transaction() as c:

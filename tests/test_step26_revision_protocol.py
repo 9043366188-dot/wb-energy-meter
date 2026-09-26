@@ -399,6 +399,38 @@ def test_a35_balance_scope_patch_stale_revision_rejected():
         db.close(); os.unlink(path)
 
 
+def test_balance_scope_patch_empty_body_400_not_silent_200():
+    """Партия 10, этап A ("заодно проверить тем же взглядом"): PATCH
+    границы баланса собирает изменения в сырой db.transaction() (не через
+    with_revision_check/bump_revision), но create_revision внутри тоже
+    вызывалась безусловно — тело без input_point_ids/output_point_ids/
+    name/description раньше открывало транзакцию, ничего не меняло и всё
+    равно продвигало ревизию, отдавая границу 200 неизменной."""
+    app, db, path = make_client()
+    try:
+        client = app.test_client()
+        p1 = client.post("/api/v2/points", json={"code": "p1", "name": "П1"}).get_json()["id"]
+        scope_id = client.post("/api/v2/balance-scopes",
+                                json={"name": "Объект", "input_point_ids": [p1]}).get_json()["id"]
+        rev_before = current_rev(client)
+
+        r = client.patch(f"/api/v2/balance-scopes/{scope_id}",
+                          json={"expected_revision": rev_before})
+        assert r.status_code == 400, r.get_json()
+        assert r.get_json()["code"] == "bad_request"
+        assert current_rev(client) == rev_before, "пустое тело не должно продвигать ревизию"
+        assert client.get(f"/api/v2/balance-scopes/{scope_id}").get_json()["input_point_ids"] == [p1]
+
+        r = client.patch(f"/api/v2/balance-scopes/{scope_id}",
+                          json={"name": "Переименовано", "expected_revision": rev_before})
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()["name"] == "Переименовано"
+        print("[OK] PATCH границы баланса: пустое тело -> 400, ревизия не продвинута; "
+              "легитимный запрос с name по-прежнему работает")
+    finally:
+        db.close(); os.unlink(path)
+
+
 def test_get_revision_endpoint_tracks_writes():
     app, db, path = make_client()
     try:
@@ -556,6 +588,7 @@ if __name__ == "__main__":
     test_a35_topology_edge_retire_stale_revision_rejected()
     test_a35_topology_publish_stale_revision_rejected()
     test_a35_balance_scope_patch_stale_revision_rejected()
+    test_balance_scope_patch_empty_body_400_not_silent_200()
     test_get_revision_endpoint_tracks_writes()
     test_a43_metrics_query_pins_snapshot_against_concurrent_write()
     test_metrics_query_explicit_configuration_revision_id()
