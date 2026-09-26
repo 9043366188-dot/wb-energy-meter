@@ -78,16 +78,64 @@ if ! python3 -c "$DEPS_PY" 2>/dev/null; then
   exit 5
 fi
 
-if [[ -f "$DB_PATH" ]]; then
-  BACKUP="$DB_PATH.backup-$(date +%Y%m%d-%H%M%S)"
-  echo ">>> Резервная копия БД: $BACKUP"
-  cp -a "$DB_PATH" "$BACKUP"
-  ls -1t "$DB_PATH".backup-* 2>/dev/null | tail -n +6 | xargs -r rm -f
-fi
-
 if systemctl is-active --quiet wb-energy-meter.service 2>/dev/null; then
   echo ">>> Останавливаю текущий сервис..."
   systemctl stop wb-energy-meter.service
+fi
+
+# Партия 10, этап B (F3, docs/TZ-batch10-reliability-and-load.md §2 /
+# docs/migration-plan-v2.md §7 п.4): раньше бэкап снимался простым `cp -a`
+# И до остановки сервиса — то есть в худший момент. Пока демон работает,
+# БД открыта в WAL-режиме, и часть уже подтверждённых данных лежит в
+# файле `<DB>-wal`, который `cp` не копирует: снимок мог оказаться
+# рваным или просто отставать от реального состояния. Поймано 27.09.2026
+# на живом контроллере отдельным сценарием этой же партии.
+#
+# Исправлено тем же способом, что и в scripts/self-update.sh::
+# backup_data() (тот шаг эту проблему не имел изначально — там Online
+# Backup API уже использовался, т.к. на том шаге сервис ЕЩЁ работает):
+# сервис уже остановлен строкой выше, и копия снимается через
+# sqlite3.Connection.backup() (Online Backup API), а не файловым
+# копированием — атомарно, во временный файл рядом, с os.replace() в
+# конце. Если бэкап не удался — устанавливать дальше НЕЛЬЗЯ: продолжать
+# значило бы менять код поверх БД, снимок которой не гарантирован.
+if [[ -f "$DB_PATH" ]]; then
+  BACKUP="$DB_PATH.backup-$(date +%Y%m%d-%H%M%S)"
+  echo ">>> Резервная копия БД (Online Backup API, сервис остановлен): $BACKUP"
+  if ! python3 -c '
+import os, sqlite3, sys, tempfile
+
+src_path, dst_path = sys.argv[1], sys.argv[2]
+d = os.path.dirname(os.path.abspath(dst_path)) or "."
+os.makedirs(d, exist_ok=True)
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".state-backup-", suffix=".sqlite3")
+os.close(fd)
+os.unlink(tmp)
+try:
+    src = sqlite3.connect(src_path)
+    try:
+        dst = sqlite3.connect(tmp)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    os.replace(tmp, dst_path)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+' "$DB_PATH" "$BACKUP"; then
+    echo "ОШИБКА: не удалось создать резервную копию БД ($DB_PATH -> $BACKUP)." >&2
+    echo "        Установка остановлена ДО копирования кода — рабочая БД и" >&2
+    echo "        текущий код не тронуты. Проверьте место на диске и права" >&2
+    echo "        на $DATA_DIR, затем запустите установку снова." >&2
+    exit 3
+  fi
+  ls -1t "$DB_PATH".backup-* 2>/dev/null | tail -n +6 | xargs -r rm -f
 fi
 
 echo ">>> Создание директорий..."

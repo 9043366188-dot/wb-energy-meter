@@ -693,6 +693,17 @@ restore_data_backup() {
     return 0
   fi
 
+  # Партия 10, этап B (docs/TZ-batch10-reliability-and-load.md §2):
+  # проверено отдельно для этого места — здесь `cp -a` безопасен, в
+  # отличие от install.sh (та копия чинится тем же этапом заменой на
+  # Online Backup API). restore_data_backup() вызывается только из
+  # attempt_rollback(), и там сервис уже остановлен строкой
+  # `systemctl stop` ВЫШЕ по коду (до восстановления кода из
+  # $ROLLBACK_DIR) и не запускается заново до самого конца функции —
+  # `systemctl start` идёт уже ПОСЛЕ restore_data_backup(). Файл на диске
+  # не меняется демоном, WAL не растёт — рваного снимка здесь быть не
+  # может, и городить Online Backup API поверх уже неподвижного файла
+  # незачем.
   if [[ -f "$DB_PATH" ]]; then
     cp -a "$DB_PATH" "${DB_PATH}.pre-rollback-$(date +%Y%m%d-%H%M%S)" 2>>"$LOG_FILE" || true
   fi

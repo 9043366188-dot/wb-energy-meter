@@ -187,6 +187,9 @@ jobs:
       - name: "Run unit tests (упаковка статики в собираемый пакет)"
         run: python tests/test_step45_package_data.py
 
+      - name: "Run unit tests (партия 10: бэкап БД install.sh через Online Backup API)"
+        run: python tests/test_step46_install_backup.py
+
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
 
@@ -283,6 +286,7 @@ jobs:
           python tests/test_step42_simple_mode_removed.py
           python tests/test_step44_ui_parts.py
           python tests/test_step45_package_data.py
+          python tests/test_step46_install_backup.py
 
   lint:
     name: Basic checks
