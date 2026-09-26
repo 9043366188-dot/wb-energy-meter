@@ -483,14 +483,6 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   <span class="muted mono" x-text="version?'v'+version:''"></span>
   <button class="ico-btn" @click="toggleUiSet()" x-text="uiSet=='v2'?'Классический':'Новый интерфейс'"
           title="Переключить набор вкладок: классический интерфейс или новый (ТЗ v2, в разработке — см. CHANGELOG.md)"></button>
-  <!-- Партия 6, задача 5: простой режим — по умолчанию. Всё, что связано
-       с узлами/связями/публикацией (термины электрической сети), доступно
-       только когда это явно включено — см. docs/TZ-batch6-simple-mode.md
-       §6. Кнопка видна только в новом наборе — в классическом узлов/связей
-       не существует вовсе. -->
-  <button class="ico-btn" x-show="uiSet=='v2'" @click="toggleDetailedMode()"
-          x-text="detailedMode?'⚙ Подробная схема: вкл':'⚙ Подробная схема: выкл'"
-          title="Подробная схема — узлы, связи и их публикация напрямую (для сложных/нестандартных схем электроснабжения). Выключено — точки учёта настраиваются через «Это ввод» / «Питается от»."></button>
   <button class="ico-btn" @click="toggleTheme()" x-text="theme=='dark'?'☀ Светлая':'🌙 Тёмная'"></button>
   <button class="ico-btn" @click="refresh()">⟳ Обновить</button>
 </header>
@@ -1405,90 +1397,29 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 </div>
               </div>
 
-              <!-- Партия 6, задача 1 (§2, ГЛАВНАЯ задача партии): простой
-                   режим — «Это ввод»/«Питается от» вместо узлов/связей на
-                   глазах у пользователя. Пишет через ту же ручку PATCH
-                   .../points/<id> (is_input/fed_from_point_id), см.
-                   simple_mode_service.py — здесь только форма поверх неё,
-                   никакого нового домена. -->
               <div class="structure-field">
-                <div class="sf-lbl">Питание</div>
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-                  <input type="checkbox"
-                         x-model="structInspector.data.power_supply.is_input"
-                         @change="if(structInspector.data.power_supply.is_input) structInspector.data.power_supply.fed_from_point_id=null; submitSimplePower()">
-                  <span>Это ввод (питается от внешней сети)</span>
-                </label>
-                <template x-if="!structInspector.data.power_supply.is_input">
-                  <div style="margin-top:6px">
-                    <div class="muted" style="font-size:11px;margin-bottom:2px">Питается от</div>
-                    <select x-model.number="structInspector.data.power_supply.fed_from_point_id" @change="submitSimplePower()">
-                      <option :value="null">— не задано —</option>
-                      <template x-for="op in structOtherPoints(structInspector.id)" :key="op.point_id">
-                        <option :value="op.point_id" x-text="op.name"></option>
-                      </template>
-                    </select>
-                  </div>
-                </template>
-                <template x-if="simplePowerError">
-                  <div class="warn-item" style="margin-top:6px" x-text="simplePowerError"></div>
-                </template>
-              </div>
-
-              <!-- Обратное действие — только у ввода: "добавить потребителей"
-                   вместо того, чтобы заходить в карточку каждой точки по
-                   отдельности и выставлять там "питается от" на этот ввод. -->
-              <template x-if="structInspector.data.power_supply.is_input">
-                <div class="structure-field">
-                  <div class="sf-lbl">Добавить потребителей (питаются от этого ввода)</div>
-                  <div style="display:flex;gap:6px">
-                    <select x-model.number="structInspector.addConsumerPick" style="flex:1">
-                      <option value="">— выберите точку —</option>
-                      <template x-for="op in structOtherPoints(structInspector.id)" :key="op.point_id">
-                        <option :value="op.point_id" x-text="op.name"></option>
-                      </template>
-                    </select>
-                    <button class="btn btn-secondary btn-sm" @click="addConsumerToInput()">+</button>
-                  </div>
-                  <template x-if="addConsumerError">
-                    <div class="warn-item" style="margin-top:6px" x-text="addConsumerError"></div>
-                  </template>
-                  <template x-for="c in structConsumersOf(structInspector.id)" :key="c.point_id">
-                    <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;margin-top:6px">
-                      <span x-text="c.name"></span>
-                      <button class="btn btn-sm btn-danger" @click="removeConsumerFeed(c.point_id)">Убрать</button>
-                    </div>
-                  </template>
-                  <div class="muted" style="font-size:11px;margin-top:4px" x-show="structConsumersOf(structInspector.id).length===0">
-                    Пока никто не выбрал эту точку как источник питания.
-                  </div>
-                </div>
-              </template>
-
-              <div class="structure-field">
-                <div class="sf-lbl">Что питает (заметка, не влияет на расчёт)</div>
-                <textarea x-model="structInspector.data.description" @blur="submitSimpleNote()"
+                <div class="sf-lbl">Описание</div>
+                <textarea x-model="structInspector.data.description" @blur="submitPointDescription()"
                           rows="2" style="width:100%;resize:vertical" placeholder="Например: розетки цеха 2, освещение склада"></textarea>
               </div>
 
-              <!-- Подробная схема (§6, задача 5): то же самое, но в терминах
-                   узлов/связей/публикации — по умолчанию скрыто, доступно
-                   тем, кому простого режима не хватает. -->
-              <template x-if="detailedMode">
-                <div class="structure-field">
-                  <div class="sf-lbl">Чем питается / что питает (по опубликованной схеме)</div>
-                  <template x-if="structFeed(structInspector.id).measuredEdges.length===0">
-                    <div class="sf-val muted">Точка не назначена измерением ни одной опубликованной связи.</div>
-                  </template>
-                  <template x-for="f in structFeed(structInspector.id).measuredEdges" :key="f.edge.id">
-                    <div class="sf-val" style="margin-bottom:6px">
-                      <div class="muted" style="font-size:11px" x-text="'Измеряет связь: '+(f.edge.name||f.edge.code||('#'+f.edge.id))"></div>
-                      <div x-text="'Питается от: '+(f.fedBy.length?f.fedBy.map(x=>x.name||x.code).join(', '):'— (ввод / верхний узел схемы)')"></div>
-                      <div x-text="'Питает: '+(f.feeds.length?f.feeds.map(x=>x.name||x.code).join(', '):'— (конечных потребителей на схеме нет)')"></div>
-                    </div>
-                  </template>
-                </div>
-              </template>
+              <!-- Партия 8, этап A: простой режим удалён — питание точки
+                   выводится из опубликованной топологии «Плана v3»
+                   (plan_v3_service.describe_point_supply), только чтение;
+                   показывается всегда, а не за переключателем. -->
+              <div class="structure-field">
+                <div class="sf-lbl">Чем питается / что питает</div>
+                <template x-if="structFeed(structInspector.id).measuredEdges.length===0">
+                  <div class="sf-val muted">Точка не назначена измерением ни одной опубликованной связи.</div>
+                </template>
+                <template x-for="f in structFeed(structInspector.id).measuredEdges" :key="f.edge.id">
+                  <div class="sf-val" style="margin-bottom:6px">
+                    <div class="muted" style="font-size:11px" x-text="'Измеряет связь: '+(f.edge.name||f.edge.code||('#'+f.edge.id))"></div>
+                    <div x-text="'Питается от: '+(f.fedBy.length?f.fedBy.map(x=>x.name||x.code).join(', '):'— (ввод / верхний узел схемы)')"></div>
+                    <div x-text="'Питает: '+(f.feeds.length?f.feeds.map(x=>x.name||x.code).join(', '):'— (конечных потребителей на схеме нет)')"></div>
+                  </div>
+                </template>
+              </div>
 
               <div class="structure-field">
                 <div class="sf-lbl">Место установки</div>
@@ -1657,18 +1588,15 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   @click="openCreatePanel('location')">+ Место</button>
           <button class="btn btn-sm" :class="structCreatePanel==='point'?'btn-primary':'btn-secondary'"
                   @click="openCreatePanel('point')">+ Точка учёта</button>
-          <!-- Партия 6, задача 5 (§6): узлы/связи/публикация — только в
-               подробном режиме. В простом режиме то же самое делается через
-               «Это ввод»/«Питается от» прямо на карточке точки. -->
-          <button class="btn btn-sm" x-show="detailedMode" :class="structCreatePanel==='node'?'btn-primary':'btn-secondary'"
+          <button class="btn btn-sm" :class="structCreatePanel==='node'?'btn-primary':'btn-secondary'"
                   @click="openCreatePanel('node')">+ Узел сети</button>
-          <button class="btn btn-sm" x-show="detailedMode" :class="structCreatePanel==='edge'?'btn-primary':'btn-secondary'"
+          <button class="btn btn-sm" :class="structCreatePanel==='edge'?'btn-primary':'btn-secondary'"
                   @click="openCreatePanel('edge')">+ Связь</button>
-          <button class="btn btn-sm" x-show="detailedMode" :class="structCreatePanel==='publish'?'btn-primary':'btn-secondary'"
+          <button class="btn btn-sm" :class="structCreatePanel==='publish'?'btn-primary':'btn-secondary'"
                   @click="openCreatePanel('publish')">Публикация топологии</button>
         </div>
 
-        <div class="muted" style="font-size:11px;margin-bottom:10px;max-width:640px" x-show="detailedMode">
+        <div class="muted" style="font-size:11px;margin-bottom:10px;max-width:640px">
           Ввод объекта определяется автоматически: это точка измерения на связи,
           исходящей из узла типа «Ввод» (source) — отдельного действия «назначить
           ввод» нет. Чтобы точка стала вводом объекта, создайте узел типа «Ввод»,
@@ -2208,10 +2136,8 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <option value="">— тип элемента —</option>
                   <option value="point">Точка учёта</option>
                   <option value="location">Место</option>
-                  <!-- Партия 6, задача 5 (§6): узел/переход-на-план — термины
-                       подробной схемы, скрыты в простом режиме. -->
-                  <option value="node" x-show="detailedMode">Узел сети</option>
-                  <option value="port" x-show="detailedMode">Переход на другой план</option>
+                  <option value="node">Узел сети</option>
+                  <option value="port">Переход на другой план</option>
                   <option value="annotation">Подпись</option>
                 </select>
                 <select x-show="planV2AddKind==='point'" x-model.number="planV2AddRefId">
@@ -2226,13 +2152,13 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     <option :value="l.id" x-text="l.name"></option>
                   </template>
                 </select>
-                <select x-show="detailedMode && (planV2AddKind==='node' || planV2AddKind==='port')" x-model.number="planV2AddRefId">
+                <select x-show="(planV2AddKind==='node' || planV2AddKind==='port')" x-model.number="planV2AddRefId">
                   <option value="">— узел —</option>
                   <template x-for="n in planV2Nodes" :key="n.id">
                     <option :value="n.id" x-text="n.name"></option>
                   </template>
                 </select>
-                <select x-show="detailedMode && planV2AddKind==='port'" x-model.number="planV2AddTargetPlanId">
+                <select x-show="planV2AddKind==='port'" x-model.number="planV2AddTargetPlanId">
                   <option value="">— ведёт на план (необязательно) —</option>
                   <template x-for="p in planV2Plans" :key="p.id">
                     <option :value="p.id" x-text="p.name"></option>
@@ -2265,52 +2191,45 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <div class="muted" x-show="!_planV2EffectiveItems().length">Элементов пока нет.</div>
               </div>
 
-              <!-- Партия 6, задача 5 (§6): связи (edge_views) на плане —
-                   термины подробной схемы, скрыты в простом режиме целиком
-                   (список, добавление, форма). Ничего не меняется в данных
-                   при переключении — уже нанесённые связи просто не
-                   показываются, пока включение обратно их не откроет. -->
-              <template x-if="detailedMode">
-                <div>
-                  <h3 style="margin-top:14px">Связи (edge_views)</h3>
-                  <div class="plan-zone-list">
-                    <template x-for="v in _planV2EffectiveEdgeViews()" :key="v.id">
-                      <div class="plan-zone-row" style="cursor:pointer"
-                           @click="_planV2SelectEdgeView(v)">
-                        <span class="pzr-name" x-text="planV2EdgeViewLabel(v)+(v.waypoints?' 🖊':'')"></span>
-                        <button class="btn btn-sm btn-danger" @click.stop="planV2RemoveEdgeView(v)">✕</button>
-                      </div>
-                    </template>
-                    <div class="muted" x-show="!_planV2EffectiveEdgeViews().length">Связей пока нет.</div>
-                  </div>
-                  <button class="btn btn-sm" :class="planV2AddingEdgeView?'btn-secondary':'btn-primary'"
-                          @click="planV2ToggleAddingEdgeView()"
-                          x-text="planV2AddingEdgeView?'Отменить добавление связи':'Добавить связь'"></button>
-                  <template x-if="planV2AddingEdgeView">
-                    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
-                      <select x-model.number="planV2EdgeForm.edgeId">
-                        <option value="">— электрическая связь (edge) —</option>
-                        <template x-for="e in planV2Edges" :key="e.id">
-                          <option :value="e.id" x-text="(e.code||('#'+e.id))+' '+(e.name||'')"></option>
-                        </template>
-                      </select>
-                      <select x-model="planV2EdgeForm.fromItemKey">
-                        <option value="">— откуда (необязательно) —</option>
-                        <template x-for="it in planV2NodeLikeItems()" :key="it.id">
-                          <option :value="String(it.id)" x-text="it.label||('элемент '+it.id)"></option>
-                        </template>
-                      </select>
-                      <select x-model="planV2EdgeForm.toItemKey">
-                        <option value="">— куда (необязательно) —</option>
-                        <template x-for="it in planV2NodeLikeItems()" :key="it.id">
-                          <option :value="String(it.id)" x-text="it.label||('элемент '+it.id)"></option>
-                        </template>
-                      </select>
-                      <button class="btn btn-primary btn-sm" @click="planV2SaveEdgeDraft()">Добавить в черновик</button>
+              <div>
+                <h3 style="margin-top:14px">Связи (edge_views)</h3>
+                <div class="plan-zone-list">
+                  <template x-for="v in _planV2EffectiveEdgeViews()" :key="v.id">
+                    <div class="plan-zone-row" style="cursor:pointer"
+                         @click="_planV2SelectEdgeView(v)">
+                      <span class="pzr-name" x-text="planV2EdgeViewLabel(v)+(v.waypoints?' 🖊':'')"></span>
+                      <button class="btn btn-sm btn-danger" @click.stop="planV2RemoveEdgeView(v)">✕</button>
                     </div>
                   </template>
+                  <div class="muted" x-show="!_planV2EffectiveEdgeViews().length">Связей пока нет.</div>
                 </div>
-              </template>
+                <button class="btn btn-sm" :class="planV2AddingEdgeView?'btn-secondary':'btn-primary'"
+                        @click="planV2ToggleAddingEdgeView()"
+                        x-text="planV2AddingEdgeView?'Отменить добавление связи':'Добавить связь'"></button>
+                <template x-if="planV2AddingEdgeView">
+                  <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+                    <select x-model.number="planV2EdgeForm.edgeId">
+                      <option value="">— электрическая связь (edge) —</option>
+                      <template x-for="e in planV2Edges" :key="e.id">
+                        <option :value="e.id" x-text="(e.code||('#'+e.id))+' '+(e.name||'')"></option>
+                      </template>
+                    </select>
+                    <select x-model="planV2EdgeForm.fromItemKey">
+                      <option value="">— откуда (необязательно) —</option>
+                      <template x-for="it in planV2NodeLikeItems()" :key="it.id">
+                        <option :value="String(it.id)" x-text="it.label||('элемент '+it.id)"></option>
+                      </template>
+                    </select>
+                    <select x-model="planV2EdgeForm.toItemKey">
+                      <option value="">— куда (необязательно) —</option>
+                      <template x-for="it in planV2NodeLikeItems()" :key="it.id">
+                        <option :value="String(it.id)" x-text="it.label||('элемент '+it.id)"></option>
+                      </template>
+                    </select>
+                    <button class="btn btn-primary btn-sm" @click="planV2SaveEdgeDraft()">Добавить в черновик</button>
+                  </div>
+                </template>
+              </div>
             </div>
           </template>
         </div>
@@ -4371,12 +4290,6 @@ function app(){ return {
   tab: (lsGet('wbem.uiSet', DEFAULT_UI_SET)=='v2') ? 'overviewv2' : 'dash',
   uiSet: lsGet('wbem.uiSet', DEFAULT_UI_SET),
   theme:lsGet('theme','dark'), loading:true,
-  // Партия 6, задача 5 (§6): 'Подробная схема' — узлы/связи/публикация
-  // напрямую. По умолчанию ВЫКЛЮЧЕНО (см. DEFAULT_UI_SET выше — тот же
-  // принцип: пока это не проверено в реальном браузере, включённое по
-  // умолчанию 'подробно' не должно быть дефолтом). Переключение режима
-  // НЕ меняет данные — это чисто видимость элементов интерфейса.
-  detailedMode: lsGet('wbem.detailedMode','0')==='1',
   meters:[], byStatus:{}, mqtt:{connected:false,messages:0,errors:0},
   version:'', uptime:0, detail:null,
   // consumption
@@ -4549,7 +4462,6 @@ function app(){ return {
   structQuery:'', structPoints:[], structLocations:[], structGroups:[],
   structNodes:[], structEdges:[], structSelectedLocationId:null,
   locEditForm:null,  // партия 6, задача 3 — инлайн-редактирование места
-  simplePowerError:null, addConsumerError:null,  // партия 6, задача 1
   structInspector:null, structInspectorLoading:false, structInspectorError:null,
   _structSearchSeq:0,
   // Заведение структуры из интерфейса (ТЗ §8.3/партия 5, задача 1):
@@ -4637,13 +4549,6 @@ function app(){ return {
     // --err/--accent2) в момент отрисовки, не через var() внутри SVG —
     // после смены темы их нужно пересчитать явно.
     this.$nextTick(()=>{ if(typeof this._planApplyLiveStyles==='function') this._planApplyLiveStyles(); });
-  },
-  toggleDetailedMode(){
-    this.detailedMode = !this.detailedMode;
-    try{ localStorage.setItem('wbem.detailedMode', this.detailedMode?'1':'0'); }catch(e){}
-    // §6: "переключение режима не должно менять данные" — ничего не
-    // сохраняем на сервер и не перезагружаем структуру, это только
-    // видимость уже загруженных данных.
   },
   // Переключатель классический/новый интерфейс (UI_SET_TABS/DEFAULT_UI_SET
   // объявлены в начале <script> выше). Выбор запоминается в localStorage —
@@ -6628,11 +6533,13 @@ function app(){ return {
     return n ? (n.name||n.code||('#'+nodeId)) : ('#'+nodeId);
   },
   // Партия 6, задача 3 (§4: "показать чего не хватает" в списке точек).
+  // Партия 8, этап A: «не указано питание» (простой режим) заменено на
+  // «не стоит на линии» по measured_edge_id (топология «Плана v3»).
   structMissingInfo(p){
     const missing=[];
     if(!p.bound) missing.push('нет прибора');
     if(!p.location_id) missing.push('нет места');
-    if(!p.is_input && p.fed_from_point_id==null) missing.push('не указано питание');
+    if(p.measured_edge_id==null) missing.push('не стоит на линии');
     if(!p.placed_on_plan) missing.push('не на плане');
     return missing;
   },
@@ -6741,80 +6648,10 @@ function app(){ return {
     });
     return {measuredEdges};
   },
-  // ------------------------------------------------------------------
-  // Партия 6, задача 1 (§2, ГЛАВНАЯ задача партии): простой режим.
-  // Пишет исключительно через уже существующий PATCH /api/v2/points/<id>
-  // (is_input/fed_from_point_id) — см. simple_mode_service.py на
-  // бэкенде; здесь только форма и обновление карточки/списков после
-  // ответа сервера. При отказе (в т.ч. simple_mode_conflict — цикл,
-  // "ввод сам себе источник" и т.п., см. api_v2.py) откатываем локальное
-  // состояние перезагрузкой карточки — не оставляем на экране то, что
-  // сервер не сохранил.
-  // ------------------------------------------------------------------
-  structOtherPoints(excludeId){
-    return (this.structPoints||[]).filter(p=>p.point_id!==excludeId)
-      .slice().sort((a,b)=>String(a.name).localeCompare(String(b.name)));
-  },
-  structConsumersOf(pointId){
-    return (this.structPoints||[]).filter(p=>p.fed_from_point_id===pointId);
-  },
-  async submitSimplePower(){
-    if(!this.structInspector || this.structInspector.kind!=='point') return;
-    const ps = this.structInspector.data.power_supply || {is_input:false, fed_from_point_id:null};
-    this.simplePowerError = null;
-    try{
-      const rev = await this._structCurrentRev();
-      const r = await fetch('/api/v2/points/'+this.structInspector.id, {
-        method:'PATCH', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({
-          is_input: !!ps.is_input,
-          fed_from_point_id: ps.is_input ? null : (ps.fed_from_point_id||null),
-          expected_revision: rev,
-        })});
-      const d = await r.json();
-      if(!r.ok){
-        this.simplePowerError = this._apiErrorMessage(d, r.status);
-        await this._loadPointInspector(this.structInspector.id);
-        return;
-      }
-      this.showToast('Питание обновлено', true);
-      await this._loadPointInspector(this.structInspector.id);
-      await this._loadStructureLists();
-    }catch(e){
-      this.simplePowerError = 'Ошибка сети: '+e;
-      await this._loadPointInspector(this.structInspector.id);
-    }
-  },
-  async addConsumerToInput(){
-    if(!this.structInspector || this.structInspector.kind!=='point') return;
-    const otherId = this.structInspector.addConsumerPick;
-    if(!otherId){ this.addConsumerError='Выберите точку'; return; }
-    this.addConsumerError = null;
-    try{
-      const rev = await this._structCurrentRev();
-      const r = await fetch('/api/v2/points/'+otherId, {
-        method:'PATCH', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({is_input:false, fed_from_point_id:this.structInspector.id, expected_revision:rev})});
-      const d = await r.json();
-      if(!r.ok){ this.addConsumerError = this._apiErrorMessage(d, r.status); return; }
-      this.structInspector.addConsumerPick = '';
-      this.showToast('Потребитель добавлен', true);
-      await this._loadStructureLists();
-    }catch(e){ this.addConsumerError = 'Ошибка сети: '+e; }
-  },
-  async removeConsumerFeed(otherId){
-    this.addConsumerError = null;
-    try{
-      const rev = await this._structCurrentRev();
-      const r = await fetch('/api/v2/points/'+otherId, {
-        method:'PATCH', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({is_input:false, fed_from_point_id:null, expected_revision:rev})});
-      const d = await r.json();
-      if(!r.ok){ this.addConsumerError = this._apiErrorMessage(d, r.status); return; }
-      await this._loadStructureLists();
-    }catch(e){ this.addConsumerError = 'Ошибка сети: '+e; }
-  },
-  async submitSimpleNote(){
+  // Партия 8, этап A: простой режим (партия 6) удалён целиком — вместо
+  // формы «это ввод»/«питается от» и записи через PATCH points/<id>
+  // осталось только сохранение свободного текстового описания.
+  async submitPointDescription(){
     if(!this.structInspector || this.structInspector.kind!=='point') return;
     try{
       const rev = await this._structCurrentRev();
@@ -6919,11 +6756,10 @@ function app(){ return {
       bindings: (bindings||[]).slice().sort((a,b)=>b.valid_from-a.valid_from),
       groups,
       consumption: null,
-      // Партия 6, задача 1 — состояние форм простого режима, живёт вместе
-      // с карточкой (сбрасывается при переходе на другую точку само собой).
-      addConsumerPick:'', simpleGroupPick:'',
+      // Состояние формы «добавить в группу», живёт вместе с карточкой
+      // (сбрасывается при переходе на другую точку само собой).
+      simpleGroupPick:'',
     };
-    this.simplePowerError=null; this.addConsumerError=null;
     // Расход за период — отдельным запросом, чтобы карточка сразу
     // показывала остальное, даже если metrics/query недоступен/медленный.
     try{

@@ -163,9 +163,6 @@ jobs:
       - name: "Run unit tests (v2: редактирование места точки, партия 5)"
         run: python tests/test_step35_edit_point_location.py
 
-      - name: "Run unit tests (v2: простой режим ввод/питается от, партия 6)"
-        run: python tests/test_step36_simple_mode.py
-
       - name: "Run unit tests (v2: полигоны мест и починка placed_on_plan, партия 6)"
         run: python tests/test_step37_plan_polygons.py
 
@@ -174,6 +171,15 @@ jobs:
 
       - name: "Run unit tests (v2: План v3 — узлы на карте, партия 6)"
         run: python tests/test_step39_plan_v3.py
+
+      - name: "Run unit tests (v2: баланс по электрической схеме, партия 7)"
+        run: python tests/test_step40_topology_balance.py
+
+      - name: "Run unit tests (v2: attach-new-point на линию, партия 7)"
+        run: python tests/test_step41_planv3_api.py
+
+      - name: "Run unit tests (v2: удаление простого режима, партия 8)"
+        run: python tests/test_step42_simple_mode_removed.py
 
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
@@ -263,10 +269,12 @@ jobs:
           python tests/test_step33_open_binding_route.py
           python tests/test_step34_e2e_ui_creation_path.py
           python tests/test_step35_edit_point_location.py
-          python tests/test_step36_simple_mode.py
           python tests/test_step37_plan_polygons.py
           python tests/test_step38_location_rename.py
           python tests/test_step39_plan_v3.py
+          python tests/test_step40_topology_balance.py
+          python tests/test_step41_planv3_api.py
+          python tests/test_step42_simple_mode_removed.py
 
   lint:
     name: Basic checks

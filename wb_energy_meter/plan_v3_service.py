@@ -37,8 +37,7 @@ class PlanV3Conflict(ValueError):
     реентрантной db.transaction() (db.py), поэтому при любом исключении
     откатывается целиком: ни черновик связи, ни узел-потребитель, из-за
     которого распознан конфликт, в БД не остаются — ничего не
-    сохраняется, буквально, а не только «не публикуется» (тот же
-    механизм, на котором держится simple_mode_service.apply_power_supply)."""
+    сохраняется, буквально, а не только «не публикуется»."""
 
 
 def _node_label(node_repo, node_id: int, cache: Dict[int, str]) -> str:
@@ -51,9 +50,9 @@ def _node_label(node_repo, node_id: int, cache: Dict[int, str]) -> str:
 
 
 def translate_violations(violations, node_repo) -> str:
-    """Как simple_mode_service._translate_violations, но в терминах
-    узлов/линий напрямую (План v3 не прячет узлы за точками — они и
-    есть то, что пользователь только что нарисовал на карте)."""
+    """Конфликты леса в терминах узлов/линий напрямую (План v3 не прячет
+    узлы за точками — они и есть то, что пользователь только что
+    нарисовал на карте)."""
     cache: Dict[int, str] = {}
 
     def lbl(node_id):
@@ -124,8 +123,7 @@ def connect_nodes(node_repo, edge_repo, from_node_id: int, to_node_id: int, *,
     транзакции (см. ElectricalEdgeRepo.publish_edges/_compute_candidate
     — так и должно быть для случая "переключить источник"). Но
     инструмент «соединить линией» на карте рисует НОВУЮ линию, а не
-    выбирает источник из выпадающего списка (как это делает простой
-    режим точки, docs/TZ-batch6-simple-mode.md) — молча заменить
+    выбирает источник из выпадающего списка — молча заменить
     существующий ввод узла было бы неожиданно и опасно, поэтому здесь
     это явная ошибка, а не тихая замена."""
     if node_repo.get_by_id(from_node_id) is None:
@@ -246,3 +244,111 @@ def resolve_location_text(location_repo, text: Optional[str]):
     if existing is not None:
         return existing
     return location_repo.add(name=text, kind="room")
+
+
+def _edge_display_label(edge, from_name: str, to_name: str) -> str:
+    return edge.name or edge.code or f"{from_name} → {to_name}"
+
+
+def describe_point_supply(node_repo, edge_repo, point_id) -> dict:
+    """Питание точки учёта, выведенное из топологии «Плана v3» (партия 8,
+    этап A: замена удалённого simple_mode_service.describe_power_supply).
+    Точка не имеет своего узла — она измеряет линию
+    (electrical_edges.primary_point_id). Возвращает:
+    - measured_edge_id/measured_edge_label — какую опубликованную линию
+      измеряет точка (label — имя/код связи, иначе "A → B" по узлам),
+      либо None, если точка не назначена измерением ни одной линии;
+    - is_input — эта линия выходит из узла-ввода (kind='source');
+    - fed_from_point_id — точка, измеряющая ближайшую вверх по дереву
+      измеряемую линию (немереные промежуточные сегменты пропускаются),
+      либо None, если такой нет (в т. ч. когда is_input=True)."""
+    edges = edge_repo.list_active_published()
+    measured = next((e for e in edges if e.primary_point_id == point_id), None)
+    if measured is None:
+        return {"is_input": False, "fed_from_point_id": None,
+                "measured_edge_id": None, "measured_edge_label": None}
+
+    cache: Dict[int, str] = {}
+    label = _edge_display_label(
+        measured,
+        _node_label(node_repo, measured.from_node_id, cache),
+        _node_label(node_repo, measured.to_node_id, cache))
+
+    from_node = node_repo.get_by_id(measured.from_node_id)
+    is_input = bool(from_node is not None and from_node.kind == "source")
+
+    fed_from_point_id = None
+    if not is_input:
+        edges_by_to_node = {e.to_node_id: e for e in edges}
+        seen_nodes = set()
+        cur_node_id = measured.from_node_id
+        while cur_node_id is not None and cur_node_id not in seen_nodes:
+            seen_nodes.add(cur_node_id)
+            parent_edge = edges_by_to_node.get(cur_node_id)
+            if parent_edge is None:
+                break
+            if parent_edge.primary_point_id is not None:
+                fed_from_point_id = parent_edge.primary_point_id
+                break
+            cur_node_id = parent_edge.from_node_id
+
+    return {
+        "is_input": is_input,
+        "fed_from_point_id": fed_from_point_id,
+        "measured_edge_id": measured.id,
+        "measured_edge_label": label,
+    }
+
+
+def bulk_describe_point_supply(node_repo, edge_repo, point_ids) -> Dict[int, dict]:
+    """Как describe_point_supply(), но одним проходом по всем узлам и
+    опубликованным связям — для списков (/api/v2/structure/points), где
+    отдельный запрос на точку означал бы O(n) чтений БД."""
+    edges = edge_repo.list_active_published()
+    measured_by_point = {
+        e.primary_point_id: e for e in edges if e.primary_point_id is not None}
+    edges_by_to_node = {e.to_node_id: e for e in edges}
+    nodes_by_id = {n.id: n for n in node_repo.list_all(include_archived=True)}
+    label_cache: Dict[int, str] = {}
+
+    def node_name(node_id):
+        if node_id in label_cache:
+            return label_cache[node_id]
+        n = nodes_by_id.get(node_id)
+        name = n.name if n is not None else f"узел {node_id}"
+        label_cache[node_id] = name
+        return name
+
+    out = {}
+    for pid in point_ids:
+        measured = measured_by_point.get(pid)
+        if measured is None:
+            out[pid] = {"is_input": False, "fed_from_point_id": None,
+                        "measured_edge_id": None, "measured_edge_label": None}
+            continue
+
+        from_node = nodes_by_id.get(measured.from_node_id)
+        is_input = bool(from_node is not None and from_node.kind == "source")
+
+        fed_from_point_id = None
+        if not is_input:
+            seen_nodes = set()
+            cur_node_id = measured.from_node_id
+            while cur_node_id is not None and cur_node_id not in seen_nodes:
+                seen_nodes.add(cur_node_id)
+                parent_edge = edges_by_to_node.get(cur_node_id)
+                if parent_edge is None:
+                    break
+                if parent_edge.primary_point_id is not None:
+                    fed_from_point_id = parent_edge.primary_point_id
+                    break
+                cur_node_id = parent_edge.from_node_id
+
+        out[pid] = {
+            "is_input": is_input,
+            "fed_from_point_id": fed_from_point_id,
+            "measured_edge_id": measured.id,
+            "measured_edge_label": _edge_display_label(
+                measured, node_name(measured.from_node_id), node_name(measured.to_node_id)),
+        }
+    return out

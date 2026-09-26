@@ -10,9 +10,8 @@
 
 §5 (баг "состояния размещения врут"): `placed_on_plan` считала только
 `kind='point'` элементы плана, хотя точка может быть физически нанесена
-на план через СВОЙ узел (`kind='node'`, служебный код `sm-pt-<id>` —
-см. simple_mode_service.py), заведённый простым режимом при включении
-«ввод»/«питается от». Тест воспроизводит именно эту ситуацию через
+на план через УЗЕЛ линии, которую она измеряет (`kind='node'`, модель
+«Плана v3», partия 6/8). Тест воспроизводит именно эту ситуацию через
 HTTP /api/v2 и проверяет, что после починки `placed_on_plan` = true.
 
 Каждая проверка "отказ" сопровождается парной "легитимный запрос
@@ -244,24 +243,42 @@ def test_save_plan_layout_batch_upsert_with_polygon():
 
 
 def test_placed_on_plan_bugfix_via_node_kind_item():
-    """Баг из браузера (§5): точка, чей СОБСТВЕННЫЙ узел (заведён
-    простым режимом при включении «ввод») нанесён на план как
-    kind='node' (а не kind='point'), должна теперь считаться
-    физически размещённой — placed_on_plan: true."""
+    """Баг из браузера (§5): точка, измеряющая линию, один из узлов
+    которой нанесён на план как kind='node' (а не kind='point'),
+    должна считаться физически размещённой — placed_on_plan: true.
+
+    Партия 8, этап A: заведение узла через простой режим (историческую
+    версию этого теста, docs/TZ-batch6-simple-mode.md) заменено на
+    прямое /api/v2/topology/nodes + /api/v2/topology/edges/connect —
+    простой режим удалён, но смысл теста (узел точки на плане ->
+    placed_on_plan true) сохранён."""
     client, db, path, plans_dir = make_client()
     try:
         plan = _make_plan(client)
         point = _make_point(client, "p4", "Ввод")
         other_point = _make_point(client, "p5", "Без размещения")
 
-        # включаем «ввод» через простой режим — это заводит служебный
-        # узел точки (sm-pt-<id>) скрыто, без какой-либо ручки
-        # /topology на глазах пользователя
+        # узел-ввод + узел-щит, связь между ними измеряется точкой —
+        # тот же способ, каким «План v3» заводит схему.
         rev = current_rev(client)
-        r = client.patch(f"/api/v2/points/{point['id']}", json={
-            "is_input": True, "expected_revision": rev,
-        })
-        assert r.status_code == 200, r.get_json()
+        r = client.post("/api/v2/topology/nodes", json={
+            "code": "src-1", "name": "Внешняя сеть", "kind": "source",
+            "expected_revision": rev})
+        assert r.status_code == 201, r.get_json()
+        source_node = r.get_json()
+
+        rev = current_rev(client)
+        r = client.post("/api/v2/topology/nodes", json={
+            "code": "panel-1", "name": "ЩР-1", "kind": "panel",
+            "expected_revision": rev})
+        assert r.status_code == 201, r.get_json()
+        panel_node = r.get_json()
+
+        rev = current_rev(client)
+        r = client.post("/api/v2/topology/edges/connect", json={
+            "from_node_id": source_node["id"], "to_node_id": panel_node["id"],
+            "primary_point_id": point["id"], "expected_revision": rev})
+        assert r.status_code == 201, r.get_json()
 
         # до размещения на плане — placed_on_plan должна быть false
         r = client.get("/api/v2/structure/points")
@@ -269,15 +286,10 @@ def test_placed_on_plan_bugfix_via_node_kind_item():
         assert by_id[point["id"]]["placed_on_plan"] is False
         assert by_id[other_point["id"]]["placed_on_plan"] is False
 
-        # находим служебный узел точки по коду sm-pt-<id>
-        nodes = client.get("/api/v2/topology/nodes").get_json()
-        own_node = next(n for n in nodes if n["code"] == f"sm-pt-{point['id']}")
-
-        # наносим на план как kind='node' (подробный режим это
-        # позволяет — узел точки визуально не отличить от любого
-        # другого узла)
+        # наносим на план узел ЩР-1 (kind='node') — точка его не имеет,
+        # она лишь измеряет входящую в него линию
         r = client.post(f"/api/v2/plans/{plan['id']}/items", json={
-            "kind": "node", "node_id": own_node["id"],
+            "kind": "node", "node_id": panel_node["id"],
             "geometry": {"x": 15, "y": 25}, "coord_space": "canvas_xy_v2",
         })
         assert r.status_code == 201, r.get_json()
@@ -288,7 +300,7 @@ def test_placed_on_plan_bugfix_via_node_kind_item():
         # контрольная точка без какого-либо plan_item — по-прежнему false
         # (доказывает, что проверка не стала "всегда true")
         assert by_id[other_point["id"]]["placed_on_plan"] is False
-        print("[OK] точка, нанесённая на план через свой узел (kind='node'), "
+        print("[OK] точка, измеряющая линию узла на плане (kind='node'), "
               "теперь корректно считается размещённой; ненанесённая — по-прежнему нет")
     finally:
         db.close()

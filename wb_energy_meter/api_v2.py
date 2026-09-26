@@ -90,7 +90,6 @@ from .point_repo import MeteringPointRepo, MeterSourceRepo
 from .topology_service import (
     ElectricalNodeRepo, ElectricalEdgeRepo, TopologyConflict,
 )
-from . import simple_mode_service
 from . import plan_v3_service
 from .aggregates_repo import AggregateRepo
 from .periods import parse_user_datetime
@@ -167,13 +166,15 @@ def register_v2_routes(app, state, json_response):
             "archived_at": p.archived_at,
             "created_at": p.created_at, "updated_at": p.updated_at,
         }
-        # Партия 6 (простой режим, docs/TZ-batch6-simple-mode.md §2):
-        # "ввод"/"питается от" — read-only проекция опубликованного графа
-        # electrical_edges/electrical_nodes (см. simple_mode_service),
-        # НЕ отдельное поле в metering_points. Присутствует только там,
-        # где вызывающий код явно его посчитал (карточка точки) — не в
-        # каждом _point_to_dict(), чтобы не давать по паре лишних запросов
-        # к БД на каждую строку списка /api/v2/points.
+        # Партия 8, этап A (было — простой режим, партия 6, теперь
+        # удалён): "ввод"/"питается от" — read-only проекция
+        # опубликованного графа electrical_edges/electrical_nodes,
+        # выведенная из топологии «Плана v3» (см. plan_v3_service.
+        # describe_point_supply), НЕ отдельное поле в metering_points.
+        # Присутствует только там, где вызывающий код явно его посчитал
+        # (карточка точки) — не в каждом _point_to_dict(), чтобы не давать
+        # по паре лишних запросов к БД на каждую строку списка
+        # /api/v2/points.
         if power_supply is not None:
             out["power_supply"] = power_supply
         return out
@@ -327,7 +328,7 @@ def register_v2_routes(app, state, json_response):
         return json_response(out, 201)
 
     def _point_power_supply(point_id):
-        return simple_mode_service.describe_power_supply(
+        return plan_v3_service.describe_point_supply(
             _node_repo(), _edge_repo(), point_id)
 
     @app.route("/api/v2/points/<int:point_id>", methods=["GET", "PATCH"])
@@ -342,6 +343,18 @@ def register_v2_routes(app, state, json_response):
             return json_response(_point_to_dict(p, power_supply=_point_power_supply(point_id)))
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+
+        # Партия 8, этап A (C2): простой режим удалён — "ввод"/"питается
+        # от" точки больше не пишутся напрямую, они выводятся из
+        # топологии «Плана v3» (см. _point_power_supply). Отказ ДО
+        # with_revision_check/_mutate — тело с этими полями не меняет
+        # вообще ничего, даже если рядом присланы другие, валидные поля.
+        if "is_input" in data or "fed_from_point_id" in data:
+            body, status = _err(
+                "field_removed",
+                "Питание задаётся линиями на «Плане v3»", 400,
+                ids=[point_id], fields=["is_input", "fed_from_point_id"])
+            return json_response(body, status)
 
         def _mutate():
             result = p
@@ -360,21 +373,6 @@ def register_v2_routes(app, state, json_response):
                 # PATCH это поле не принимал вообще (см. update_fields).
                 result = repo.update_fields(
                     point_id, installation_location_id=data.get("installation_location_id"))
-            if "is_input" in data or "fed_from_point_id" in data:
-                # Партия 6, задача 1 (простой режим, §2): "ввод"/"питается
-                # от" — интерфейсный слой поверх узлов/связей, см.
-                # simple_mode_service.apply_power_supply. Читаем текущее
-                # состояние там, где явно НЕ передано, чтобы одиночная
-                # смена is_input не сбрасывала fed_from_point_id (и
-                # наоборот) — PATCH меняет только присланные поля, как и
-                # везде в этом маршруте.
-                current = simple_mode_service.describe_power_supply(
-                    _node_repo(), _edge_repo(), point_id)
-                is_input = bool(data["is_input"]) if "is_input" in data                     else current["is_input"]
-                fed_from_point_id = data.get("fed_from_point_id")                     if "fed_from_point_id" in data else current["fed_from_point_id"]
-                result = simple_mode_service.apply_power_supply(
-                    repo, _node_repo(), _edge_repo(), point_id,
-                    is_input, fed_from_point_id)
             return result
 
         try:
@@ -383,9 +381,6 @@ def register_v2_routes(app, state, json_response):
                 touched=[("metering_point", point_id)])
         except GlobalRevisionConflict as e:
             return _revision_conflict(e, ids=[point_id])
-        except simple_mode_service.SimpleModeConflict as e:
-            body, status = _err("simple_mode_conflict", str(e), 409, ids=[point_id])
-            return json_response(body, status)
         except ValueError as e:
             body, status = _err("bad_request", str(e), 400)
             return json_response(body, status)
@@ -1804,7 +1799,7 @@ def register_v2_routes(app, state, json_response):
             return " / ".join(reversed(parts)) if parts else None
 
         all_points = point_repo.list_all(include_archived=False)
-        power_supply_by_id = simple_mode_service.bulk_describe_power_supply(
+        power_supply_by_id = plan_v3_service.bulk_describe_point_supply(
             _node_repo(), _edge_repo(), [p.id for p in all_points])
         points_by_id = {p.id: p for p in all_points}
 
@@ -1815,14 +1810,6 @@ def register_v2_routes(app, state, json_response):
                     "WHERE kind = 'point' AND point_id IS NOT NULL "
                     "AND archived_at IS NULL").fetchall()
             }
-            # Партия 6, задача 5 (баг из браузера, §5: "Состояния
-            # размещения врут" — api_v2.py, "считаются только элементы
-            # kind='point'"): точка, чей СОБСТВЕННЫЙ узел (заведённый
-            # простым режимом, см. simple_mode_service) размещён на плане
-            # как kind='node' (подробный режим это позволяет — узел точки
-            # не отличить от любого другого на плане), тоже физически
-            # нанесена на план — раньше в этом случае placed_on_plan лгала
-            # "нет", хотя метка на карте есть.
             plan_node_ids = {
                 row["node_id"] for row in c.execute(
                     "SELECT DISTINCT node_id FROM plan_items "
@@ -1830,17 +1817,11 @@ def register_v2_routes(app, state, json_response):
                     "AND archived_at IS NULL").fetchall()
             }
         if plan_node_ids:
-            for n in _node_repo().list_all(include_archived=True):
-                if n.id in plan_node_ids:
-                    pid = simple_mode_service.point_id_from_node_code(n.code)
-                    if pid is not None:
-                        plan_point_ids.add(pid)
             # «План v3» (партия 6, §5 задания: "с переходом на узлы логика
             # меняется"): точка измеряет ЛИНИЮ (electrical_edges.primary_
-            # point_id), а не имеет "свой" узел, как в (уже отменённом)
-            # простом режиме выше, — она физически нанесена на план, если
-            # размещён (kind='node') любой из двух узлов линии, которую
-            # она измеряет.
+            # point_id), а не имеет свой узел — она физически нанесена на
+            # план, если размещён (kind='node') любой из двух узлов линии,
+            # которую она измеряет.
             for e in _edge_repo().list_active_published():
                 if e.primary_point_id is not None and (
                         e.from_node_id in plan_node_ids or e.to_node_id in plan_node_ids):
@@ -1887,6 +1868,8 @@ def register_v2_routes(app, state, json_response):
                 "is_input": power_supply["is_input"],
                 "fed_from_point_id": fed_from_point_id,
                 "fed_from_point_name": fed_from_point.name if fed_from_point else None,
+                "measured_edge_id": power_supply.get("measured_edge_id"),
+                "measured_edge_label": power_supply.get("measured_edge_label"),
             })
 
         return json_response({"points": items})
@@ -1947,14 +1930,8 @@ def register_v2_routes(app, state, json_response):
         # меняется") — то же расширение, что и у /api/v2/points
         # (v2_points_list выше): точка измеряет линию, а не имеет свой
         # узел; физически нанесена на план, если размещён любой из двух
-        # узлов линии, которую она измеряет (плюс старый запасной путь
-        # простого режима — «свой» узел точки, если он существует).
+        # узлов линии, которую она измеряет.
         if plan_node_ids:
-            for n in node_repo.list_all(include_archived=True):
-                if n.id in plan_node_ids:
-                    pid = simple_mode_service.point_id_from_node_code(n.code)
-                    if pid is not None:
-                        plan_point_ids.add(pid)
             for e in published_edges:
                 if e.primary_point_id is not None and (
                         e.from_node_id in plan_node_ids or e.to_node_id in plan_node_ids):
