@@ -25,6 +25,29 @@ sys.path.insert(0, REPO_ROOT)
 from wb_energy_meter.db import Database
 from wb_energy_meter.repo import GroupRepo, MeterRepo
 from wb_energy_meter.api import create_app, _AppState
+
+_STATIC_JS_DIR = os.path.join(REPO_ROOT, "wb_energy_meter", "static", "js")
+
+
+def _find_js_source(needle):
+    """Ищет needle в index.html и во всех static/js/*.js — партия 9 (F5)
+    разнесла JS по файлам, поэтому метод/функция может теперь жить не в
+    index.html (см. docs/TZ-batch9-split-frontend.md §4). Возвращает
+    (путь, содержимое файла), где needle нашёлся, или (None, None)."""
+    index_path = os.path.join(REPO_ROOT, "wb_energy_meter", "static", "index.html")
+    with open(index_path, encoding="utf-8") as f:
+        html = f.read()
+    if needle in html:
+        return index_path, html
+    if os.path.isdir(_STATIC_JS_DIR):
+        for name in sorted(os.listdir(_STATIC_JS_DIR)):
+            if name.endswith(".js"):
+                p = os.path.join(_STATIC_JS_DIR, name)
+                with open(p, encoding="utf-8") as f:
+                    content = f.read()
+                if needle in content:
+                    return p, content
+    return None, None
 from wb_energy_meter.model import MeterRegistry
 from wb_energy_meter.point_repo import MeteringPointRepo, MeterSourceRepo
 from wb_energy_meter.aggregates_repo import AggregateRepo, HourlyAggregate
@@ -556,9 +579,8 @@ def test_a45_csv_cell_neutralizes_formula_prefixes():
         print("[SKIP] A45 csvCell: node недоступен в этой песочнице")
         return
 
-    index_path = os.path.join(REPO_ROOT, "wb_energy_meter", "static", "index.html")
-    with open(index_path, encoding="utf-8") as f:
-        html = f.read()
+    index_path, html = _find_js_source("csvCell(v){")
+    assert html is not None, "csvCell(v){ не нашёлся ни в index.html, ни в static/js/*.js"
     start = html.index("csvCell(v){")
     end = html.index("},", start) + 1
     fn_src = html[start:end]

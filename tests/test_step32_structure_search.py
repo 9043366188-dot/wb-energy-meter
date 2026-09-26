@@ -20,6 +20,23 @@ from wb_energy_meter.repo import GroupRepo, MeterRepo
 from wb_energy_meter.api import create_app, _AppState
 from wb_energy_meter.model import MeterRegistry
 from wb_energy_meter.location_repo import LocationRepo
+
+_STATIC_JS_DIR = os.path.join(REPO_ROOT, "wb_energy_meter", "static", "js")
+
+
+def _load_ui_all():
+    """index.html + все static/js/*.js — партия 9 (F5) разнесла JS из
+    index.html по файлам, structPoints теперь может жить в
+    static/js/structure.js (см. docs/TZ-batch9-split-frontend.md §4)."""
+    index_path = os.path.join(REPO_ROOT, "wb_energy_meter", "static", "index.html")
+    with open(index_path, encoding="utf-8") as f:
+        parts = [f.read()]
+    if os.path.isdir(_STATIC_JS_DIR):
+        for name in sorted(os.listdir(_STATIC_JS_DIR)):
+            if name.endswith(".js"):
+                with open(os.path.join(_STATIC_JS_DIR, name), encoding="utf-8") as f:
+                    parts.append(f.read())
+    return "\n".join(parts)
 from wb_energy_meter.point_repo import MeteringPointRepo, MeterSourceRepo
 from wb_energy_meter.binding_service import PointBindingRepo
 
@@ -174,10 +191,7 @@ def test_structure_points_shape_matches_frontend_usage():
         db.close()
         os.unlink(path)
 
-    index_path = os.path.join(REPO_ROOT, "wb_energy_meter", "static",
-                              "index.html")
-    with open(index_path, encoding="utf-8") as f:
-        html = f.read()
+    html = _load_ui_all()
     assigns = re.findall(r"this\.structPoints\s*=\s*([^;\n]+)", html)
     assert assigns, "не нашлось ни одного присваивания structPoints"
     bad = [a.strip() for a in assigns
