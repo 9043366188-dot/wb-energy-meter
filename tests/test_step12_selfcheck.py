@@ -28,6 +28,25 @@ import tempfile
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
+_STATIC_JS_DIR = os.path.join(REPO_ROOT, "wb_energy_meter", "static", "js")
+
+
+def _load_ui_all():
+    """index.html + все static/js/*.js — партия 9 (F5) разнесла JS из
+    index.html по файлам, поэтому init() (снимающий заглушку
+    boot-error через window.__wbemBootOk()) теперь может жить в
+    static/js/core.js, а не в самом index.html (см.
+    docs/TZ-batch9-split-frontend.md §4)."""
+    index_path = os.path.join(REPO_ROOT, "wb_energy_meter", "static", "index.html")
+    with open(index_path, encoding="utf-8") as f:
+        parts = [f.read()]
+    if os.path.isdir(_STATIC_JS_DIR):
+        for name in sorted(os.listdir(_STATIC_JS_DIR)):
+            if name.endswith(".js"):
+                with open(os.path.join(_STATIC_JS_DIR, name), encoding="utf-8") as f:
+                    parts.append(f.read())
+    return "\n".join(parts)
+
 from wb_energy_meter.api import build_selfcheck_result, create_app, _AppState
 from wb_energy_meter import __version__
 
@@ -221,8 +240,15 @@ def test_index_html_has_boot_stub_without_alpine_directives():
 
     # Заглушка обязана прятаться после успешного старта Alpine.
     assert "window.__wbemBootOk" in html
+    # init() — часть app(), партия 9 (F5) могла вынести его в
+    # static/js/core.js вместе с остальными общими хелперами, поэтому
+    # ищем по объединению index.html + static/js/*.js, а не только по
+    # index.html (см. docs/TZ-batch9-split-frontend.md §4). Сама
+    # заглушка (div#boot-error и её инлайн-скрипт) остаётся в
+    # index.html — это проверено выше и не меняется.
+    all_ui = _load_ui_all()
     assert re.search(r"init\(\)\s*\{\s*(?://[^\n]*\n\s*)*if\(window\.__wbemBootOk\)",
-                      html), (
+                      all_ui), (
         "init() не вызывает window.__wbemBootOk() первым делом — "
         "заглушка не будет снята при успешном старте")
     print("[OK] заглушка в index.html: есть, без директив Alpine, содержит journalctl/curl")

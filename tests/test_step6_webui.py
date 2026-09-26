@@ -145,11 +145,16 @@ def test_root_serves_ui():
     assert r.status_code == 200
     assert "text/html" in r.content_type
     html = r.get_data(as_text=True)
-    # Ключевые маркеры UI
+    # x-data="app()" — разметка, всегда в index.html.
     assert 'x-data="app()"' in html, "Alpine root missing"
-    assert "/api/status" in html, "status fetch missing"
-    assert "toggleTheme" in html, "theme toggle missing"
-    assert "loadConsumption" in html, "consumption loader missing"
+    # Остальные маркеры (fetch /api/status, toggleTheme, loadConsumption) —
+    # методы app(), партия 9 (F5) разнесла их по static/js/*.js (core.js,
+    # consumption.js), поэтому ищем по объединению файлов, а не только по
+    # отданному index.html (см. docs/TZ-batch9-split-frontend.md §4).
+    content = _load_ui_all()
+    assert "/api/status" in content, "status fetch missing"
+    assert "toggleTheme" in content, "theme toggle missing"
+    assert "loadConsumption" in content, "consumption loader missing"
     print("[OK] / serves Alpine UI")
 
 
