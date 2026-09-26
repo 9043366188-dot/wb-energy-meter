@@ -51,8 +51,18 @@ packages = ["wb_energy_meter", "wb_energy_meter.migrations"]
 
 [tool.setuptools.package-data]
 "wb_energy_meter.migrations" = ["*.sql"]
+# Каждый подкаталог static/ перечисляется ОТДЕЛЬНОЙ строкой: глоб
+# "static/*" у setuptools не рекурсивный и вложенные каталоги не
+# захватывает. Партия 9 вынесла JS в static/js/ и эту строку добавить
+# забыли — в собранном колесе не оказалось ни одного из 11 файлов, а
+# index.html на них ссылается: на контроллере это дало бы 11 ошибок 404
+# и мёртвый интерфейс (третий белый экран в истории проекта). Job `lint`
+# в CI пакет собирает, но внутрь не смотрел, поэтому оставался зелёным.
+# Регрессия закрыта tests/test_step45_package_data.py — он сверяет
+# содержимое static/ с этим списком.
 "wb_energy_meter" = [
     "static/*",
+    "static/js/*",
     "static/vendor/*",
     "static/vendor/images/*",
 ]

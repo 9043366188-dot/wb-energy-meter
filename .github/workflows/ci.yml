@@ -184,6 +184,9 @@ jobs:
       - name: "Run unit tests (F5: целостность static/js/*.js, партия 9)"
         run: python tests/test_step44_ui_parts.py
 
+      - name: "Run unit tests (упаковка статики в собираемый пакет)"
+        run: python tests/test_step45_package_data.py
+
       - name: Run e2e tests (wb-mqtt-db RPC against fake)
         run: python tests/test_step3_e2e.py
 
@@ -279,6 +282,7 @@ jobs:
           python tests/test_step41_planv3_api.py
           python tests/test_step42_simple_mode_removed.py
           python tests/test_step44_ui_parts.py
+          python tests/test_step45_package_data.py
 
   lint:
     name: Basic checks
@@ -293,6 +297,28 @@ jobs:
         run: |
           python -m pip install --upgrade pip build
           python -m build --sdist --wheel --outdir /tmp/dist .
+
+      # Сборка пакета сама по себе зелёная даже если половина статики в
+      # него не попала (глоб static/* не рекурсивный). Именно так после
+      # партии 9 в колесе не оказалось всех 11 файлов static/js/, на
+      # которые ссылается index.html.
+      - name: "Собранный пакет содержит всю статику, на которую ссылается index.html"
+        run: |
+          python - <<'PY'
+          import glob, re, sys, zipfile
+          whl = sorted(glob.glob('/tmp/dist/*.whl'))[-1]
+          inside = set(zipfile.ZipFile(whl).namelist())
+          html = open('wb_energy_meter/static/index.html', encoding='utf-8').read()
+          refs = sorted(set(re.findall(r'(?:src|href)="(/static/[^"]+)"', html)))
+          missing = [r for r in refs
+                     if 'wb_energy_meter/static/' + r[len('/static/'):] not in inside]
+          if missing:
+              print('В собранном пакете нет файлов, на которые ссылается index.html:')
+              for m in missing:
+                  print('  ', m)
+              sys.exit(1)
+          print('OK: все %d ссылок /static/ есть в пакете' % len(refs))
+          PY
 
       - name: Verify install.sh syntax
         run: bash -n scripts/install.sh
