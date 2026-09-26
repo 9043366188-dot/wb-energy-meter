@@ -54,153 +54,21 @@ jobs:
           mosquitto_sub -h 127.0.0.1 -t test/ci -C 1 -W 5 &
           sleep 0.5
 
-      - name: Run unit tests (consumption / periods)
-        run: python tests/test_step3_consumption.py
-
-      - name: Run unit tests (aggregator)
-        run: python tests/test_step4_aggregator.py
-
-      - name: Run unit tests (Flask API)
-        run: python tests/test_step5_flask_api.py
-
-      - name: Run unit tests (web UI)
-        run: python tests/test_step6_webui.py
-
-      - name: Run unit tests (группы/зоны)
-        run: python tests/test_step8_groups.py
-
-      - name: Run unit tests (словарь каналов)
-        run: python tests/test_step8_channels.py
-
-      - name: Run unit tests (самообновление)
-        run: python tests/test_step9_updater.py
-
-      - name: Run unit tests (канал Uptime / wb-mqtt-serial.conf)
-        run: python tests/test_step10_wbserial.py
-
-      # Кавычки обязательны: незакавыченное значение с ": " внутри — это
-      # невалидный YAML, и GitHub Actions не запускает workflow ЦЕЛИКОМ,
-      # молча, без единого прогона. Так CI простоял сломанным весь v0.11.0.
-      - name: "Run unit tests (план объекта: зоны и связи)"
-        run: python tests/test_step11_plan.py
-
-      - name: Run unit tests (самопроверка интерфейса + заглушка)
-        run: python tests/test_step12_selfcheck.py
-
-      # Кавычки обязательны везде ниже, где в имени шага есть ": " —
-      # незакавыченное значение с ": " внутри делает YAML невалидным, и
-      # GitHub Actions молча не запускает workflow ЦЕЛИКОМ (см. пример
-      # выше про test_step11 — так CI простоял сломанным весь v0.11.0).
-      - name: "Run unit tests (доменная модель v2: контракт учёта)"
-        run: python tests/test_step13_accounting_contract.py
-
-      - name: "Run unit tests (доменная модель v2: легаси-сценарии)"
-        run: python tests/test_step13_legacy_scenarios.py
-
-      - name: "Run unit tests (v2: точки учёта и места)"
-        run: python tests/test_step14_point_location_repo.py
-
-      - name: "Run unit tests (v2: привязка счётчиков к точкам)"
-        run: python tests/test_step15_binding_service.py
-
-      - name: "Run unit tests (v2: электросеть/топология)"
-        run: python tests/test_step16_topology_service.py
-
-      - name: "Run unit tests (v2: расчёт баланса)"
-        run: python tests/test_step17_accounting_service.py
-
-      - name: "Run unit tests (v2: HTTP-слой /api/v2)"
-        run: python tests/test_step18_api_v2.py
-
-      - name: "Run unit tests (v2: перенос легаси-данных)"
-        run: python tests/test_step19_legacy_migration.py
-
-      - name: "Run unit tests (v2: carry-forward для no_data)"
-        run: python tests/test_step20_carry_forward.py
-
-      - name: "Run unit tests (v2: план объекта)"
-        run: python tests/test_step21_plan_v2.py
-
-      - name: "Run unit tests (v2: генерация домена/откат)"
-        run: python tests/test_step22_domain_generation.py
-
-      - name: "Run unit tests (v2: снимок текущих значений)"
-        run: python tests/test_step23_snapshot.py
-
-      - name: "Run unit tests (v2: группы верхнего уровня)"
-        run: python tests/test_step24_group_repo_v2.py
-
-      - name: "Run unit tests (v2: HTTP-слой /api/v2/groups)"
-        run: python tests/test_step25_api_v2_groups.py
-
-      - name: "Run unit tests (v2: протокол ревизий, партия 2)"
-        run: python tests/test_step26_revision_protocol.py
-
-      - name: "Run unit tests (v2: сводка Обзора, партия 2)"
-        run: python tests/test_step27_overview_summary.py
-
-      - name: "Run unit tests (v2: отчёты/CSV, партия 2)"
-        run: python tests/test_step28_reports_query.py
-
-      - name: "Run unit tests (v2: провижининг прибора при замене, партия 3)"
-        run: python tests/test_step29_replace_meter_provisioning.py
-
-      - name: "Run unit tests (v2: сводка незавершённой настройки, партия 3)"
-        run: python tests/test_step30_validation_summary.py
-
-      - name: "Run unit tests (v2: мастер переноса legacy-связей, партия 3)"
-        run: python tests/test_step31_migration_wizard.py
-
-      - name: "Run unit tests (v2: поиск экрана Структура, партия 3)"
-        run: python tests/test_step32_structure_search.py
-
-      - name: "Run unit tests (v2: создание первой привязки прибора, партия 5)"
-        run: python tests/test_step33_open_binding_route.py
-
-      - name: "Run unit tests (v2: e2e создание структуры с чистой БД, партия 5)"
-        run: python tests/test_step34_e2e_ui_creation_path.py
-
-      - name: "Run unit tests (v2: редактирование места точки, партия 5)"
-        run: python tests/test_step35_edit_point_location.py
-
-      - name: "Run unit tests (v2: полигоны мест и починка placed_on_plan, партия 6)"
-        run: python tests/test_step37_plan_polygons.py
-
-      - name: "Run unit tests (v2: инлайн-переименование мест, партия 6)"
-        run: python tests/test_step38_location_rename.py
-
-      - name: "Run unit tests (v2: План v3 — узлы на карте, партия 6)"
-        run: python tests/test_step39_plan_v3.py
-
-      - name: "Run unit tests (v2: баланс по электрической схеме, партия 7)"
-        run: python tests/test_step40_topology_balance.py
-
-      - name: "Run unit tests (v2: attach-new-point на линию, партия 7)"
-        run: python tests/test_step41_planv3_api.py
-
-      - name: "Run unit tests (v2: удаление простого режима, партия 8)"
-        run: python tests/test_step42_simple_mode_removed.py
-
-      - name: "Run unit tests (F5: целостность static/js/*.js, партия 9)"
-        run: python tests/test_step44_ui_parts.py
-
-      - name: "Run unit tests (упаковка статики в собираемый пакет)"
-        run: python tests/test_step45_package_data.py
-
-      - name: "Run unit tests (партия 10: бэкап БД install.sh через Online Backup API)"
-        run: python tests/test_step46_install_backup.py
-
-      - name: "Run unit tests (партия 10: страж поколений домена, ExecStartPre)"
-        run: python tests/test_step47_generation_guard.py
-
-      - name: Run e2e tests (wb-mqtt-db RPC against fake)
-        run: python tests/test_step3_e2e.py
-
-      - name: Run full daemon e2e test (Step 3)
-        run: python tests/test_step3_daemon.py
-
-      - name: Run full daemon e2e test (Step 4 — aggregator catch-up)
-        run: python tests/test_step4_daemon.py
+      # Партия 10, этап D (F2): единый раннер tests/run_all.py заменил
+      # 45 отдельных шагов "python tests/test_stepNN_*.py" (по одному на
+      # файл, руками) — раньше это уже приводило к реальному пропуску:
+      # test_step40/test_step41 (партия 7) не были зарегистрированы ни в
+      # одном job'е ci.yml до партии 8, где это заметили случайно.
+      # run_all.py ходит по диску сам (glob) и сам же проверяет, что
+      # ничего не потерялось при отборе (см. докстринг файла и
+      # tests/test_step48_runner.py) — новый tests/test_stepNN_*.py
+      # подхватывается автоматически, без правки этого файла. Брокер
+      # mosquitto к этому моменту уже поднят и прошёл smoke-проверку
+      # выше — run_all.py сам обнаруживает его на 127.0.0.1:1883 и
+      # включает три теста, которым он нужен (*_daemon.py, *_e2e.py), в
+      # общий прогон.
+      - name: Run all unit tests (tests/run_all.py)
+        run: python tests/run_all.py
 
       - name: Stop mosquitto
         if: always()
@@ -245,52 +113,16 @@ jobs:
       - name: Syntax check
         run: python -m compileall -q wb_energy_meter
 
-      - name: Run offline tests on old Flask
-        run: |
-          python tests/test_step3_consumption.py
-          python tests/test_step4_aggregator.py
-          python tests/test_step5_flask_api.py
-          python tests/test_step6_webui.py
-          python tests/test_step8_groups.py
-          python tests/test_step8_channels.py
-          python tests/test_step9_updater.py
-          python tests/test_step10_wbserial.py
-          python tests/test_step11_plan.py
-          python tests/test_step12_selfcheck.py
-          python tests/test_step13_accounting_contract.py
-          python tests/test_step13_legacy_scenarios.py
-          python tests/test_step14_point_location_repo.py
-          python tests/test_step15_binding_service.py
-          python tests/test_step16_topology_service.py
-          python tests/test_step17_accounting_service.py
-          python tests/test_step18_api_v2.py
-          python tests/test_step19_legacy_migration.py
-          python tests/test_step20_carry_forward.py
-          python tests/test_step21_plan_v2.py
-          python tests/test_step22_domain_generation.py
-          python tests/test_step23_snapshot.py
-          python tests/test_step24_group_repo_v2.py
-          python tests/test_step25_api_v2_groups.py
-          python tests/test_step26_revision_protocol.py
-          python tests/test_step27_overview_summary.py
-          python tests/test_step28_reports_query.py
-          python tests/test_step29_replace_meter_provisioning.py
-          python tests/test_step30_validation_summary.py
-          python tests/test_step31_migration_wizard.py
-          python tests/test_step32_structure_search.py
-          python tests/test_step33_open_binding_route.py
-          python tests/test_step34_e2e_ui_creation_path.py
-          python tests/test_step35_edit_point_location.py
-          python tests/test_step37_plan_polygons.py
-          python tests/test_step38_location_rename.py
-          python tests/test_step39_plan_v3.py
-          python tests/test_step40_topology_balance.py
-          python tests/test_step41_planv3_api.py
-          python tests/test_step42_simple_mode_removed.py
-          python tests/test_step44_ui_parts.py
-          python tests/test_step45_package_data.py
-          python tests/test_step46_install_backup.py
-          python tests/test_step47_generation_guard.py
+      # Партия 10, этап D (F2): единый раннер вместо 45 строк вручную
+      # (см. тот же комментарий в job `test` выше). Здесь брокер
+      # mosquitto никогда не поднимался (этот job проверяет только
+      # версии Flask/Werkzeug — сети это не касается), поэтому
+      # --skip-mosquitto явно, а не через автодетект: это ровно то, что
+      # этот job делал и раньше (три mosquitto-теста в его перечислении
+      # никогда не было — см. git-историю), только теперь явно, а не
+      # молчаливым отсутствием в списке.
+      - name: Run offline tests on old Flask (tests/run_all.py --skip-mosquitto)
+        run: python tests/run_all.py --skip-mosquitto
 
   lint:
     name: Basic checks
@@ -336,6 +168,11 @@ jobs:
 
       - name: Verify self-update.sh syntax
         run: bash -n scripts/self-update.sh
+
+      - name: "Verify check-generation.sh syntax (POSIX sh, партия 10)"
+        run: |
+          bash -n scripts/check-generation.sh
+          sh -n scripts/check-generation.sh
 
       - name: "Syntax check static/js/*.js (F5, партия 9)"
         run: |
