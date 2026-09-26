@@ -4261,22 +4261,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
      как деферренный alpine.min.js обработает x-init="init()" на <html>. -->
 <script src="/static/vendor/leaflet.js"></script>
 <script src="/static/vendor/leaflet-geoman.min.js"></script>
+<script src="/static/js/plan-v3.js"></script>
 <script src="/static/vendor/alpine.min.js" defer></script>
 <script>
-// Набор вкладок, который открывается по умолчанию (когда в localStorage ещё
-// ничего не сохранено — первый заход пользователя). ТЗ v2
-// (docs/TZ-metering-architecture-dashboard.md) реализовано только частично —
-// см. CHANGELOG.md, «Известные ограничения» 0.13.0. Партия 2 добавила
-// период-ориентированный итог объекта на «Обзоре» и новую вкладку «Отчёты»
-// (срезы point/branch/group/balance_scope + CSV), НО: (1) ведомость/
-// профиль/сравнение/доступность/классический баланс по-прежнему только в
-// старых «Отчётах» — новая вкладка их не заменяет, только добавляет новые
-// срезы; (2) весь новый интерфейс этой партии проверен ТОЛЬКО статически
-// (баланс тегов, node --check, python-тесты бэкенда) — сессия без доступа
-// к браузеру не могла открыть его и нажать ни одной кнопки. Поэтому сейчас
-// по умолчанию ОБЯЗАН открываться классический набор. Переключить дефолт на
-// 'v2' стоит только после того, как кто-то реально откроет новый набор в
-// браузере на настоящих данных и убедится, что он работает.
 const DEFAULT_UI_SET = 'classic';
 // Какие вкладки относятся к какому набору — используется и для показа
 // нужных кнопок в <nav>, и чтобы при переключении набора активная вкладка
@@ -4286,211 +4273,471 @@ const UI_SET_TABS = {
   v2: ['overviewv2', 'planv2', 'reportsv2', 'structurev2', 'planv3'],
 };
 
-function app(){ return {
-  tab: (lsGet('wbem.uiSet', DEFAULT_UI_SET)=='v2') ? 'overviewv2' : 'dash',
-  uiSet: lsGet('wbem.uiSet', DEFAULT_UI_SET),
-  theme:lsGet('theme','dark'), loading:true,
-  meters:[], byStatus:{}, mqtt:{connected:false,messages:0,errors:0},
-  version:'', uptime:0, detail:null,
-  // consumption
-  consLoading:false, consItems:[], consTotal:0, consAnyUnknown:false,
-  period:{preset:'this_month',from:'',to:''},
-  presets:[
+function app(){
+  const out = {
+tab: (lsGet('wbem.uiSet', DEFAULT_UI_SET)=='v2') ? 'overviewv2' : 'dash',
+
+uiSet: lsGet('wbem.uiSet', DEFAULT_UI_SET),
+
+theme:lsGet('theme','dark'),
+
+loading:true,
+
+meters:[],
+
+byStatus:{},
+
+mqtt:{connected:false,messages:0,errors:0},
+
+version:'',
+
+uptime:0,
+
+detail:null,
+
+consLoading:false,
+
+consItems:[],
+
+consTotal:0,
+
+consAnyUnknown:false,
+
+period:{preset:'this_month',from:'',to:''},
+
+presets:[
     {id:'today',label:'Сегодня'},{id:'yesterday',label:'Вчера'},
     {id:'this_month',label:'Этот месяц'},{id:'last_month',label:'Прошлый месяц'},
     {id:'last_7d',label:'7 дней'},{id:'last_30d',label:'30 дней'},
   ],
-  chartBars:[], chartSvg:'', chartMeterName:'',
-  // самообновление (ТЗ v0.9.0)
-  updChecking:false, updChecked:false, updCurrent:null, updRemote:null,
-  updAvailable:false, updCheckedAt:null, updCheckError:'', updAllowFromUi:true,
-  updConfirmOpen:false, updStatus:{state:'idle'}, updResultHidden:false,
-  _updPollFailStartedAt:null, _updPollTimer:null,
-  // канал Uptime и конфиг wb-mqtt-serial (ТЗ v0.10.0)
-  uptimeItems:[], uptimeAllowEdit:false, uptimePending:[], uptimeSha:null,
-  uptimeConfigError:'', uptimeBusy:false, uptimeOpenId:null,
-  uptimeRestartConfirm:false,
-  // settings
-  settingsLoading:false, regMeters:[], unregistered:[], allGroups:[],
-  // массовое назначение зоны (§3.6 ТЗ)
-  selectedMeters:[], bulkGroup:'',
-  // zones
-  zones:[], zoneEditId:null, zoneEditName:'', zoneNewName:'', confirmZone:null,
-  mergeConfirm:null,
-  scanLoading:false,
-  editingId:null, editName:'', editGroup:'', editGroupNew:'', editNotes:'', editRole:'consumer',
-  addingId:null, addName:'', addGroup:'', addGroupNew:'', addNotes:'',
-  confirmTarget:null,
-  // словарь каналов (§5 ТЗ)
-  channelCategories:[],
-  // детали счётчика: график истории параметра (задача 2, §4 ТЗ)
-  detailChannel:null, detailChartLoading:false, detailChartError:'',
-  detailChartData:null, detailChartSvg:'',
-  detailChartPeriod:'today', detailChartFrom:'', detailChartTo:'',
-  detailCatsOpen:lsGetJSON('wbem.detailCats',{}),
-  _detailChartSeq:0, _detailChartLastCall:0,
-  // reports
-  rMode:'vedomost', rLoading:false,
-  rPeriod:'this_month', rFrom:'', rTo:'',
-  vedomostRows:[], rTotal:0, rPeriodLabel:'',
-  profileMeterId:'', profilePeriod:'last_7d', profileFrom:'', profileTo:'',
-  profileHours:[], profileTotal:0, profilePeak:{v:0,label:'',item:null},
-  profileSvg:'', profileLoading:false,
-  profilePresets:[
+
+chartBars:[],
+
+chartSvg:'',
+
+chartMeterName:'',
+
+updChecking:false,
+
+updChecked:false,
+
+updCurrent:null,
+
+updRemote:null,
+
+updAvailable:false,
+
+updCheckedAt:null,
+
+updCheckError:'',
+
+updAllowFromUi:true,
+
+updConfirmOpen:false,
+
+updStatus:{state:'idle'},
+
+updResultHidden:false,
+
+_updPollFailStartedAt:null,
+
+_updPollTimer:null,
+
+uptimeItems:[],
+
+uptimeAllowEdit:false,
+
+uptimePending:[],
+
+uptimeSha:null,
+
+uptimeConfigError:'',
+
+uptimeBusy:false,
+
+uptimeOpenId:null,
+
+uptimeRestartConfirm:false,
+
+settingsLoading:false,
+
+regMeters:[],
+
+unregistered:[],
+
+allGroups:[],
+
+selectedMeters:[],
+
+bulkGroup:'',
+
+zones:[],
+
+zoneEditId:null,
+
+zoneEditName:'',
+
+zoneNewName:'',
+
+confirmZone:null,
+
+mergeConfirm:null,
+
+scanLoading:false,
+
+editingId:null,
+
+editName:'',
+
+editGroup:'',
+
+editGroupNew:'',
+
+editNotes:'',
+
+editRole:'consumer',
+
+addingId:null,
+
+addName:'',
+
+addGroup:'',
+
+addGroupNew:'',
+
+addNotes:'',
+
+confirmTarget:null,
+
+channelCategories:[],
+
+detailChannel:null,
+
+detailChartLoading:false,
+
+detailChartError:'',
+
+detailChartData:null,
+
+detailChartSvg:'',
+
+detailChartPeriod:'today',
+
+detailChartFrom:'',
+
+detailChartTo:'',
+
+detailCatsOpen:lsGetJSON('wbem.detailCats',{}),
+
+_detailChartSeq:0,
+
+_detailChartLastCall:0,
+
+rMode:'vedomost',
+
+rLoading:false,
+
+rPeriod:'this_month',
+
+rFrom:'',
+
+rTo:'',
+
+vedomostRows:[],
+
+rTotal:0,
+
+rPeriodLabel:'',
+
+profileMeterId:'',
+
+profilePeriod:'last_7d',
+
+profileFrom:'',
+
+profileTo:'',
+
+profileHours:[],
+
+profileTotal:0,
+
+profilePeak:{v:0,label:'',item:null},
+
+profileSvg:'',
+
+profileLoading:false,
+
+profilePresets:[
     {id:'today',label:'Сегодня'},{id:'yesterday',label:'Вчера'},
     {id:'last_7d',label:'7 дней'},{id:'this_month',label:'Этот месяц'},
     {id:'last_30d',label:'30 дней'},
   ],
-  cmpPeriodA:'this_month', cmpPeriodB:'last_month',
-  cmpRows:[], cmpTotalA:0, cmpTotalB:0,
-  cmpLabelA:'', cmpLabelB:'', cmpLoading:false,
-  // план объекта (ТЗ v0.11.0). Сам объект карты L.Map НЕ хранится тут —
-  // он в замыкании модуля (переменная _planMap ниже, вне реактивности
-  // Alpine), чтобы Leaflet не завернуло в Proxy и не начало вести себя
-  // непредсказуемо (§3.4 ТЗ).
-  planPlans:[], planCurrentId:null, planCurrent:null,
-  planLive:{zones:[],links:[]}, planLoading:false,
-  planEditMode:false, planPeriod:'today',
-  planUploadName:'', planUploadBusy:false, planUploadError:'',
-  planDrawingGroupId:null, planHasPendingZoneDraw:false,
-  planAddingLink:false, planLinkFromZoneId:null,
-  planLinkForm:{toZoneId:'', label:'', sourceMeterId:'', ratedCurrentA:''},
-  planConfirmRemoveZone:null, planConfirmDeleteLink:null,
-  planConfirmDeletePlan:null, planInited:false,
-  // План v2 (ТЗ §7) — пока только просмотр. Своя L.Map — см. _planV2Map
-  // (модульная переменная ниже app(), та же причина, что у v1 плана).
-  planV2Plans:[], planV2CurrentId:null, planV2Current:null,
-  planV2Loading:false, planV2Inited:false, planV2SelectedItem:null,
-  planV2SelectedEdgeView:null,
-  // Партия 6, задача 6 (баг из браузера: "выбор связи не показывает
-  // информацию") — карточка со сведениями по выбранной связи
-  // (endpoints/точка измерения/ток и % загрузки/кабель), см.
-  // _planV2LoadEdgeInfo. null пока не загружено или ничего не выбрано.
-  planV2EdgeInfo:null,
-  // --- Stage D (ТЗ §7.3): редактирование плана v2 локальным черновиком.
-  // planV2Draft.items/edges: ключ -> {op:'upsert'|'remove', ...поля}.
-  // Ключ существующего элемента/связи — String(id); ключ элемента/связи,
-  // созданных в этом же черновике и ещё не сохранённых — 'new:N'/'newedge:N'
-  // (see _planV2BuildLayoutPayload — им нет смысла слать op:'remove' на
-  // сервер, они просто удаляются из черновика). planV2History/Future —
-  // стек глубоких копий planV2Draft для undo/redo.
-  planV2EditMode:false, planV2Draft:{items:{}, edges:{}},
-  planV2History:[], planV2Future:[], planV2Saving:false,
-  planV2ConfirmDiscard:false, planV2RevisionConflict:false,
-  planV2Placing:false, planV2AddKind:'', planV2AddRefId:'',
-  planV2AddTargetPlanId:'', planV2AddLabel:'', planV2NewItemSeq:0,
-  // Партия 6, задача 2 (§3) — контур места рисуется отдельным потоком от
-  // одноклик-плейсмента точек/узлов выше; planV2LocationAssignProposal —
-  // диалог подтверждения "точка попала в контур места, отнести?".
-  planV2PlacingPolygon:false, planV2LocationAssignProposal:null,
-  planV2AddingEdgeView:false, planV2NewEdgeSeq:0,
-  planV2EdgeForm:{edgeId:'', fromItemKey:'', toItemKey:''},
-  // Рисование waypoints для edge_view через leaflet-geoman (по образцу
-  // v1 startZoneDraw/_planOnPmCreate). planV2DrawingEdgeKey — ключ
-  // edge_view (String(id) или 'newedge:N'), для которого сейчас идёт
-  // рисование линии; null — режим рисования выключен. Пока он не null,
-  // _planV2OnMapClick (плейсмент новых item) должен ничего не делать —
-  // иначе клики по карте во время рисования линии ещё и добавляли бы
-  // новый item.
-  planV2DrawingEdgeKey:null, planV2HasPendingEdgeDraw:false,
-  planV2PickersLoaded:false, planV2Points:[], planV2Locations:[],
-  planV2Nodes:[], planV2Edges:[],
-  // «План v3» (docs/TZ-batch6-plan-v3.md) — единый экран узлов на карте:
-  // объединяет «Структуру» (заведение узлов/связей) и «План v2» (карту)
-  // в одно действие без черновика/undo — каждое действие пишется на
-  // сервер сразу (см. секцию методов planV3* ниже). Своя L.Map —
-  // _planV3Map, модульная переменная вне реактивности Alpine, та же
-  // причина, что у Плана/Плана v2.
-  planV3Inited:false, planV3Loading:false, planV3Saving:false,
-  planV3Plans:[], planV3CurrentId:null, planV3Current:null,
-  planV3NewPlanName:'',
-  // planV3Tool: null|'node'|'edge'|'zone' — активный инструмент карты.
-  planV3Tool:null,
-  planV3PendingNodeForm:{kind:'panel', name:''},
-  planV3EdgeFirstItem:null,
-  planV3ZoneGroupId:'', planV3DrawingZone:false,
-  planV3AddConsumerName:'', planV3AddConsumerError:null,
-  planV3NodeCardError:null,
-  // Этап 3, B5: карточка линии — ошибка сохранения имени/номинала/кабеля.
-  planV3EdgeCardError:null,
-  // Этап 3, B8: инлайн-форма «＋ новая точка из прибора» — какая линия
-  // сейчас её показывает (edge_id или null) и введённый device_id.
-  planV3AttachEdgeId:null, planV3AttachDeviceId:'', planV3AttachError:null,
-  // Этап 3, B4: список объектов плана в правой панели, когда ничего не
-  // выбрано (узлы/линии/зоны/точки/приборы без точки). Busy — id узла,
-  // для которого сейчас идёт «Разместить на карте» (ждём клика по карте).
-  planV3PanelUnplacedBusy:null,
-  planV3PlacingExistingNodeId:null,
-  // Этап 3, B9: имя новой учётной группы («＋ Новая группа» у инструмента «Зона»).
-  planV3NewZoneGroupName:'', planV3NewZoneGroupOpen:false, planV3NewZoneGroupError:null,
-  // перенос легаси-данных
-  migrateLegacyConfirm:false, migrateLegacyBusy:false,
-  migrateLegacyResult:null, migrateLegacyError:null,
-  // Обзор v2 (ТЗ §8.2)
-  overviewV2Inited:false, overviewV2Loading:false, overviewV2Error:null,
-  overviewV2Snapshot:null,
-  // ветки/группы на Обзоре (ТЗ §8.2 таблица веток, §4.4 GroupRepoV2) —
-  // состав групп меняется редко, поэтому загружается один раз при
-  // открытии вкладки, НЕ на каждом 5с тике вместе со снимком (тик
-  // пересчитывает суммы по уже загруженному составу против свежего
-  // overviewV2Snapshot — см. overviewV2BranchRows).
-  overviewV2Groups:[], overviewV2GroupMembers:{}, overviewV2GroupsError:null,
-  // Итог объекта за период (ТЗ §8.2, партия 2 задача 2) — см. блок
-  // "Итог объекта за период" в разметке и loadOvSummary() ниже.
-  ovFrom:null, ovTo:null, ovLoading:false, ovError:null, ovSummary:null,
-  ovPointNames:{}, ovDisclosureOpen:{},
-  // Отчёты v2 (ТЗ §8.4, партия 2 задача 3) — /api/v2/reports/query.
-  rv2Inited:false, rv2Dimension:'branch', rv2ScopeIds:[],
-  rv2From:null, rv2To:null, rv2CompositionMode:'as_was',
-  rv2CompareEnabled:false, rv2CompareFrom:null, rv2CompareTo:null,
-  rv2Loading:false, rv2Error:null, rv2Result:null,
-  rv2Points:[], rv2Groups:[], rv2BalanceScopes:[], rv2OptionsLoaded:false,
-  // Структура/инспектор (ТЗ §8.3, партия 3, задача 1). Инспектор общий —
-  // открывается функцией openInspector(kind,id) отсюда, из Плана v2,
-  // из Отчётов и из «Требует внимания» на Обзоре одинаково (переключает
-  // на эту вкладку и заполняет structInspector). kind: 'point'|'group'|
-  // 'edge'|'node'. Списки мест/групп/узлов/связей грузятся один раз при
-  // первом открытии (openStructureTab) — нужны и дереву слева, и
-  // инспектору (например для "чем питается/что питает").
-  // Сводка незавершённой настройки (ТЗ §8.2/§13, партия 3 задача 4) —
-  // отдельный блок «Требует внимания» на Обзоре, ОТДЕЛЬНО от
-  // overviewV2Problems() (та смотрит на живую связь с устройством по
-  // снимку, эта — на завершённость конфигурации по /api/v2/validation:
-  // прибор/место/группа/план/измерение связи/изолированный узел).
-  validationResult:null, validationLoading:false, validationError:null,
-  structInited:false, structLoading:false, structError:null,
-  structQuery:'', structPoints:[], structLocations:[], structGroups:[],
-  structNodes:[], structEdges:[], structSelectedLocationId:null,
-  locEditForm:null,  // партия 6, задача 3 — инлайн-редактирование места
-  structInspector:null, structInspectorLoading:false, structInspectorError:null,
-  _structSearchSeq:0,
-  // Заведение структуры из интерфейса (ТЗ §8.3/партия 5, задача 1):
-  // единая панель создания места/точки/узла/связи + публикация топологии
-  // прямо на экране «Структура» — до этой партии ни одно из этих
-  // действий не было доступно из интерфейса вообще (см.
-  // docs/TZ-batch5-make-v2-usable.md §0). Ничего не считает и не хранит
-  // самостоятельно — только вызывает уже существующие/новую (bindings)
-  // ручки /api/v2 через тот же протокол ревизий, что и везде.
-  structCreatePanel:null, structCreateSaving:false, structCreateError:null,
-  structCreateOk:null,
-  locForm:{name:'', kind:'room', parent_id:null},
-  pointForm:{code:'', name:'', installation_location_id:null, bind:true,
-             device_id:'', display_name:'', channel_profile:'total_3p'},
-  nodeForm:{code:'', name:'', kind:'panel', location_id:null},
-  edgeForm:{from_node_id:null, to_node_id:null, primary_point_id:null,
-            rated_current_a:'', cable_note:'', name:''},
-  structKnownDevices:[], structKnownDevicesLoaded:false,
-  structDraftEdges:[], publishSelected:[], publishValidation:null,
-  // Действия карточки инспектора точки (ТЗ §8.3/партия 5, задача 2):
-  // показать на плане, открыть график (переиспользует детальную
-  // карточку классического интерфейса), заменить прибор, редактировать
-  // принадлежность (место + группы).
-  planPickerChoices:null, replaceMeterForm:null, editMembershipForm:null,
-  // toast
-  toast:null, _toastTimer:null,
-  _timer:null,
 
-  init(){
+cmpPeriodA:'this_month',
+
+cmpPeriodB:'last_month',
+
+cmpRows:[],
+
+cmpTotalA:0,
+
+cmpTotalB:0,
+
+cmpLabelA:'',
+
+cmpLabelB:'',
+
+cmpLoading:false,
+
+planPlans:[],
+
+planCurrentId:null,
+
+planCurrent:null,
+
+planLive:{zones:[],links:[]},
+
+planLoading:false,
+
+planEditMode:false,
+
+planPeriod:'today',
+
+planUploadName:'',
+
+planUploadBusy:false,
+
+planUploadError:'',
+
+planDrawingGroupId:null,
+
+planHasPendingZoneDraw:false,
+
+planAddingLink:false,
+
+planLinkFromZoneId:null,
+
+planLinkForm:{toZoneId:'', label:'', sourceMeterId:'', ratedCurrentA:''},
+
+planConfirmRemoveZone:null,
+
+planConfirmDeleteLink:null,
+
+planConfirmDeletePlan:null,
+
+planInited:false,
+
+planV2Plans:[],
+
+planV2CurrentId:null,
+
+planV2Current:null,
+
+planV2Loading:false,
+
+planV2Inited:false,
+
+planV2SelectedItem:null,
+
+planV2SelectedEdgeView:null,
+
+planV2EdgeInfo:null,
+
+planV2EditMode:false,
+
+planV2Draft:{items:{}, edges:{}},
+
+planV2History:[],
+
+planV2Future:[],
+
+planV2Saving:false,
+
+planV2ConfirmDiscard:false,
+
+planV2RevisionConflict:false,
+
+planV2Placing:false,
+
+planV2AddKind:'',
+
+planV2AddRefId:'',
+
+planV2AddTargetPlanId:'',
+
+planV2AddLabel:'',
+
+planV2NewItemSeq:0,
+
+planV2PlacingPolygon:false,
+
+planV2LocationAssignProposal:null,
+
+planV2AddingEdgeView:false,
+
+planV2NewEdgeSeq:0,
+
+planV2EdgeForm:{edgeId:'', fromItemKey:'', toItemKey:''},
+
+planV2DrawingEdgeKey:null,
+
+planV2HasPendingEdgeDraw:false,
+
+planV2PickersLoaded:false,
+
+planV2Points:[],
+
+planV2Locations:[],
+
+planV2Nodes:[],
+
+planV2Edges:[],
+
+migrateLegacyConfirm:false,
+
+migrateLegacyBusy:false,
+
+migrateLegacyResult:null,
+
+migrateLegacyError:null,
+
+overviewV2Inited:false,
+
+overviewV2Loading:false,
+
+overviewV2Error:null,
+
+overviewV2Snapshot:null,
+
+overviewV2Groups:[],
+
+overviewV2GroupMembers:{},
+
+overviewV2GroupsError:null,
+
+ovFrom:null,
+
+ovTo:null,
+
+ovLoading:false,
+
+ovError:null,
+
+ovSummary:null,
+
+ovPointNames:{},
+
+ovDisclosureOpen:{},
+
+rv2Inited:false,
+
+rv2Dimension:'branch',
+
+rv2ScopeIds:[],
+
+rv2From:null,
+
+rv2To:null,
+
+rv2CompositionMode:'as_was',
+
+rv2CompareEnabled:false,
+
+rv2CompareFrom:null,
+
+rv2CompareTo:null,
+
+rv2Loading:false,
+
+rv2Error:null,
+
+rv2Result:null,
+
+rv2Points:[],
+
+rv2Groups:[],
+
+rv2BalanceScopes:[],
+
+rv2OptionsLoaded:false,
+
+validationResult:null,
+
+validationLoading:false,
+
+validationError:null,
+
+structInited:false,
+
+structLoading:false,
+
+structError:null,
+
+structQuery:'',
+
+structPoints:[],
+
+structLocations:[],
+
+structGroups:[],
+
+structNodes:[],
+
+structEdges:[],
+
+structSelectedLocationId:null,
+
+locEditForm:null,
+
+structInspector:null,
+
+structInspectorLoading:false,
+
+structInspectorError:null,
+
+_structSearchSeq:0,
+
+structCreatePanel:null,
+
+structCreateSaving:false,
+
+structCreateError:null,
+
+structCreateOk:null,
+
+locForm:{name:'', kind:'room', parent_id:null},
+
+pointForm:{code:'', name:'', installation_location_id:null, bind:true,
+             device_id:'', display_name:'', channel_profile:'total_3p'},
+
+nodeForm:{code:'', name:'', kind:'panel', location_id:null},
+
+edgeForm:{from_node_id:null, to_node_id:null, primary_point_id:null,
+            rated_current_a:'', cable_note:'', name:''},
+
+structKnownDevices:[],
+
+structKnownDevicesLoaded:false,
+
+structDraftEdges:[],
+
+publishSelected:[],
+
+publishValidation:null,
+
+planPickerChoices:null,
+
+replaceMeterForm:null,
+
+editMembershipForm:null,
+
+toast:null,
+
+_toastTimer:null,
+
+_timer:null,
+
+init(){
     // Заглушка "интерфейс не запустился" (ТЗ v0.11.1, §3): раз init()
     // вообще выполнился — значит Alpine стартовал, заглушка не нужна.
     if(window.__wbemBootOk) window.__wbemBootOk();
@@ -4536,24 +4783,24 @@ function app(){ return {
       if(this.planV3Tool) this.planV3CancelTool();
     });
   },
-  async loadChannelDictionary(){
+
+async loadChannelDictionary(){
     try{
       const r=await fetch('/api/channels/dictionary');
       const d=await r.json();
       this.channelCategories=d.categories||[];
     }catch(e){ console.error(e); }
   },
-  toggleTheme(){ this.theme=this.theme=='dark'?'light':'dark';
+
+toggleTheme(){ this.theme=this.theme=='dark'?'light':'dark';
     try{localStorage.setItem('theme',this.theme)}catch(e){}
     // Цвета связей на плане берутся из CSS-переменных темы (--ok/--warn/
     // --err/--accent2) в момент отрисовки, не через var() внутри SVG —
     // после смены темы их нужно пересчитать явно.
     this.$nextTick(()=>{ if(typeof this._planApplyLiveStyles==='function') this._planApplyLiveStyles(); });
   },
-  // Переключатель классический/новый интерфейс (UI_SET_TABS/DEFAULT_UI_SET
-  // объявлены в начале <script> выше). Выбор запоминается в localStorage —
-  // в приватных вкладках доступ к нему бросает исключение, поэтому try/catch.
-  toggleUiSet(){
+
+toggleUiSet(){
     this.uiSet = this.uiSet=='classic' ? 'v2' : 'classic';
     try{ localStorage.setItem('wbem.uiSet', this.uiSet); }catch(e){}
     // Активная вкладка принадлежала старому набору — она невидима в новом,
@@ -4573,34 +4820,38 @@ function app(){ return {
       else if(this.tab=='reports') this.initReports();
     }
   },
-  refresh(){
+
+refresh(){
     this.loadStatus();
     if(this.tab=='consumption') this.loadConsumption();
     if(this.tab=='settings'){ this.loadSettings(); this.initUpdatePanel(); }
   },
 
-  // ---- Update (самообновление, ТЗ v0.9.0) ----
-  get updIsActive(){
+get updIsActive(){
     return !!(this.updStatus && UPD_ACTIVE_STATES.includes(this.updStatus.state));
   },
-  get updIsTerminal(){
+
+get updIsTerminal(){
     return !!(this.updStatus && ['success','rolled_back','failed'].includes(this.updStatus.state));
   },
-  updStateLabel(s){
+
+updStateLabel(s){
     return {starting:'Запуск обновления…', downloading:'Скачивание…',
             installing:'Установка…', verifying:'Проверка после установки…',
             rolling_back:'Откат на предыдущую версию…'}[s] || (s||'');
   },
-  updShortSha(sha){ return sha ? String(sha).slice(0,7) : '—'; },
 
-  async initUpdatePanel(){
+updShortSha(sha){ return sha ? String(sha).slice(0,7) : '—'; },
+
+async initUpdatePanel(){
     // Опрос статуса — при каждом открытии «Настроек»: если обновление
     // шло, когда пользователь закрыл вкладку, он должен увидеть
     // результат. Это ЛОКАЛЬНЫЙ опрос (файл статуса), не GitHub —
     // "автопроверки нет" (§1 ТЗ) касается только checkUpdate().
     await this.pollUpdateStatusOnce();
   },
-  async checkUpdate(){
+
+async checkUpdate(){
     this.updChecking=true; this.updCheckError='';
     try{
       const r=await fetch('/api/update/check');
@@ -4612,7 +4863,8 @@ function app(){ return {
     }catch(e){ this.updCheckError='Не удалось связаться с сервисом: '+e; }
     this.updChecking=false;
   },
-  async startUpdateNow(){
+
+async startUpdateNow(){
     this.updConfirmOpen=false;
     try{
       const r=await fetch('/api/update/start',
@@ -4625,7 +4877,8 @@ function app(){ return {
       this._ensureUpdatePolling();
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
-  async pollUpdateStatusOnce(){
+
+async pollUpdateStatusOnce(){
     try{
       const r=await fetch('/api/update/status');
       if(!r.ok) throw new Error('HTTP '+r.status);
@@ -4647,16 +4900,17 @@ function app(){ return {
       }
     }
   },
-  _ensureUpdatePolling(){
+
+_ensureUpdatePolling(){
     if(this._updPollTimer) return;
     this._updPollTimer=setInterval(()=>this.pollUpdateStatusOnce(),2000);
   },
-  _stopUpdatePolling(){
+
+_stopUpdatePolling(){
     if(this._updPollTimer){ clearInterval(this._updPollTimer); this._updPollTimer=null; }
   },
 
-  // ---- Канал Uptime и конфиг wb-mqtt-serial (ТЗ v0.10.0) ----
-  async loadUptimeSummary(){
+async loadUptimeSummary(){
     try{
       const r=await fetch('/api/uptime-channel/summary');
       const d=await r.json();
@@ -4667,34 +4921,42 @@ function app(){ return {
       this.uptimeConfigError=d.config_error||'';
     }catch(e){ console.error(e); }
   },
-  uptimeRow(devId){
+
+uptimeRow(devId){
     return (this.uptimeItems||[]).find(u=>u.device_id===devId)||null;
   },
-  uptimeStateOf(devId){
+
+uptimeStateOf(devId){
     const u=this.uptimeRow(devId); return u? u.state : 'unknown';
   },
-  uptimeDetailOf(devId){
+
+uptimeDetailOf(devId){
     const u=this.uptimeRow(devId);
     return u? (u.detail||'') : 'Состояние канала Uptime ещё не проверено.';
   },
-  uptimeLabel(st){ return {
+
+uptimeLabel(st){ return {
     ok:'опрашивается', disabled:'не включён', not_in_config:'не включён',
     stale:'нет данных', device_not_found:'не в конфиге',
     unknown:'не проверено'}[st]||'не проверено';
   },
-  uptimeColor(st){ return {
+
+uptimeColor(st){ return {
     ok:'var(--ok)', disabled:'var(--warn)', not_in_config:'var(--warn)',
     stale:'var(--err)', device_not_found:'var(--txt3)',
     unknown:'var(--txt3)'}[st]||'var(--txt3)';
   },
-  uptimeBadgeStyle(st){
+
+uptimeBadgeStyle(st){
     const c=this.uptimeColor(st);
     return `background:${c}22;color:${c};border:1px solid ${c}55`;
   },
-  get uptimeProblems(){
+
+get uptimeProblems(){
     return (this.uptimeItems||[]).filter(u=>u.state!=='ok');
   },
-  async enableUptime(devId){
+
+async enableUptime(devId){
     if(this.uptimeBusy) return;
     this.uptimeBusy=true;
     try{
@@ -4715,7 +4977,8 @@ function app(){ return {
     this.uptimeBusy=false;
     await this.loadUptimeSummary();
   },
-  async restartDriverNow(){
+
+async restartDriverNow(){
     this.uptimeRestartConfirm=false;
     if(this.uptimeBusy) return;
     this.uptimeBusy=true;
@@ -4733,7 +4996,8 @@ function app(){ return {
     this.uptimeBusy=false;
     await this.loadUptimeSummary();
   },
-  async runMigrateLegacy(){
+
+async runMigrateLegacy(){
     this.migrateLegacyConfirm=false;
     this.migrateLegacyBusy=true;
     this.migrateLegacyError=null;
@@ -4759,7 +5023,7 @@ function app(){ return {
     }
   },
 
-  async loadStatus(){
+async loadStatus(){
     try{
       const r=await fetch('/api/status'); const d=await r.json();
       this.meters=d.meters||[]; this.byStatus=d.meters_by_status||{};
@@ -4768,8 +5032,7 @@ function app(){ return {
     this.loading=false;
   },
 
-  // ---- Zones / grouping ----
-  get groupedMeters(){
+get groupedMeters(){
     const groups = {};
     this.meters.forEach(m=>{
       const z = m.group || '— Без зоны —';
@@ -4781,7 +5044,8 @@ function app(){ return {
     const order = [...named, '— Без зоны —'].filter(k=>groups[k]);
     return order.map(k=>groups[k]);
   },
-  zoneColor(zone){
+
+zoneColor(zone){
     // Принимает либо имя зоны строкой, либо объект зоны {name,color}
     // (§3.7 ТЗ). Приоритет — цвет из БД, иначе детерминированный хеш
     // от имени (фолбэк для старых зон без цвета — ничего не ломается).
@@ -4798,91 +5062,104 @@ function app(){ return {
     for(let i=0;i<name.length;i++) h=(h*31+name.charCodeAt(i))%360;
     return `hsl(${h},55%,45%)`;
   },
-  zonePower(meters){
+
+zonePower(meters){
     let s=0;
     meters.forEach(m=>{const v=m.main_values&&m.main_values['Total P'];if(typeof v=='number')s+=v;});
     return s.toFixed(3);
   },
 
-  // ---- Dashboard helpers ----
-  get totalPowerKw(){
+get totalPowerKw(){
     let s=0; this.meters.forEach(m=>{
       const v=m.main_values&&m.main_values['Total P']; if(typeof v=='number') s+=v;
     }); return s.toFixed(3);
   },
-  get totalEnergy(){
+
+get totalEnergy(){
     let s=0; this.meters.forEach(m=>{
       const v=m.main_values&&m.main_values['Total AP energy']; if(typeof v=='number') s+=v;
     }); return s.toFixed(2);
   },
-  get uptimeStr(){
+
+get uptimeStr(){
     const s=this.uptime;
     if(s<3600) return Math.floor(s/60)+'м';
     if(s<86400) return (s/3600).toFixed(1)+'ч';
     return (s/86400).toFixed(1)+'д';
   },
-  meterUptime(m){
+
+meterUptime(m){
     const v=(m.main_values&&m.main_values['Uptime (s)'])??
             (m.main_values&&m.main_values['Uptime']);
     if(v==null||isNaN(v)) return null;
     return fmtSeconds(v);
   },
-  updateAgeClass(age){
+
+updateAgeClass(age){
     if(age==null) return 'muted';
     if(age<120) return 'cf-item cf-ok';
     if(age<600) return 'cf-item cf-warn';
     return 'cf-item cf-err';
   },
-  fmtAge(age){
+
+fmtAge(age){
     if(age==null) return '—';
     if(age<60) return Math.round(age)+'с назад';
     if(age<3600) return Math.round(age/60)+'мин назад';
     return (age/3600).toFixed(1)+'ч назад';
   },
-  statusColor(st){ return {
+
+statusColor(st){ return {
     ok:'var(--ok)',warning:'var(--warn)',no_measurement:'var(--idle)',
     incomplete:'var(--warn)',no_connection:'var(--err)',
     device_error:'var(--err)',unknown:'var(--txt3)',never_seen:'var(--txt3)'}[st]||'var(--txt3)';
   },
-  statusLabel(st){ return {
+
+statusLabel(st){ return {
     ok:'OK',warning:'Внимание',no_measurement:'Нет нагрузки',
     incomplete:'Нет фазы',no_connection:'Нет связи',
     device_error:'Ошибка',unknown:'—',never_seen:'Не подключалось'}[st]||st;
   },
-  badgeStyle(st){
+
+badgeStyle(st){
     const c=this.statusColor(st);
     return `background:${c}22;color:${c};border:1px solid ${c}55`;
   },
-  qualityLabel(q){ return {ok:'OK',edge_approx:'~прибл.',gap:'разрыв',
+
+qualityLabel(q){ return {ok:'OK',edge_approx:'~прибл.',gap:'разрыв',
     reset:'сброс',no_data:'нет данных',stale:'нет обновл.'}[q]||q; },
-  qualityStyle(q){
+
+qualityStyle(q){
     const c={ok:'var(--ok)',edge_approx:'var(--info)',gap:'var(--warn)',
       reset:'var(--err)',no_data:'var(--idle)',stale:'var(--idle)'}[q]||'var(--txt3)';
     return `background:${c}22;color:${c}`;
   },
-  fmt(v,d){
+
+fmt(v,d){
     if(v==null||v===undefined||isNaN(v)) return '—';
     return Number(v).toFixed(d);
   },
-  async openDetail(devId){
+
+async openDetail(devId){
     this.detailChannel=null; this.detailChartData=null; this.detailChartError='';
     try{ const r=await fetch('/api/meters/'+encodeURIComponent(devId));
       this.detail=await r.json(); }catch(e){ console.error(e); }
     if(this.tab=='consumption') this.loadHourly(devId);
   },
-  closeDetail(){
+
+closeDetail(){
     this.detail=null; this.detailChannel=null;
     this.detailChartData=null; this.detailChartError=''; this.detailChartSvg='';
   },
 
-  // ---- Детали счётчика: категории параметров (§5 ТЗ) ----
-  get detailMainControls(){
+get detailMainControls(){
     if(!this.detail || !this.detail.controls) return [];
     return Object.entries(this.detail.controls)
       .filter(([name,c])=>c.main)
       .map(([name,c])=>({name,...c}));
   },
-  get detailOtherCategories(){
+
+get detailOtherCategories(){
     if(!this.detail || !this.detail.controls) return [];
     const byCat={};
     Object.entries(this.detail.controls).forEach(([name,c])=>{
@@ -4897,47 +5174,53 @@ function app(){ return {
       .map(cc=>({id:cc.id,label:cc.label,open:cc.open,items:byCat[cc.id]||[]}))
       .filter(cc=>cc.items.length>0);
   },
-  _catDefaultOpen(id){
+
+_catDefaultOpen(id){
     const meta=(this.channelCategories&&this.channelCategories.length)?
       this.channelCategories:FALLBACK_CATEGORIES;
     const c=meta.find(cc=>cc.id===id);
     return c?!!c.open:false;
   },
-  isDetailCatOpen(id){
+
+isDetailCatOpen(id){
     const cur=this.detailCatsOpen[id];
     return cur===undefined?this._catDefaultOpen(id):cur;
   },
-  toggleDetailCat(id){
+
+toggleDetailCat(id){
     const isOpen=this.isDetailCatOpen(id);
     this.detailCatsOpen={...this.detailCatsOpen,[id]:!isOpen};
     try{ localStorage.setItem('wbem.detailCats',JSON.stringify(this.detailCatsOpen)); }catch(e){}
   },
-  channelLabel(name){
+
+channelLabel(name){
     const c=this.detail&&this.detail.controls&&this.detail.controls[name];
     const label=(c&&c.label)?c.label:name;
     const units=(c&&c.units)?(' ('+c.units+')'):'';
     return label+units;
   },
 
-  // ---- График истории параметра (задача 2, §4 ТЗ) ----
-  openChannelChart(name){
+openChannelChart(name){
     this.detailChannel=name;
     this.detailChartPeriod='today'; this.detailChartFrom=''; this.detailChartTo='';
     this.detailChartData=null; this.detailChartError=''; this.detailChartSvg='';
     this.loadDetailChart();
   },
-  closeChannelChart(){
+
+closeChannelChart(){
     this.detailChannel=null;
     this.detailChartData=null; this.detailChartError=''; this.detailChartSvg='';
   },
-  detailChartQuery(){
+
+detailChartQuery(){
     if(this.detailChartPeriod==='hour'){
       const to=new Date(), from=new Date(to.getTime()-3600*1000);
       return 'from='+dtLocal(from)+'&to='+dtLocal(to);
     }
     return this._rPeriodQuery(this.detailChartPeriod, this.detailChartFrom, this.detailChartTo);
   },
-  async loadDetailChart(){
+
+async loadDetailChart(){
     if(!this.detail || !this.detailChannel) return;
     const myReq=++this._detailChartSeq;
     // Троттлинг ~300мс между запросами (известное ограничение — см.
@@ -4970,7 +5253,8 @@ function app(){ return {
     }
     if(myReq===this._detailChartSeq) this.detailChartLoading=false;
   },
-  renderDetailChartSvg(){
+
+renderDetailChartSvg(){
     const d=this.detailChartData;
     if(!d||!d.items||!d.items.length){ this.detailChartSvg=''; return; }
     const pts=d.items;
@@ -4999,7 +5283,8 @@ function app(){ return {
     svg+=`</svg>`;
     this.detailChartSvg=svg;
   },
-  downloadDetailChart(){
+
+downloadDetailChart(){
     const d=this.detailChartData;
     if(!d||!d.items||!d.items.length) return;
     const lines=['﻿',
@@ -5013,14 +5298,16 @@ function app(){ return {
     a.click();
   },
 
-  // ---- Consumption ----
-  setPreset(id){ this.period.preset=id; this.period.from=''; this.period.to='';
+setPreset(id){ this.period.preset=id; this.period.from=''; this.period.to='';
     this.loadConsumption(); },
-  setCustom(){ if(this.period.from&&this.period.to){
+
+setCustom(){ if(this.period.from&&this.period.to){
     this.period.preset=''; this.loadConsumption(); } },
-  periodQuery(){ if(this.period.preset) return 'period='+this.period.preset;
+
+periodQuery(){ if(this.period.preset) return 'period='+this.period.preset;
     return 'from='+this.period.from+'&to='+this.period.to; },
-  async loadConsumption(){
+
+async loadConsumption(){
     this.consLoading=true; this.chartBars=[]; this.chartSvg=''; this.chartMeterName='';
     try{
       const r=await fetch('/api/summary/consumption?'+this.periodQuery());
@@ -5030,7 +5317,8 @@ function app(){ return {
     }catch(e){ console.error(e); }
     this.consLoading=false;
   },
-  async loadHourly(devId){
+
+async loadHourly(devId){
     try{
       const r=await fetch('/api/meters/'+encodeURIComponent(devId)+'/hourly?'+this.periodQuery());
       const d=await r.json();
@@ -5039,7 +5327,8 @@ function app(){ return {
       this.renderChart();
     }catch(e){ console.error(e); }
   },
-  renderChart(){
+
+renderChart(){
     const bars=this.chartBars.filter(b=>b.v!=null);
     if(!bars.length){ this.chartSvg='<div class="muted">Нет данных за период</div>'; return; }
     const W=Math.max(600,bars.length*14),H=200,pad=30;
@@ -5057,8 +5346,7 @@ function app(){ return {
     this.chartSvg=svg;
   },
 
-  // ---- Settings ----
-  async loadSettings(){
+async loadSettings(){
     this.settingsLoading=true;
     try{
       const [rm, gr] = await Promise.all([
@@ -5073,14 +5361,16 @@ function app(){ return {
     this.loadUptimeSummary();
     this.scanUnregistered();
   },
-  async reloadGroups(){
+
+async reloadGroups(){
     try{
       const gr=await fetch('/api/registry/groups').then(r=>r.json());
       this.zones=gr.groups||[];
       this.allGroups=(gr.groups||[]).map(g=>g.name);
     }catch(e){ console.error(e); }
   },
-  async createZone(){
+
+async createZone(){
     const name=this.zoneNewName.trim();
     if(!name) return;
     try{
@@ -5093,8 +5383,10 @@ function app(){ return {
       await this.reloadGroups();
     }catch(e){this.showToast('Ошибка: '+e,false);}
   },
-  startZoneEdit(z){this.zoneEditId=z.id;this.zoneEditName=z.name;},
-  async saveZoneEdit(id, merge){
+
+startZoneEdit(z){this.zoneEditId=z.id;this.zoneEditName=z.name;},
+
+async saveZoneEdit(id, merge){
     const name=this.zoneEditName.trim();
     if(!name){this.zoneEditId=null;return;}
     try{
@@ -5116,13 +5408,15 @@ function app(){ return {
       await this.loadStatus();
     }catch(e){this.showToast('Ошибка: '+e,false);}
   },
-  async confirmMergeZones(){
+
+async confirmMergeZones(){
     if(!this.mergeConfirm) return;
     const groupId=this.mergeConfirm.groupId;
     this.mergeConfirm=null;
     await this.saveZoneEdit(groupId, true);
   },
-  async changeZoneColor(z, color){
+
+async changeZoneColor(z, color){
     try{
       const r=await fetch('/api/registry/groups/'+z.id,
         {method:'PATCH',headers:{'Content-Type':'application/json'},
@@ -5131,8 +5425,10 @@ function app(){ return {
       await this.reloadGroups();
     }catch(e){this.showToast('Ошибка: '+e,false);}
   },
-  askDeleteZone(z){this.confirmZone=z;},
-  async confirmDeleteZone(){
+
+askDeleteZone(z){this.confirmZone=z;},
+
+async confirmDeleteZone(){
     const z=this.confirmZone; this.confirmZone=null;
     try{
       const r=await fetch('/api/registry/groups/'+z.id,{method:'DELETE'});
@@ -5143,7 +5439,8 @@ function app(){ return {
       await this.loadStatus();
     }catch(e){this.showToast('Ошибка: '+e,false);}
   },
-  async scanUnregistered(){
+
+async scanUnregistered(){
     this.scanLoading=true;
     try{
       const r=await fetch('/api/meters/unregistered');
@@ -5153,7 +5450,7 @@ function app(){ return {
     this.scanLoading=false;
   },
 
-  startEdit(m){
+startEdit(m){
     this.editingId=m.device_id;
     this.editName=m.display_name;
     this.editGroup=m.group_name||'';
@@ -5161,7 +5458,8 @@ function app(){ return {
     this.editNotes=m.notes||'';
     this.editRole=m.role||'consumer';
   },
-  async saveEdit(deviceId){
+
+async saveEdit(deviceId){
     let group=this.editGroup;
     if(group==='__new__'){
       group=(this.editGroupNew||'').trim();
@@ -5182,14 +5480,15 @@ function app(){ return {
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
 
-  // ---- Массовое назначение зоны (§3.6 ТЗ) ----
-  get allSelected(){
+get allSelected(){
     return this.regMeters.length>0 && this.selectedMeters.length===this.regMeters.length;
   },
-  toggleSelectAll(ev){
+
+toggleSelectAll(ev){
     this.selectedMeters = ev.target.checked ? this.regMeters.map(m=>m.device_id) : [];
   },
-  async applyBulkGroup(){
+
+async applyBulkGroup(){
     const ids=[...this.selectedMeters];
     if(!ids.length) return;
     const group=this.bulkGroup;
@@ -5209,12 +5508,13 @@ function app(){ return {
     await this.loadStatus();
   },
 
-  startAdd(u){
+startAdd(u){
     this.addingId=u.device_id;
     this.addName=u.mqtt_name||u.device_id;
     this.addGroup=''; this.addGroupNew='';
   },
-  async confirmAdd(deviceId){
+
+async confirmAdd(deviceId){
     const name=this.addName.trim()||deviceId;
     let group=this.addGroup;
     if(group==='__new__') group=(this.addGroupNew||'').trim();
@@ -5233,8 +5533,9 @@ function app(){ return {
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
 
-  askDelete(m){ this.confirmTarget=m; },
-  async confirmDelete(){
+askDelete(m){ this.confirmTarget=m; },
+
+async confirmDelete(){
     const did=this.confirmTarget.device_id;
     this.confirmTarget=null;
     try{
@@ -5247,8 +5548,7 @@ function app(){ return {
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
 
-  // ---- Reports ----
-  async initReports(){
+async initReports(){
     // B2: было loadSettings() без await — loadVedomost() тут же читал
     // this.regMeters для колонки «Комментарий», на первом рендере она
     // была пустой.
@@ -5259,29 +5559,21 @@ function app(){ return {
     else if(this.rMode==='profile') this.loadProfile();
     else this.loadCompare();
   },
-  _rPeriodQuery(preset, from_, to_){
+
+_rPeriodQuery(preset, from_, to_){
     if(preset) return 'period='+preset;
     if(from_&&to_) return 'from='+from_+'&to='+to_;
     return 'period=this_month';
   },
-  // B3: общая функция экранирования CSV-полей — используется во всех
-  // выгрузках, чтобы `;`, кавычка или перевод строки в имени/комментарии
-  // не ломали колонки.
-  // A45 (партия 2): значение, похожее на формулу для Excel/LibreOffice
-  // (начинается с =, +, -, @ либо с табуляции/CR — тоже валидные для
-  // Excel префиксы формулы), экспортируется как безопасный текст —
-  // иначе это внедрение формул (CSV/Excel injection: такая ячейка при
-  // открытии выполнится как формула на компьютере того, кто откроет
-  // файл). Числа (в т.ч. отрицательный небаланс) в csvCell НЕ передаются
-  // нигде в коде отчётов — они пишутся в CSV как есть отдельной веткой,
-  // поэтому это правило их не касается и не превращает число в текст.
-  csvCell(v){
+
+csvCell(v){
     if(v==null) return '';
     let s=String(v);
     if(/^[=+\-@\t\r]/.test(s)){ s = "'"+s; }
     return /[";\r\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s;
   },
-  async loadVedomost(){
+
+async loadVedomost(){
     this.rLoading=true;
     const q=this._rPeriodQuery(this.rPeriod,this.rFrom,this.rTo);
     try{
@@ -5315,7 +5607,8 @@ function app(){ return {
     }catch(e){ console.error(e); }
     this.rLoading=false;
   },
-  downloadVedomost(){
+
+downloadVedomost(){
     const lines=[];
     const pLabel=this.rPeriodLabel||this.rPeriod||'период';
     lines.push('\uFEFF'); // BOM для Excel
@@ -5338,7 +5631,7 @@ function app(){ return {
     a.click();
   },
 
-  async loadProfile(){
+async loadProfile(){
     if(!this.profileMeterId){ this.profileLoading=false; return; }
     this.profileLoading=true;
     const q=this._rPeriodQuery(this.profilePeriod,this.profileFrom,this.profileTo);
@@ -5363,7 +5656,8 @@ function app(){ return {
     }catch(e){ console.error(e); }
     this.profileLoading=false;
   },
-  renderProfileSvg(){
+
+renderProfileSvg(){
     const bars=this.profileHours.filter(b=>b.v!=null);
     if(!bars.length){ this.profileSvg='<div class="muted">Нет данных</div>'; return; }
     const W=Math.max(700,bars.length*12), H=220, padL=48, padR=12, padT=20, padB=30;
@@ -5404,7 +5698,8 @@ function app(){ return {
     svg+=`</svg>`;
     this.profileSvg=svg;
   },
-  downloadProfile(){
+
+downloadProfile(){
     if(!this.profileHours.length) return;
     const lines=['\uFEFF','wb-energy-meter — Профиль нагрузки','',
       'Дата-час;Расход кВт·ч;Качество'];
@@ -5420,7 +5715,7 @@ function app(){ return {
     a.click();
   },
 
-  async loadCompare(){
+async loadCompare(){
     this.cmpLoading=true;
     try{
       const [da,db]=await Promise.all([
@@ -5450,7 +5745,8 @@ function app(){ return {
     }catch(e){ console.error(e); }
     this.cmpLoading=false;
   },
-  downloadCompare(){
+
+downloadCompare(){
     const lines=['\uFEFF','wb-energy-meter — Сравнение периодов','',
       `Счётчик;Зона;${this.cmpLabelA} кВт·ч;${this.cmpLabelB} кВт·ч;Δ кВт·ч;Δ %`];
     this.cmpRows.forEach(r=>{
@@ -5471,10 +5767,13 @@ function app(){ return {
     a.click();
   },
 
-  // ---- Balance ----
-  balancePeriod:'this_month', balanceLoading:false, balanceData:null,
+balancePeriod:'this_month',
 
-  async loadBalance(){
+balanceLoading:false,
+
+balanceData:null,
+
+async loadBalance(){
     this.balanceLoading=true;
     try{
       const r=await fetch('/api/reports/balance?period='+this.balancePeriod);
@@ -5482,7 +5781,8 @@ function app(){ return {
     }catch(e){ console.error(e); this.balanceData=null; }
     this.balanceLoading=false;
   },
-  downloadBalance(){
+
+downloadBalance(){
     if(!this.balanceData) return;
     const d=this.balanceData;
     const lines=['\uFEFF',
@@ -5520,11 +5820,17 @@ function app(){ return {
     a.click();
   },
 
-  // ---- Availability ----
-  availPeriod:'last_30d', availLoading:false, availItems:[],
-  availSelected:null, availDetail:{},
+availPeriod:'last_30d',
 
-  async loadAvail(){
+availLoading:false,
+
+availItems:[],
+
+availSelected:null,
+
+availDetail:{},
+
+async loadAvail(){
     this.availLoading=true; this.availSelected=null; this.availDetail={};
     try{
       const r=await fetch('/api/availability/summary?period='+this.availPeriod);
@@ -5533,7 +5839,8 @@ function app(){ return {
     }catch(e){ console.error(e); }
     this.availLoading=false;
   },
-  async loadAvailDetail(deviceId){
+
+async loadAvailDetail(deviceId){
     try{
       const r=await fetch('/api/meters/'+encodeURIComponent(deviceId)+
         '/availability?period='+this.availPeriod);
@@ -5541,7 +5848,8 @@ function app(){ return {
       this.availDetail={...this.availDetail,[deviceId]:d};
     }catch(e){ console.error(e); }
   },
-  downloadAvail(){
+
+downloadAvail(){
     if(!this.availItems.length) return;
     const lines=['\uFEFF','wb-energy-meter — Доступность','',
       'Счётчик;device_id;Зона;Роль;Доступность %;Недоступность с;Инцидентов'];
@@ -5559,10 +5867,11 @@ function app(){ return {
     a.click();
   },
 
-  // ---- Roles ----
-  roleLabel(r){return {input:'Ввод',consumer:'Потребитель',other:'Прочее'}[r]||r||'—';},
-  roleColor(r){return {input:'var(--ok)',consumer:'var(--accent2)',other:'var(--txt3)'}[r]||'var(--txt3)';},
-  async saveRole(deviceId, role){
+roleLabel(r){return {input:'Ввод',consumer:'Потребитель',other:'Прочее'}[r]||r||'—';},
+
+roleColor(r){return {input:'var(--ok)',consumer:'var(--accent2)',other:'var(--txt3)'}[r]||'var(--txt3)';},
+
+async saveRole(deviceId, role){
     try{
       const r=await fetch('/api/registry/meters/'+encodeURIComponent(deviceId)+'/role',
         {method:'PATCH',headers:{'Content-Type':'application/json'},
@@ -5573,14 +5882,7 @@ function app(){ return {
     }catch(e){this.showToast('Ошибка: '+e,false);}
   },
 
-  // ---- План объекта: зоны на схеме и кабельные связи (ТЗ v0.11.0) ----
-  // Сам L.Map и слои живут в замыкании модуля (переменные _plan* ниже,
-  // объявлены после app()) — НЕ в data() компонента, чтобы Alpine не
-  // завернул L.Map в реактивный Proxy (§3.4 ТЗ). Внутрь контейнера
-  // #site-plan-map Alpine ничего не биндит — слои, попапы и стили правит
-  // только JS через API Leaflet, из методов ниже.
-
-  initPlanMap(){
+initPlanMap(){
     if(_planMap) return; // контейнер не пересоздаётся (x-show, не x-if) —
                           // карта создаётся ровно один раз за жизнь страницы
     const el=this.$refs.planMap;
@@ -5600,7 +5902,8 @@ function app(){ return {
     });
     window.addEventListener('resize', ()=>{ if(_planMap) _planMap.invalidateSize(); });
   },
-  async openPlanTab(){
+
+async openPlanTab(){
     if(!_planMap) this.initPlanMap();
     if(!this.planInited){
       this.planInited=true;
@@ -5609,7 +5912,8 @@ function app(){ return {
     }
     this.$nextTick(()=>{ if(_planMap) _planMap.invalidateSize(); });
   },
-  async loadPlanList(){
+
+async loadPlanList(){
     this.planLoading=true;
     try{
       const r=await fetch('/api/plans'); const d=await r.json();
@@ -5621,7 +5925,8 @@ function app(){ return {
     }catch(e){ console.error(e); }
     this.planLoading=false;
   },
-  async selectPlan(id){
+
+async selectPlan(id){
     if(!id) return;
     this.cancelZoneDraw(); this.cancelAddLink();
     this.planCurrentId=id;
@@ -5633,7 +5938,8 @@ function app(){ return {
     this._planRenderBase();
     await this.loadPlanLive();
   },
-  async loadPlanLive(){
+
+async loadPlanLive(){
     if(!this.planCurrentId) return;
     try{
       const r=await fetch(`/api/plans/${this.planCurrentId}/live?period=${encodeURIComponent(this.planPeriod)}`);
@@ -5642,23 +5948,29 @@ function app(){ return {
     }catch(e){ console.error(e); return; }
     this._planApplyLiveStyles();
   },
-  setPlanPeriod(id){ this.planPeriod=id; this.loadPlanLive(); },
-  togglePlanEdit(){
+
+setPlanPeriod(id){ this.planPeriod=id; this.loadPlanLive(); },
+
+togglePlanEdit(){
     this.planEditMode=!this.planEditMode;
     if(!this.planEditMode){ this.cancelZoneDraw(); this.cancelAddLink(); }
     this.$nextTick(()=>{ if(_planMap) _planMap.invalidateSize(); });
   },
-  isZoneOnPlan(groupId){
+
+isZoneOnPlan(groupId){
     return !!(this.planCurrent && (this.planCurrent.zones||[]).some(z=>z.group_id===groupId));
   },
-  zoneNameById(zoneId){
+
+zoneNameById(zoneId){
     const z=this.planCurrent && (this.planCurrent.zones||[]).find(zz=>zz.id===zoneId);
     return z? z.group_name : null;
   },
-  _planLiveForGroup(groupId){
+
+_planLiveForGroup(groupId){
     return (this.planLive.zones||[]).find(z=>z.group_id===groupId) || null;
   },
-  openZoneOnDashboard(groupId){
+
+openZoneOnDashboard(groupId){
     const z=(this.zones||[]).find(g=>g.id===groupId);
     const name=z?z.name:null;
     this.uiSet='classic'; // 'dash' — вкладка классического набора, см. UI_SET_TABS
@@ -5671,10 +5983,7 @@ function app(){ return {
     });
   },
 
-  // ---- Отрисовка (пересоздаёт слои — только при смене плана/зон/связей,
-  // НЕ на каждый 5-секундный тик живых данных, иначе открытый попап
-  // закрывался бы каждые 5 секунд, см. §8.1 ТЗ) ----
-  _planClearLayers(){
+_planClearLayers(){
     if(!_planMap) return;
     if(_planImageLayer){ try{_planMap.removeLayer(_planImageLayer);}catch(e){} _planImageLayer=null; }
     _planZoneLayers.forEach(rec=>{ try{_planMap.removeLayer(rec.layer);}catch(e){} });
@@ -5683,7 +5992,8 @@ function app(){ return {
     _planLinkLayers.clear();
     _planOpenPopupGroupId=null;
   },
-  _planZoneAnchorLatLng(zone){
+
+_planZoneAnchorLatLng(zone){
     if(zone.anchor) return L.latLng(zone.anchor[0], zone.anchor[1]);
     const rec=_planZoneLayers.get(zone.group_id);
     if(rec){
@@ -5692,7 +6002,8 @@ function app(){ return {
     }
     return L.latLng(0,0);
   },
-  _planRenderBase(){
+
+_planRenderBase(){
     if(!_planMap || !this.planCurrent) return;
     this._planClearLayers();
     const pc=this.planCurrent;
@@ -5736,7 +6047,8 @@ function app(){ return {
 
     this._planApplyLiveStyles();
   },
-  _planPopupHtml(zone, live){
+
+_planPopupHtml(zone, live){
     const name=_planEscapeHtml(zone.group_name||'');
     const color=zone.color||'#3dd6c0';
     const power=live && live.power_kw!=null ? live.power_kw.toFixed(3) : '—';
@@ -5756,7 +6068,8 @@ function app(){ return {
       worstHtml+
       `<a class="pp-link" href="#">Открыть счётчики зоны →</a></div>`;
   },
-  _planApplyLiveStyles(){
+
+_planApplyLiveStyles(){
     if(!_planMap) return;
     const zoneLive={};
     (this.planLive.zones||[]).forEach(z=>{ zoneLive[z.group_id]=z; });
@@ -5786,8 +6099,7 @@ function app(){ return {
     });
   },
 
-  // ---- Редактирование: контур зоны (Geoman) ----
-  startZoneDraw(group){
+startZoneDraw(group){
     if(this.planDrawingGroupId!==null || !_planMap) return;
     this.planDrawingGroupId=group.id;
     this.planHasPendingZoneDraw=false;
@@ -5800,7 +6112,8 @@ function app(){ return {
     if(_planMap.doubleClickZoom) _planMap.doubleClickZoom.disable();
     _planMap.pm.enableDraw('Polygon', {snappable:true, finishOn:'dblclick'});
   },
-  _planOnPmCreate(e){
+
+_planOnPmCreate(e){
     if(e.shape==='Polygon' && this.planDrawingGroupId!==null){
       if(_planDrawLayer){ try{_planMap.removeLayer(_planDrawLayer);}catch(err){} }
       _planDrawLayer=e.layer;
@@ -5808,7 +6121,8 @@ function app(){ return {
       this.planHasPendingZoneDraw=true;
     }
   },
-  async saveZoneDraw(){
+
+async saveZoneDraw(){
     if(!_planDrawLayer || this.planDrawingGroupId===null) return;
     const rings=_planDrawLayer.getLatLngs();
     const ring=Array.isArray(rings[0]) ? rings[0] : rings;
@@ -5825,14 +6139,16 @@ function app(){ return {
       await this.selectPlan(this.planCurrentId);
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
-  cancelZoneDraw(){
+
+cancelZoneDraw(){
     if(_planMap && _planMap.pm) _planMap.pm.disableDraw('Polygon');
     if(_planMap && _planMap.doubleClickZoom) _planMap.doubleClickZoom.enable();
     if(_planDrawLayer){ try{_planMap.removeLayer(_planDrawLayer);}catch(e){} _planDrawLayer=null; }
     this.planDrawingGroupId=null;
     this.planHasPendingZoneDraw=false;
   },
-  async confirmRemoveZoneFromPlan(){
+
+async confirmRemoveZoneFromPlan(){
     const target=this.planConfirmRemoveZone; this.planConfirmRemoveZone=null;
     if(!target) return;
     try{
@@ -5844,19 +6160,20 @@ function app(){ return {
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
 
-  // ---- Редактирование: кабельные связи ----
-  toggleAddLink(){
+toggleAddLink(){
     if(this.planAddingLink){ this.cancelAddLink(); return; }
     this.planAddingLink=true;
     this.planLinkFromZoneId=null;
     this.planLinkForm={toZoneId:'', label:'', sourceMeterId:'', ratedCurrentA:''};
   },
-  cancelAddLink(){
+
+cancelAddLink(){
     this.planAddingLink=false;
     this.planLinkFromZoneId=null;
     this.planLinkForm={toZoneId:'', label:'', sourceMeterId:'', ratedCurrentA:''};
   },
-  _planHandleLinkZoneClick(groupId){
+
+_planHandleLinkZoneClick(groupId){
     const zone=this.planCurrent && (this.planCurrent.zones||[]).find(z=>z.group_id===groupId);
     if(!zone){ this.showToast('У этой зоны ещё нет контура на плане', false); return; }
     if(!this.planLinkFromZoneId){
@@ -5870,7 +6187,8 @@ function app(){ return {
     }
     this.planLinkForm.toZoneId=zone.id;
   },
-  async saveLink(){
+
+async saveLink(){
     if(!this.planLinkFromZoneId || !this.planLinkForm.toZoneId) return;
     const body={
       from_zone_id:this.planLinkFromZoneId,
@@ -5891,7 +6209,8 @@ function app(){ return {
       await this.selectPlan(this.planCurrentId);
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
-  async confirmDeletePlanLink(){
+
+async confirmDeletePlanLink(){
     const target=this.planConfirmDeleteLink; this.planConfirmDeleteLink=null;
     if(!target) return;
     try{
@@ -5903,8 +6222,7 @@ function app(){ return {
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
 
-  // ---- Управление планом: загрузка, переименование, удаление ----
-  async uploadPlan(){
+async uploadPlan(){
     const input=this.$refs.planFileInput;
     const file=input && input.files && input.files[0];
     this.planUploadError='';
@@ -5929,7 +6247,8 @@ function app(){ return {
     }catch(e){ this.planUploadError='Ошибка: '+e; }
     this.planUploadBusy=false;
   },
-  async renamePlanPrompt(){
+
+async renamePlanPrompt(){
     if(!this.planCurrent) return;
     const name=prompt('Новое имя плана', this.planCurrent.name);
     if(!name || !name.trim()) return;
@@ -5944,7 +6263,8 @@ function app(){ return {
       await this.selectPlan(this.planCurrentId);
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
-  async setDefaultPlan(){
+
+async setDefaultPlan(){
     if(!this.planCurrent) return;
     try{
       const r=await fetch(`/api/plans/${this.planCurrent.id}`,
@@ -5955,7 +6275,8 @@ function app(){ return {
       await this.loadPlanList();
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
-  async confirmDeletePlanNow(){
+
+async confirmDeletePlanNow(){
     const target=this.planConfirmDeletePlan; this.planConfirmDeletePlan=null;
     if(!target) return;
     try{
@@ -5969,21 +6290,7 @@ function app(){ return {
     }catch(e){ this.showToast('Ошибка: '+e,false); }
   },
 
-  // === План v2 (ТЗ §7): выбор плана, отрисовка фона/элементов/связей,
-  // инспектор по клику, редактирование локальным черновиком (Stage D,
-  // §7.3) — перетаскивание, добавление/удаление элементов и edge_views,
-  // undo/redo, атомарное сохранение через /layout (A35). Формула координат
-  // (lat=H-y, lng=x) в _planV2XyToLatLng ВЕРИФИЦИРОВАНА реальным
-  // leaflet.js в headless-проверке (см. wb_energy_meter/plan_geo_v2.py,
-  // коммит db36c2a) — не менять без повторной проверки.
-  //
-  // ВАЖНО про _planV2RenderBase() vs _planV2RenderItems(): фон и
-  // map.fitBounds() перерисовываются ТОЛЬКО при выборе/загрузке плана
-  // (_planV2RenderBase) — иначе каждое перетаскивание метки сбрасывало бы
-  // масштаб/позицию карты обратно на "показать весь план". Черновик,
-  // drag/add/remove и undo/redo дёргают только _planV2RenderItems()
-  // (метки + линии связей), фон и вид карты не трогают.
-  initPlanV2Map(){
+initPlanV2Map(){
     if(_planV2Map) return;
     const el=this.$refs.planV2Map;
     _planV2Map=L.map(el, {crs:L.CRS.Simple, minZoom:-4, zoomControl:true,
@@ -5994,8 +6301,7 @@ function app(){ return {
     window.addEventListener('resize', ()=>{ if(_planV2Map) _planV2Map.invalidateSize(); });
   },
 
-  // ---- Overview v2 (ТЗ §8.2) ----
-  async openOverviewV2Tab(){
+async openOverviewV2Tab(){
     if(!this.overviewV2Inited){
       this.overviewV2Inited=true;
       const loads=[this.loadOverviewV2Snapshot(), this.loadOverviewV2Groups(),
@@ -6011,7 +6317,8 @@ function app(){ return {
       await Promise.all(loads);
     }
   },
-  async loadValidation(){
+
+async loadValidation(){
     // §8.2/§13 (партия 3, задача 4): сводка незавершённой настройки —
     // сервер уже отсортировал issues по влиянию (no_meter впереди no_plan
     // и т.п., см. _VALIDATION_IMPACT_RANK в api_v2.py), на фронте порядок
@@ -6027,14 +6334,16 @@ function app(){ return {
       this.validationLoading=false;
     }
   },
-  validationIssueLabel(kind){
+
+validationIssueLabel(kind){
     return {
       no_meter:'нет прибора', no_location:'нет места', no_group:'нет группы',
       no_plan:'не размещена на плане', node_without_edges:'узел изолирован',
       edge_without_measurement:'связь без измерения',
     }[kind] || kind;
   },
-  async loadOverviewV2Groups(){
+
+async loadOverviewV2Groups(){
     // Корневые группы (parent_id=null) + их ЭФФЕКТИВНЫЙ состав
     // (GroupRepoV2.resolve_effective_members на бэкенде -- сама группа +
     // все дочерние, дедуплицировано по точке). Не критично для остального
@@ -6060,7 +6369,8 @@ function app(){ return {
       this.overviewV2GroupsError=`Не удалось загрузить группы: ${e.message}`;
     }
   },
-  overviewV2BranchRows(){
+
+overviewV2BranchRows(){
     // ТЗ §8.2 "Распределение 1 уровня": по каждой корневой группе -- сумма
     // ТЕКУЩЕГО снимка (не период-баланс) по её эффективному составу.
     // ВАЖНО: это информационная разбивка по веткам, а не компоненты
@@ -6088,7 +6398,8 @@ function app(){ return {
       };
     });
   },
-  overviewV2UngroupedCount(){
+
+overviewV2UngroupedCount(){
     // Точки снимка, не входящие НИ В ОДНУ корневую группу (по любому
     // пути) -- индикатор полноты структуры, не "небаланс" (для него
     // нужен проверенный balance-scope, не просто сумма по составу).
@@ -6100,7 +6411,8 @@ function app(){ return {
     }
     return this.overviewV2Snapshot.points.filter(p=>!grouped.has(p.point_id)).length;
   },
-  async loadOverviewV2Snapshot(){
+
+async loadOverviewV2Snapshot(){
     const shouldShowLoading=!this.overviewV2Snapshot;
     if(shouldShowLoading) this.overviewV2Loading=true;
     try{
@@ -6115,7 +6427,8 @@ function app(){ return {
       this.overviewV2Loading=false;
     }
   },
-  overviewV2TotalPowerKw(){
+
+overviewV2TotalPowerKw(){
     // ТЗ A10: точка с настоящим нулевым чтением ("исправна, но нагрузки
     // нет") — это 0, а не "нет данных". Отличаем по наличию хотя бы
     // одного НЕ-null значения, а не по знаку суммы (сумма из одних
@@ -6125,13 +6438,15 @@ function app(){ return {
     if(known.length===0) return null;
     return known.reduce((sum,p)=>sum+p.power_w, 0)/1000;
   },
-  overviewV2TotalEnergyKwh(){
+
+overviewV2TotalEnergyKwh(){
     if(!this.overviewV2Snapshot || !this.overviewV2Snapshot.points) return null;
     const known=this.overviewV2Snapshot.points.filter(p=>p.energy_total_kwh!=null);
     if(known.length===0) return null;
     return known.reduce((sum,p)=>sum+p.energy_total_kwh, 0);
   },
-  overviewV2Problems(){
+
+overviewV2Problems(){
     if(!this.overviewV2Snapshot || !this.overviewV2Snapshot.points) return [];
     const probs=[];
     for(const p of this.overviewV2Snapshot.points){
@@ -6144,8 +6459,7 @@ function app(){ return {
     return probs;
   },
 
-  // ---- Итог объекта за период (ТЗ §8.2, партия 2 задача 2) ----
-  _ovDefaultDates(){
+_ovDefaultDates(){
     // По умолчанию — с начала текущего месяца по сегодня (без сегодняшнего
     // дня целиком, т.к. `to` — конец полуоткрытого периода [from,to)).
     const today=new Date();
@@ -6153,7 +6467,8 @@ function app(){ return {
     const fmt=d=>d.toISOString().slice(0,10);
     return {from: fmt(first), to: fmt(today)};
   },
-  async initOvAccounting(){
+
+async initOvAccounting(){
     if(!this.ovFrom || !this.ovTo){
       const d=this._ovDefaultDates();
       this.ovFrom=d.from; this.ovTo=d.to;
@@ -6161,7 +6476,8 @@ function app(){ return {
     await this._loadOvPointNames();
     await this.loadOvSummary();
   },
-  async _loadOvPointNames(){
+
+async _loadOvPointNames(){
     // Имена точек для disclosure/раздельных строк при конфликте (A04) —
     // не критично для остального блока, при ошибке просто покажем "#id".
     if(Object.keys(this.ovPointNames).length>0) return;
@@ -6174,8 +6490,10 @@ function app(){ return {
       this.ovPointNames=names;
     }catch(e){ /* необязательно */ }
   },
-  ovPointName(id){ return this.ovPointNames[id] || ('#'+id); },
-  async loadOvSummary(){
+
+ovPointName(id){ return this.ovPointNames[id] || ('#'+id); },
+
+async loadOvSummary(){
     // Даты <input type=date> ("YYYY-MM-DD") принимаются backend'ом
     // напрямую (periods.py::parse_user_datetime) — конвертация в unix
     // делается на сервере, здесь не нужна.
@@ -6210,7 +6528,8 @@ function app(){ return {
       this.ovLoading=false;
     }
   },
-  async _loadOvDataStateHelpers(){
+
+async _loadOvDataStateHelpers(){
     // snapshot даёт "нет прибора" (binding_status==='unbound') и "нет
     // связи" (устройство не отвечает/устарело); archived_at из
     // points?include_archived=1 даёт "архив". Best-effort — если что-то
@@ -6226,7 +6545,8 @@ function app(){ return {
       if(pr.ok){ (await pr.json()).forEach(p=>{ if(p.archived_at!=null) this._ovArchivedIds.add(p.id); }); }
     }catch(e){ /* см. комментарий выше — best-effort */ }
   },
-  ovPointDataStateLabel(pid){
+
+ovPointDataStateLabel(pid){
     if((this._ovArchivedIds||new Set()).has(pid)) return 'архив';
     const snap = (this._ovSnapshotById||{})[pid];
     if(!snap) return 'нет данных';
@@ -6234,10 +6554,12 @@ function app(){ return {
     if(['no_connection','never_seen','unknown'].includes(snap.device_status)) return 'нет связи';
     return 'нет данных';
   },
-  ovToggleDisclosure(key){
+
+ovToggleDisclosure(key){
     this.ovDisclosureOpen={...this.ovDisclosureOpen, [key]: !this.ovDisclosureOpen[key]};
   },
-  ovGoConfigureBoundary(){
+
+ovGoConfigureBoundary(){
     // §8.2: "без назначенного ввода — действие 'Настроить границу
     // объекта'". Партия 5: раньше вело на План v2 — но там нельзя
     // завести НОВЫЙ узел/связь, только разместить уже существующие (см.
@@ -6247,8 +6569,7 @@ function app(){ return {
     this.openCreatePanel('node');
   },
 
-  // ---- Отчёты v2 (ТЗ §8.4, партия 2 задача 3) ----
-  async openReportsV2Tab(){
+async openReportsV2Tab(){
     if(!this.rv2From || !this.rv2To){
       const d=this._ovDefaultDates();  // тот же дефолт периода, что и у "Итог объекта за период"
       this.rv2From=d.from; this.rv2To=d.to;
@@ -6259,7 +6580,8 @@ function app(){ return {
       await this._loadRv2Options();
     }
   },
-  async _loadRv2Options(){
+
+async _loadRv2Options(){
     // Списки для пикера состава (точка/группа/граница баланса) —
     // необязательно для самого расчёта, при ошибке пикеры просто пустые.
     try{
@@ -6270,13 +6592,15 @@ function app(){ return {
       this.rv2BalanceScopes = br.ok ? await br.json() : [];
     }catch(e){ /* необязательно */ }
   },
-  rv2ScopeOptions(){
+
+rv2ScopeOptions(){
     if(this.rv2Dimension==='point') return this.rv2Points.map(p=>({id:p.id, label:(p.name||p.code)}));
     if(this.rv2Dimension==='group') return this.rv2Groups.map(g=>({id:g.id, label:g.name}));
     if(this.rv2Dimension==='balance_scope') return this.rv2BalanceScopes.map(s=>({id:s.id, label:s.name}));
     return [];
   },
-  async runRv2Query(){
+
+async runRv2Query(){
     if(!this.rv2From || !this.rv2To) return;
     if(this.rv2Dimension!=='branch' && this.rv2ScopeIds.length===0){
       this.rv2Error='Выберите хотя бы один элемент состава'; this.rv2Result=null; return;
@@ -6304,7 +6628,8 @@ function app(){ return {
       this.rv2Loading=false;
     }
   },
-  downloadRv2Csv(){
+
+downloadRv2Csv(){
     // A45: csvCell() уже нейтрализует префиксы формул (=+-@) — те же
     // правила, что и в существующих выгрузках v1. Числа НЕ идут через
     // csvCell (пишутся как есть, округлённые до 3 знаков — то же
@@ -6351,22 +6676,13 @@ function app(){ return {
     a.click();
   },
 
-  // ------------------------------------------------------------------
-  // Структура/инспектор (ТЗ §8.3, партия 3, задача 1). openInspector —
-  // единственная точка входа, которой пользуются также План v2, Отчёты
-  // и «Требует внимания» на Обзоре: переключает на эту вкладку и грузит
-  // карточку, поэтому инспектор гарантированно один и тот же везде (ТЗ:
-  // "тот же инспектор... открывается идентично из плана, дерева, отчёта
-  // и списка проблем"). Сам инспектор ничего не считает — только читает
-  // уже существующие ручки v2 (см. докстринг v2_structure_points и
-  // модульный докстринг в api_v2.py).
-  // ------------------------------------------------------------------
-  async openStructureTab(){
+async openStructureTab(){
     if(this.structInited) return;
     this.structInited=true;
     await this._loadStructureLists();
   },
-  async _loadStructureLists(){
+
+async _loadStructureLists(){
     this.structLoading=true; this.structError=null;
     try{
       const [pr, lr, gr, nr, er] = await Promise.all([
@@ -6396,7 +6712,8 @@ function app(){ return {
       this.structLoading=false;
     }
   },
-  async _loadStructureSnapshot(){
+
+async _loadStructureSnapshot(){
     // Метрики центра/списка (мощность, статус) — из общего снимка,
     // ничего не пересчитывается здесь (см. модульный докстринг
     // v2_snapshot в api_v2.py).
@@ -6407,10 +6724,12 @@ function app(){ return {
       (d.points||[]).forEach(p=>{ this._structSnapshotById[p.point_id]=p; });
     }catch(e){ this._structSnapshotById = this._structSnapshotById||{}; }
   },
-  structSnapshotFor(pointId){
+
+structSnapshotFor(pointId){
     return (this._structSnapshotById||{})[pointId] || null;
   },
-  async structureSearch(){
+
+async structureSearch(){
     // A02: поиск по имени/коду/MQTT ID/серийнику/пути через
     // /api/v2/structure/points?q= — сервер уже фильтрует и не прячет
     // непривязанные/неразмещённые точки. _structSearchSeq защищает от
@@ -6430,16 +6749,14 @@ function app(){ return {
       }
     }catch(e){ /* поиск best-effort, не валим экран */ }
   },
-  // Партия 6, задача 3 (§4): переименование/архивация места без ухода
-  // с экрана «Структура». Раньше эти операции не были доступны из
-  // интерфейса вообще (LocationRepo.update_fields — тоже эта партия,
-  // см. location_repo.py).
-  openLocationEdit(locId){
+
+openLocationEdit(locId){
     const loc = (this.structLocations||[]).find(l=>l.id===locId);
     if(!loc) return;
     this.locEditForm = {id: locId, name: loc.name, code: loc.code||'', saving:false, error:null};
   },
-  async saveLocationEdit(){
+
+async saveLocationEdit(){
     const f = this.locEditForm;
     if(!f) return;
     f.saving = true; f.error = null;
@@ -6455,7 +6772,8 @@ function app(){ return {
     }catch(e){ f.error = e.message; }
     finally{ f.saving = false; }
   },
-  async archiveSelectedLocation(){
+
+async archiveSelectedLocation(){
     const f = this.locEditForm;
     if(!f) return;
     f.saving = true; f.error = null;
@@ -6473,7 +6791,8 @@ function app(){ return {
     }catch(e){ f.error = e.message; }
     finally{ if(this.locEditForm) this.locEditForm.saving = false; }
   },
-  structLocationRows(){
+
+structLocationRows(){
     // Плоский отсортированный список мест с отступом по глубине —
     // визуально дерево, без рекурсивных Alpine-компонентов (тот же приём,
     // что и остальной интерфейс — минимум магии в разметке).
@@ -6495,47 +6814,52 @@ function app(){ return {
     walk('root', 0);
     return rows;
   },
-  _structPointCountsByLocation(){
+
+_structPointCountsByLocation(){
     const counts = {};
     (this.structPoints||[]).forEach(p=>{
       if(p.location_id!=null) counts[p.location_id]=(counts[p.location_id]||0)+1;
     });
     return counts;
   },
-  structUnplacedPoints(){
+
+structUnplacedPoints(){
     // §8.3: "непривязанные/неразмещённые точки — в отдельной доступной
     // коллекции, никогда не пропадают молча" — этот бакет и есть та
     // коллекция для мест (по прибору — badge "не привязана" в списке).
     return (this.structPoints||[]).filter(p=>p.location_id==null);
   },
-  structCenterTitle(){
+
+structCenterTitle(){
     if(this.structQuery.trim()!=='') return `Результаты поиска «${this.structQuery.trim()}»`;
     if(this.structSelectedLocationId==='unplaced') return 'Точки без места установки';
     if(this.structSelectedLocationId==null) return 'Выберите место слева';
     const loc = (this.structLocations||[]).find(l=>l.id===this.structSelectedLocationId);
     return loc ? ('Место: '+loc.name) : '';
   },
-  structCenterPoints(){
+
+structCenterPoints(){
     if(this.structQuery.trim()!=='') return this._structSearchResults || [];
     if(this.structSelectedLocationId==='unplaced') return this.structUnplacedPoints();
     if(this.structSelectedLocationId==null) return [];
     return (this.structPoints||[]).filter(p=>p.location_id===this.structSelectedLocationId);
   },
-  structPeriodLabel(){
+
+structPeriodLabel(){
     const d=this._ovDefaultDates();
     return `Период: ${d.from} — ${d.to} (текущий месяц, как на Обзоре)`;
   },
-  structNodeKindLabel(kind){
+
+structNodeKindLabel(kind){
     return {source:'Ввод', panel:'Щит', junction:'Узел', load:'Нагрузка'}[kind]||kind;
   },
-  structNodeName(nodeId){
+
+structNodeName(nodeId){
     const n=(this.structNodes||[]).find(x=>x.id===nodeId);
     return n ? (n.name||n.code||('#'+nodeId)) : ('#'+nodeId);
   },
-  // Партия 6, задача 3 (§4: "показать чего не хватает" в списке точек).
-  // Партия 8, этап A: «не указано питание» (простой режим) заменено на
-  // «не стоит на линии» по measured_edge_id (топология «Плана v3»).
-  structMissingInfo(p){
+
+structMissingInfo(p){
     const missing=[];
     if(!p.bound) missing.push('нет прибора');
     if(!p.location_id) missing.push('нет места');
@@ -6543,64 +6867,27 @@ function app(){ return {
     if(!p.placed_on_plan) missing.push('не на плане');
     return missing;
   },
-  structPointName(pointId){
+
+structPointName(pointId){
     const p=(this.structPoints||[]).find(x=>x.point_id===pointId);
     return p ? (p.name||p.code||('#'+pointId)) : ('#'+pointId);
   },
-  // Э3/B4: правая панель «Плана v3», когда ничего не выбрано —
-  // «Узлы»/«Точки учёта»/«Приборы без точки учёта» нужны эти три
-  // хелпера, чтобы не дублировать логику фильтрации внутри разметки.
-  planV3NodePlaced(nodeId){
-    return !!(this.planV3Current && this.planV3Current.items || [])
-      .find(it=>it.kind==='node' && it.node_id===nodeId);
-  },
-  planV3PointOnLine(pointId){
-    return (this.structEdges||[]).some(e=>e.primary_point_id===pointId);
-  },
-  // «Приборы из _loadKnownDevices(), у которых нет открытой основной
-  // привязки» (Э3/B4) — structPoints уже несёт meter_device_id для
-  // каждой ТОЧКИ с открытой привязкой (bound:true, см. api_v2.py::
-  // v2_structure_points); прибор "занят", если его device_id встретился
-  // хоть у одной такой точки.
-  planV3DevicesWithoutPoint(){
-    const bound=new Set((this.structPoints||[])
-      .filter(p=>p.bound && p.meter_device_id)
-      .map(p=>p.meter_device_id));
-    return (this.structKnownDevices||[]).filter(d=>!bound.has(d.device_id));
-  },
-  // Партия 6, задача 6 (баг: "выбор связи на плане v2 не показывает
-  // информацию" — раньше в панели был только 'edge_id: N'). Тянет то же,
-  // что структуре — концы/измерение/кабель — плюс живой ток по точке
-  // измерения и % загрузки от номинального тока (если он задан на
-  // связи). structNodeName/structPointName требуют structNodes/
-  // structPoints — догружаем их (_loadStructureLists), если план v2
-  // открыли, минуя вкладку «Структура».
-  // Партия 6, баг из браузера (§5, index.html~1915/2010): подпись связи
-  // на плане была жёстко "edge_id: N" — не показывала ни имя/код связи,
-  // ни (в простом режиме) "Ввод → ЩР-1" по концам. structEdges грузится
-  // либо этим же openPlanV2Tab, либо уже был загружен вкладкой
-  // «Структура» — если связь ещё не найдена (структура ещё грузится),
-  // временно показываем "Связь #N", а не падаем.
-  planV2EdgeViewLabel(v){
+
+planV2EdgeViewLabel(v){
     const e=(this.structEdges||[]).find(x=>x.id===v.edge_id);
     if(!e) return 'Связь #'+v.edge_id;
     if(e.name) return e.name;
     if(e.code) return e.code;
     return this.structNodeName(e.from_node_id)+' → '+this.structNodeName(e.to_node_id);
   },
-  async _planV2SelectEdgeView(v){
+
+async _planV2SelectEdgeView(v){
     this.planV2SelectedItem=null;
     this.planV2SelectedEdgeView=v;
     this._planV2LoadEdgeInfo(v.edge_id);
   },
-  // Общий хелпер (партия 6 «План v2» — карточка связи; партия 7, Этап 3,
-  // Э3/B5 — карточка линии «Плана v3»): живой ток (худшая, то есть
-  // максимальная, фаза — именно она определяет реальную загрузку
-  // кабеля/автомата, не среднее) и % загрузки от rated_current_a по
-  // точке измерения линии. Раньше расчёт был только внутри
-  // _planV2LoadEdgeInfo — вынесено сюда, чтобы карточка линии «Плана
-  // v3» не писала то же самое второй раз иначе.
-  async _planEdgeLiveMetrics(edge){
+
+async _planEdgeLiveMetrics(edge){
     if(!edge || edge.primary_point_id==null) return {currentA:null, loadPct:null, phases:null};
     try{
       const sr=await fetch('/api/v2/snapshot?point_ids='+edge.primary_point_id);
@@ -6616,7 +6903,8 @@ function app(){ return {
       return {currentA, loadPct, phases:cur, power_w: point.power_w};
     }catch(e){ return {currentA:null, loadPct:null, phases:null}; }
   },
-  async _planV2LoadEdgeInfo(edgeId){
+
+async _planV2LoadEdgeInfo(edgeId){
     this.planV2EdgeInfo={loading:true, edgeId};
     try{
       if(!this.structInited){ this.structInited=true; await this._loadStructureLists(); }
@@ -6631,10 +6919,12 @@ function app(){ return {
       this.planV2EdgeInfo={loading:false, edgeId, error:'Не удалось загрузить связь: '+e.message};
     }
   },
-  structNodeEdges(nodeId){
+
+structNodeEdges(nodeId){
     return (this.structEdges||[]).filter(e=>e.from_node_id===nodeId || e.to_node_id===nodeId);
   },
-  structFeed(pointId){
+
+structFeed(pointId){
     // "Чем питается / что питает" (§8.3): связи, где ЭТА точка назначена
     // измерением (primary_point_id), и соседние сегменты по уже
     // опубликованной схеме сети (черновики сюда не попадают — они ещё не
@@ -6648,10 +6938,8 @@ function app(){ return {
     });
     return {measuredEdges};
   },
-  // Партия 8, этап A: простой режим (партия 6) удалён целиком — вместо
-  // формы «это ввод»/«питается от» и записи через PATCH points/<id>
-  // осталось только сохранение свободного текстового описания.
-  async submitPointDescription(){
+
+async submitPointDescription(){
     if(!this.structInspector || this.structInspector.kind!=='point') return;
     try{
       const rev = await this._structCurrentRev();
@@ -6667,7 +6955,8 @@ function app(){ return {
       await this._loadStructureLists();
     }catch(e){ this.showToast('Ошибка сети: '+e, false); }
   },
-  async simpleAddToGroup(groupId){
+
+async simpleAddToGroup(groupId){
     if(!groupId || !this.structInspector) return;
     try{
       const rev = await this._structCurrentRev();
@@ -6680,7 +6969,8 @@ function app(){ return {
       await this._loadPointInspector(this.structInspector.id);
     }catch(e){ this.showToast('Ошибка сети: '+e, false); }
   },
-  async simpleRemoveFromGroup(groupId){
+
+async simpleRemoveFromGroup(groupId){
     if(!this.structInspector) return;
     try{
       const rev = await this._structCurrentRev();
@@ -6690,23 +6980,21 @@ function app(){ return {
       await this._loadPointInspector(this.structInspector.id);
     }catch(e){ this.showToast('Ошибка сети: '+e, false); }
   },
-  async openInspector(kind, id){
+
+async openInspector(kind, id){
     if(id==null) return;
     if(this.tab!=='structurev2'){ this.tab='structurev2'; }
     if(!this.structInited){ this.structInited=true; await this._loadStructureLists(); }
     await this._loadInspectorData(kind, id);
   },
-  // «План v3», рефакторинг: то же самое, что openInspector, но БЕЗ
-  // переключения вкладки на 'structurev2' — карточка узла/связи должна
-  // остаться на месте, на плане v3 (§0 задания: "не уходить с экрана").
-  // Существующие вызовы openInspector (Обзор/Отчёты/План v2/Структура)
-  // не затронуты — вся их логика цела, только вынесена в общий хелпер.
-  async openInspectorInPlace(kind, id){
+
+async openInspectorInPlace(kind, id){
     if(id==null) return;
     if(!this.structInited){ this.structInited=true; await this._loadStructureLists(); }
     await this._loadInspectorData(kind, id);
   },
-  async _loadInspectorData(kind, id){
+
+async _loadInspectorData(kind, id){
     this.structInspector = {kind, id, data:null};
     this.structInspectorLoading = true; this.structInspectorError = null;
     try{
@@ -6721,8 +7009,10 @@ function app(){ return {
       this.structInspectorLoading = false;
     }
   },
-  closeInspector(){ this.structInspector=null; this.structInspectorError=null; },
-  async _loadPointInspector(id){
+
+closeInspector(){ this.structInspector=null; this.structInspectorError=null; },
+
+async _loadPointInspector(id){
     const period=this._ovDefaultDates();
     const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
     const [pointR, snapR, bindingsR, groupsR] = await Promise.all([
@@ -6770,7 +7060,8 @@ function app(){ return {
       if(r.ok) this.structInspector.consumption = await r.json();
     }catch(e){ /* не критично для остальной карточки */ }
   },
-  async _loadGroupInspector(id){
+
+async _loadGroupInspector(id){
     // §8.3: у группы вместо атрибутов прибора — состав и сумма/качество.
     const period=this._ovDefaultDates();
     const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
@@ -6793,7 +7084,8 @@ function app(){ return {
       }catch(e){ /* сумма необязательна для остальной карточки */ }
     }
   },
-  async _loadNodeInspector(id){
+
+async _loadNodeInspector(id){
     const r = await fetch('/api/v2/topology/nodes/'+id);
     if(!r.ok) throw new Error('узел не найден (HTTP '+r.status+')');
     const data = await r.json();
@@ -6826,7 +7118,8 @@ function app(){ return {
       this._planV3LoadNodeBalance(id);
     }
   },
-  async _loadEdgeInspector(id){
+
+async _loadEdgeInspector(id){
     const r = await fetch('/api/v2/topology/edges/'+id);
     if(!r.ok) throw new Error('связь не найдена (HTTP '+r.status+')');
     const data = await r.json();
@@ -6844,190 +7137,34 @@ function app(){ return {
     this.planV3EdgeCardError=null;
     this.planV3AttachEdgeId=null; this.planV3AttachDeviceId=''; this.planV3AttachError=null;
   },
-  // Э3/B5: сохранить имя/номинальный ток/кабель линии одним PATCH —
-  // раньше эти поля вообще не принимались бэкендом (см. api_v2.py).
-  async planV3SaveEdgeCard(){
-    if(!this.structInspector || this.structInspector.kind!=='edge') return;
-    this.planV3EdgeCardError=null;
-    const id=this.structInspector.id;
-    const ratedRaw=(this.structInspector.ratedDraft||'').toString().trim();
-    try{
-      const rev=await this._structCurrentRev();
-      const r=await fetch('/api/v2/topology/edges/'+id, {
-        method:'PATCH', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({
-          name: this.structInspector.nameDraft || null,
-          rated_current_a: ratedRaw==='' ? null : Number(ratedRaw),
-          cable_note: this.structInspector.cableDraft || null,
-          expected_revision: rev,
-        })});
-      const d=await r.json();
-      if(!r.ok){ this.planV3EdgeCardError=this._apiErrorMessage(d, r.status); return; }
-      this.showToast('Линия обновлена', true);
-      await this._loadStructureLists();
-      if(this.planV3Current) await this.reloadPlanV3Items();
-      else await this.openInspectorInPlace('edge', id);
-    }catch(e){ this.planV3EdgeCardError='Ошибка сети: '+e; }
-  },
-  // Э3/B8: «＋ Новая точка из прибора…» — инлайн-форма в карточке линии
-  // и в списке линий узла (см. planV3ToggleAttachForm ниже).
-  planV3ToggleAttachForm(edgeId){
-    this.planV3AttachEdgeId = this.planV3AttachEdgeId===edgeId ? null : edgeId;
-    this.planV3AttachDeviceId=''; this.planV3AttachError=null;
-  },
-  async planV3AttachNewPointSubmit(edgeId){
-    const deviceId=(this.planV3AttachDeviceId||'').trim();
-    if(!deviceId){ this.planV3AttachError='Укажите device_id прибора'; return; }
-    this.planV3AttachError=null;
-    try{
-      const rev=await this._structCurrentRev();
-      const r=await fetch('/api/v2/topology/edges/'+edgeId+'/attach-new-point', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({device_id: deviceId, expected_revision: rev})});
-      const d=await r.json();
-      if(!r.ok){ this.planV3AttachError=this._apiErrorMessage(d, r.status); return; }
-      const pointName=d.point ? (d.point.name||d.point.code) : '';
-      this.showToast(
-        d.attached==='already' ? 'Уже подключена ('+pointName+')'
-                                : 'Точка «'+pointName+'» подключена и поставлена на линию',
-        true);
-      this.planV3AttachEdgeId=null; this.planV3AttachDeviceId='';
-      await this._loadStructureLists();
-      this._planV3RenderItems();
-      if(this.structInspector){
-        await this.openInspectorInPlace(this.structInspector.kind, this.structInspector.id);
-      }
-    }catch(e){ this.planV3AttachError='Ошибка сети: '+e; }
-  },
-  // Э3/B7, "P-now": снимок одним запросом по всем точкам линий узла
-  // разом (не по одной, как _planEdgeLiveMetrics — там для ОДНОЙ линии).
-  // Дешёвая, живая часть — дёргается и при открытии карточки, и на
-  // каждый тик существующего 5-секундного таймера (_planV3PollLiveCard
-  // ниже), пока карточка узла открыта на «Плане v3».
-  async _planV3RefreshNodeLiveNow(){
-    if(!this.structInspector || this.structInspector.kind!=='node') return;
-    const nodeId=this.structInspector.id;
-    const pointIds=[...new Set((this.structInspector.lines||[])
-      .filter(l=>l.primary_point_id!=null).map(l=>l.primary_point_id))];
-    if(!pointIds.length) return;
-    try{
-      const r=await fetch('/api/v2/snapshot?point_ids='+pointIds.join(','));
-      if(!r.ok) return;
-      const pts=(await r.json()).points||[];
-      if(!this.structInspector || this.structInspector.kind!=='node' || this.structInspector.id!==nodeId) return;
-      const live={};
-      pts.forEach(p=>{ live[p.point_id]={power_w:p.power_w, current_a:p.current_a}; });
-      this.structInspector.lineLive=live;
-    }catch(e){ /* необязательно — просто не покажем P-now */ }
-  },
-  // "E-за-период" по каждой линии — та же формула, что и везде в отчётах
-  // (reports/query, dimension="point"; A43 — одно и то же число, не своя
-  // отдельная формула для карточки узла), период — как на «Обзоре»
-  // (ovFrom/ovTo). Один раз при открытии карточки — это агрегат за
-  // период, а не живое значение, гонять его на каждый тик 5с таймера
-  // незачем и дорого для БД.
-  async _planV3LoadNodeLineEnergy(){
-    if(!this.structInspector || this.structInspector.kind!=='node') return;
-    const nodeId=this.structInspector.id;
-    const pointIds=[...new Set((this.structInspector.lines||[])
-      .filter(l=>l.primary_point_id!=null).map(l=>l.primary_point_id))];
-    if(!pointIds.length) return;
-    if(!this.ovFrom || !this.ovTo){
-      const d=this._ovDefaultDates(); this.ovFrom=this.ovFrom||d.from; this.ovTo=this.ovTo||d.to;
-    }
-    try{
-      const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
-      const r=await fetch('/api/v2/reports/query', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({dimension:'point', scope_ids:pointIds,
-                               from:this.ovFrom, to:this.ovTo, timezone:tz})});
-      if(!r.ok) return;
-      const rows=(await r.json()).rows||[];
-      if(!this.structInspector || this.structInspector.kind!=='node' || this.structInspector.id!==nodeId) return;
-      const energy={};
-      rows.forEach(row=>{ energy[row.id]=row.result; });
-      this.structInspector.lineEnergy=energy;
-    }catch(e){ /* необязательно */ }
-  },
-  // Э3/B7: «Баланс щита» — тот же расчёт (Э2.5, overview_service.
-  // balance_node через /api/v2/topology/nodes/<id>/balance), который
-  // видел бы этот щит, будь он единственным объектом; период — тот же,
-  // что выбран на «Обзоре» (ovFrom/ovTo) — не переспрашиваем даты
-  // второй раз в карточке узла.
-  async _planV3LoadNodeBalance(nodeId){
-    if(!this.ovFrom || !this.ovTo){
-      const d=this._ovDefaultDates(); this.ovFrom=this.ovFrom||d.from; this.ovTo=this.ovTo||d.to;
-    }
-    if(this.structInspector && this.structInspector.id===nodeId) this.structInspector.balanceLoading=true;
-    try{
-      const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
-      const r=await fetch('/api/v2/topology/nodes/'+nodeId+'/balance', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({from:this.ovFrom, to:this.ovTo, timezone:tz})});
-      const d=await r.json();
-      if(!this.structInspector || this.structInspector.kind!=='node' || this.structInspector.id!==nodeId) return;
-      this.structInspector.balanceLoading=false;
-      if(!r.ok){ this.structInspector.balanceError=this._apiErrorMessage(d, r.status); this.structInspector.balance=null; return; }
-      this.structInspector.balance=d; this.structInspector.balanceError=null;
-    }catch(e){
-      if(this.structInspector && this.structInspector.kind==='node' && this.structInspector.id===nodeId){
-        this.structInspector.balanceLoading=false;
-        this.structInspector.balanceError='Ошибка сети: '+e;
-      }
-    }
-  },
-  // Э3/B7: "новый таймер не заводить" — используется существующий
-  // 5-секундный (см. this._timer=setInterval выше, ветка
-  // if(this.tab=='planv3')). Опрашиваем ТОЛЬКО точки уже открытой
-  // карточки — не весь снимок, чтобы не грузить сервер зря, когда
-  // карточка вообще не открыта.
-  async _planV3PollLiveCard(){
-    if(!this.structInspector) return;
-    if(this.structInspector.kind==='edge'){
-      const edgeId=this.structInspector.id;
-      const {currentA, loadPct, phases, power_w}=await this._planEdgeLiveMetrics(this.structInspector.data);
-      if(this.structInspector && this.structInspector.kind==='edge' && this.structInspector.id===edgeId){
-        this.structInspector.currentA=currentA; this.structInspector.loadPct=loadPct;
-        this.structInspector.phases=phases; this.structInspector.power_w=power_w;
-      }
-    } else if(this.structInspector.kind==='node'){
-      await this._planV3RefreshNodeLiveNow();
-    }
-  },
 
-  // ------------------------------------------------------------------
-  // Заведение структуры (партия 5, задача 1): панель с пятью формами —
-  // место, точка (+ привязка к прибору), узел сети, связь, публикация.
-  // Каждая форма — тонкая обёртка над уже существующим (или новым,
-  // POST points/<id>/bindings) маршрутом /api/v2, с явным
-  // expected_revision. При конфликте ревизии (409) НЕ повторяем запрос
-  // автоматически — только показываем понятный текст, чтобы не
-  // затереть чужие изменения (ТЗ §4: "на конфликте — понятный текст без
-  // перезаписи").
-  // ------------------------------------------------------------------
-  openCreatePanel(kind){
+openCreatePanel(kind){
     this.structCreatePanel = kind;
     this.structCreateError = null;
     this.structCreateOk = null;
     if(kind==='point' && !this.structKnownDevicesLoaded) this._loadKnownDevices();
     if(kind==='publish') this._loadDraftEdges();
   },
-  closeCreatePanel(){
+
+closeCreatePanel(){
     this.structCreatePanel = null; this.structCreateError = null; this.structCreateOk = null;
   },
-  async _structCurrentRev(){
+
+async _structCurrentRev(){
     const r = await fetch('/api/v2/revision');
     const d = await r.json();
     return d.configuration_revision;
   },
-  _apiErrorMessage(d, status){
+
+_apiErrorMessage(d, status){
     if(d && d.code==='revision_conflict'){
       return 'Конфигурацию кто-то изменил, пока была открыта форма — '+
              'ничего не перезаписано. Обновите форму и повторите: '+(d.message||'');
     }
     return (d && d.message) || ('HTTP '+status);
   },
-  async _loadKnownDevices(){
+
+async _loadKnownDevices(){
     // Тот же список приборов, что и классическая «Настройки» → «Добавить
     // счётчик» (registry/meters — уже зарегистрированные, meters/unregistered
     // — видны в MQTT, но ещё не в реестре) — партия 5 не заводит новый
@@ -7054,7 +7191,8 @@ function app(){ return {
     }catch(e){ this.structKnownDevices = []; }
     this.structKnownDevicesLoaded = true;
   },
-  async _loadDraftEdges(){
+
+async _loadDraftEdges(){
     try{
       const r = await fetch('/api/v2/topology/edges'); // по умолчанию state=draft
       this.structDraftEdges = r.ok ? (await r.json()) : [];
@@ -7062,7 +7200,8 @@ function app(){ return {
       this.publishValidation = null;
     }catch(e){ this.structDraftEdges = []; }
   },
-  async structSubmitLocation(){
+
+async structSubmitLocation(){
     if(!this.locForm.name.trim()){ this.structCreateError='Введите название места'; return; }
     this.structCreateSaving=true; this.structCreateError=null; this.structCreateOk=null;
     try{
@@ -7081,7 +7220,8 @@ function app(){ return {
     }catch(e){ this.structCreateError = e.message; }
     finally{ this.structCreateSaving=false; }
   },
-  async structSubmitPoint(){
+
+async structSubmitPoint(){
     if(!this.pointForm.code.trim() || !this.pointForm.name.trim()){
       this.structCreateError = 'Код и имя точки обязательны'; return;
     }
@@ -7135,7 +7275,8 @@ function app(){ return {
     }catch(e){ this.structCreateError = e.message; }
     finally{ this.structCreateSaving=false; }
   },
-  async structSubmitNode(){
+
+async structSubmitNode(){
     if(!this.nodeForm.code.trim() || !this.nodeForm.name.trim()){
       this.structCreateError = 'Код и имя узла обязательны'; return;
     }
@@ -7157,7 +7298,8 @@ function app(){ return {
     }catch(e){ this.structCreateError = e.message; }
     finally{ this.structCreateSaving=false; }
   },
-  async structSubmitEdge(){
+
+async structSubmitEdge(){
     if(!this.edgeForm.from_node_id || !this.edgeForm.to_node_id){
       this.structCreateError = 'Выберите оба узла связи'; return;
     }
@@ -7186,7 +7328,8 @@ function app(){ return {
     }catch(e){ this.structCreateError = e.message; }
     finally{ this.structCreateSaving=false; }
   },
-  async structValidatePublish(){
+
+async structValidatePublish(){
     this.structCreateError = null;
     try{
       const r = await fetch('/api/v2/topology/validate', {
@@ -7195,7 +7338,8 @@ function app(){ return {
       this.publishValidation = await r.json();
     }catch(e){ this.structCreateError = e.message; }
   },
-  async structPublish(){
+
+async structPublish(){
     if(!this.publishSelected.length){ this.structCreateError='Нечего публиковать — нет выбранных черновиков'; return; }
     this.structCreateSaving=true; this.structCreateError=null; this.structCreateOk=null;
     try{
@@ -7223,14 +7367,7 @@ function app(){ return {
     finally{ this.structCreateSaving=false; }
   },
 
-  // ------------------------------------------------------------------
-  // Действия карточки инспектора точки (ТЗ §8.3, партия 5, задача 2):
-  // показать на плане / открыть график / заменить прибор / редактировать
-  // принадлежность. Ничего не считает заново — только уже существующие
-  // ручки /api/v2 и уже существующий график классического интерфейса
-  // (openDetail) — задание прямо требует не писать второй график.
-  // ------------------------------------------------------------------
-  async showPointOnPlan(pointId){
+async showPointOnPlan(pointId){
     this.structCreateError = null; this.planPickerChoices = null;
     try{
       const pr = await fetch('/api/v2/plans');
@@ -7255,11 +7392,13 @@ function app(){ return {
       this.planPickerChoices = matches;
     }catch(e){ this.showToast('Ошибка: '+e.message, false); }
   },
-  async goToPlanPickerChoice(choice){
+
+async goToPlanPickerChoice(choice){
     this.planPickerChoices = null;
     await this._planV2GoToItem(choice.plan.id, choice.item.id);
   },
-  async _planV2GoToItem(planId, itemId){
+
+async _planV2GoToItem(planId, itemId){
     this.tab = 'planv2';
     await this.openPlanV2Tab();
     await this.selectPlanV2(planId);
@@ -7274,7 +7413,7 @@ function app(){ return {
     }, 350);
   },
 
-  openReplaceMeterForm(){
+openReplaceMeterForm(){
     if(!this.structKnownDevicesLoaded) this._loadKnownDevices();
     this.replaceMeterForm = {
       mode:'existing_device', device_id:'', display_name:'',
@@ -7283,8 +7422,10 @@ function app(){ return {
     };
     this.editMembershipForm = null;
   },
-  closeReplaceMeterForm(){ this.replaceMeterForm = null; },
-  async submitReplaceMeter(){
+
+closeReplaceMeterForm(){ this.replaceMeterForm = null; },
+
+async submitReplaceMeter(){
     const f = this.replaceMeterForm;
     if(!f.device_id){ f.error = 'Выберите прибор'; return; }
     f.saving = true; f.error = null;
@@ -7308,7 +7449,7 @@ function app(){ return {
     finally{ f.saving = false; }
   },
 
-  openEditMembershipForm(){
+openEditMembershipForm(){
     const cur = this.structInspector.data;
     this.editMembershipForm = {
       installation_location_id: cur.installation_location_id,
@@ -7316,8 +7457,10 @@ function app(){ return {
     };
     this.replaceMeterForm = null;
   },
-  closeEditMembershipForm(){ this.editMembershipForm = null; },
-  async submitEditLocation(){
+
+closeEditMembershipForm(){ this.editMembershipForm = null; },
+
+async submitEditLocation(){
     const f = this.editMembershipForm;
     f.saving = true; f.error = null;
     try{
@@ -7336,7 +7479,8 @@ function app(){ return {
     }catch(e){ f.error = e.message; }
     finally{ f.saving = false; }
   },
-  async addPointToGroup(){
+
+async addPointToGroup(){
     const f = this.editMembershipForm;
     if(!f.add_group_id){ f.error = 'Выберите группу'; return; }
     f.saving = true; f.error = null;
@@ -7352,7 +7496,8 @@ function app(){ return {
     }catch(e){ f.error = e.message; }
     finally{ f.saving = false; }
   },
-  async removePointFromGroup(groupId){
+
+async removePointFromGroup(groupId){
     const f = this.editMembershipForm;
     f.saving = true; f.error = null;
     try{
@@ -7365,7 +7510,7 @@ function app(){ return {
     finally{ f.saving = false; }
   },
 
-  async openPlanV2Tab(){
+async openPlanV2Tab(){
     if(!_planV2Map) this.initPlanV2Map();
     if(!this.planV2Inited){
       this.planV2Inited=true;
@@ -7379,7 +7524,8 @@ function app(){ return {
     }
     this.$nextTick(()=>{ if(_planV2Map) _planV2Map.invalidateSize(); });
   },
-  async loadPlanV2List(){
+
+async loadPlanV2List(){
     this.planV2Loading=true;
     try{
       const r=await fetch('/api/v2/plans');
@@ -7391,7 +7537,8 @@ function app(){ return {
     }catch(e){ console.error(e); }
     this.planV2Loading=false;
   },
-  async selectPlanV2(id){
+
+async selectPlanV2(id){
     if(!id) return;
     // Переключение плана с несохранённым черновиком отменяет черновик —
     // черновик привязан к конкретному плану и его canvas_revision, нести
@@ -7411,30 +7558,35 @@ function app(){ return {
     }catch(e){ console.error(e); return; }
     this._planV2RenderBase();
   },
-  _planV2ResetDraft(){
+
+_planV2ResetDraft(){
     this.planV2Draft={items:{}, edges:{}};
     this.planV2History=[]; this.planV2Future=[];
   },
-  _planV2EffectiveDims(plan){
+
+_planV2EffectiveDims(plan){
     // §7.2: у floor — размеры изображения, у single_line без картинки —
     // логический холст (canvas_width/height). Та же логика, что
     // PlanV2.effective_width/height в plan_service_v2.py.
     if(plan.image_width && plan.image_height) return [plan.image_width, plan.image_height];
     return [plan.canvas_width||2000, plan.canvas_height||1200];
   },
-  _planV2XyToLatLng(x, y, height){
+
+_planV2XyToLatLng(x, y, height){
     return [height - y, x];
   },
-  planV2ItemColor(kind){ return _planV2KindColor(kind); },
-  planV2PendingCount(){
+
+planV2ItemColor(kind){ return _planV2KindColor(kind); },
+
+planV2PendingCount(){
     return Object.keys(this.planV2Draft.items).length + Object.keys(this.planV2Draft.edges).length;
   },
-  planV2NodeLikeItems(){
+
+planV2NodeLikeItems(){
     return this._planV2EffectiveItems().filter(it=>it.kind==='node'||it.kind==='port');
   },
 
-  // --- слияние сервер+черновик для отрисовки/списков (§7.3) ---
-  _planV2EffectiveItems(){
+_planV2EffectiveItems(){
     if(!this.planV2Current) return [];
     const draft=this.planV2Draft.items;
     const out=[];
@@ -7450,7 +7602,8 @@ function app(){ return {
     });
     return out;
   },
-  _planV2EffectiveEdgeViews(){
+
+_planV2EffectiveEdgeViews(){
     if(!this.planV2Current) return [];
     const draft=this.planV2Draft.edges;
     const out=[];
@@ -7467,42 +7620,41 @@ function app(){ return {
     return out;
   },
 
-  // --- undo/redo (§7.3): снимок черновика ДО мутации кладётся в
-  // History, Future очищается при каждом новом действии (обычная
-  // семантика undo-стека — "вернуть" доступно только сразу после
-  // "отменить", не после произвольного нового действия). ---
-  _planV2PushHistory(){
+_planV2PushHistory(){
     this.planV2History.push(JSON.parse(JSON.stringify(this.planV2Draft)));
     if(this.planV2History.length>50) this.planV2History.shift();
     this.planV2Future=[];
   },
-  planV2Undo(){
+
+planV2Undo(){
     if(!this.planV2History.length) return;
     this.planV2Future.push(JSON.parse(JSON.stringify(this.planV2Draft)));
     this.planV2Draft=this.planV2History.pop();
     this.planV2SelectedItem=null; this.planV2SelectedEdgeView=null;
     this._planV2RenderItems();
   },
-  planV2Redo(){
+
+planV2Redo(){
     if(!this.planV2Future.length) return;
     this.planV2History.push(JSON.parse(JSON.stringify(this.planV2Draft)));
     this.planV2Draft=this.planV2Future.pop();
     this.planV2SelectedItem=null; this.planV2SelectedEdgeView=null;
     this._planV2RenderItems();
   },
-  planV2RequestDiscard(){
+
+planV2RequestDiscard(){
     if(this.planV2PendingCount()===0) return;
     this.planV2ConfirmDiscard=true;
   },
-  planV2ConfirmDiscardNow(){
+
+planV2ConfirmDiscardNow(){
     this.planV2ConfirmDiscard=false;
     this._planV2ResetDraft();
     this.planV2SelectedItem=null; this.planV2SelectedEdgeView=null;
     this._planV2RenderItems();
   },
 
-  // --- редактирование: перетаскивание, добавление, удаление ---
-  togglePlanV2Edit(){
+togglePlanV2Edit(){
     this.planV2EditMode=!this.planV2EditMode;
     this.planV2Placing=false;
     if(this.planV2EditMode && !this.planV2PickersLoaded){
@@ -7511,7 +7663,8 @@ function app(){ return {
     }
     this._planV2RenderItems();
   },
-  async _planV2LoadPickers(){
+
+async _planV2LoadPickers(){
     try{
       const [pts, locs, nodes, edgesDraft, edgesPub] = await Promise.all([
         fetch('/api/v2/points').then(r=>r.json()),
@@ -7529,25 +7682,19 @@ function app(){ return {
       this.planV2Edges=Object.values(byId);
     }catch(e){ console.error('planV2: не удалось загрузить справочники для редактирования', e); }
   },
-  // Собирает базовые (сохраняемые) поля элемента — источник истины для
-  // ОБЯЗАТЕЛЬНОГО переноса kind/ссылок/подписи в черновик при первом
-  // касании существующего элемента (drag), чтобы не потерять их при
-  // отправке item_ops (сервер ждёт их в каждом upsert, см.
-  // save_plan_layout в plan_service_v2.py).
-  _planV2BaseItemFields(effItem){
+
+_planV2BaseItemFields(effItem){
     return {kind:effItem.kind, point_id:effItem.point_id ?? null,
             location_id:effItem.location_id ?? null, group_id:effItem.group_id ?? null,
             node_id:effItem.node_id ?? null, target_plan_id:effItem.target_plan_id ?? null,
             label:effItem.label ?? null};
   },
-  // Обратное преобразование leaflet [lat,lng] -> plan_v2 {x,y} (инверсия
-  // _planV2XyToLatLng: [height-y, x] -> [lat,lng]). Общий хелпер для всех
-  // мест, где карта отдаёт координаты кликом/перетаскиванием/рисованием
-  // линии (плейсмент item, drag item, рисование waypoints edge_view).
-  _planV2LatLngToXy(latlng, height){
+
+_planV2LatLngToXy(latlng, height){
     return [latlng.lng, height-latlng.lat];
   },
-  _planV2OnItemDragEnd(effItem, latlng, height){
+
+_planV2OnItemDragEnd(effItem, latlng, height){
     this._planV2PushHistory();
     const key=String(effItem.id);
     const base=this.planV2Draft.items[key] && this.planV2Draft.items[key].op==='upsert'
@@ -7562,7 +7709,8 @@ function app(){ return {
       this._planV2ProposePointLocationIfInside({point_id:effItem.point_id, geometry:{x,y}});
     }
   },
-  planV2RemoveItem(effItem){
+
+planV2RemoveItem(effItem){
     if(!effItem) return;
     this._planV2PushHistory();
     const key=String(effItem.id);
@@ -7582,15 +7730,18 @@ function app(){ return {
     if(this.planV2SelectedItem && this.planV2SelectedItem.id===effItem.id) this.planV2SelectedItem=null;
     this._planV2RenderItems();
   },
-  planV2StartPlace(){
+
+planV2StartPlace(){
     if(!this.planV2AddKind) return;
     if(['point','location','node','port'].includes(this.planV2AddKind) && !this.planV2AddRefId){
       this.showToast('Выберите объект для размещения', false); return;
     }
     this.planV2Placing=true;
   },
-  planV2CancelPlace(){ this.planV2Placing=false; },
-  _planV2OnMapClick(e){
+
+planV2CancelPlace(){ this.planV2Placing=false; },
+
+_planV2OnMapClick(e){
     // Пока идёт рисование линии edge_view (leaflet-geoman) — клики по
     // карте принадлежат geoman (расстановка вершин линии), а не плейсменту
     // новых item; иначе один и тот же клик ставил бы ещё и метку.
@@ -7624,16 +7775,17 @@ function app(){ return {
     }
   },
 
-  // --- edge_views: связи на плане (§7.1/§7.3) ---
-  planV2ToggleAddingEdgeView(){
+planV2ToggleAddingEdgeView(){
     this.planV2AddingEdgeView=!this.planV2AddingEdgeView;
     this.planV2EdgeForm={edgeId:'', fromItemKey:'', toItemKey:''};
   },
-  _planV2ParseItemKey(key){
+
+_planV2ParseItemKey(key){
     if(!key) return null;
     return key.startsWith('new:') ? key : Number(key);
   },
-  planV2SaveEdgeDraft(){
+
+planV2SaveEdgeDraft(){
     const f=this.planV2EdgeForm;
     if(!f.edgeId){ this.showToast('Выберите связь (edge)', false); return; }
     this._planV2PushHistory();
@@ -7648,7 +7800,8 @@ function app(){ return {
     this._planV2RenderItems();
     this.showToast('Связь добавлена в черновик', true);
   },
-  planV2RemoveEdgeView(view){
+
+planV2RemoveEdgeView(view){
     if(!view) return;
     this._planV2PushHistory();
     const key=String(view.id);
@@ -7661,10 +7814,7 @@ function app(){ return {
     this._planV2RenderItems();
   },
 
-  // --- сохранение layout: A35 (ТЗ §13) — 409 при устаревшей
-  // canvas_revision, БЕЗ изменений на сервере, черновик остаётся на
-  // клиенте (пользователь явно решает: обновить план или остаться). ---
-  _planV2BuildLayoutPayload(){
+_planV2BuildLayoutPayload(){
     const itemOps=[]; const idxByKey={};
     Object.entries(this.planV2Draft.items).forEach(([key,rec])=>{
       if(rec.op==='remove'){ itemOps.push({op:'remove', id:Number(key)}); return; }
@@ -7703,7 +7853,8 @@ function app(){ return {
     return {expected_revision:this.planV2Current.canvas_revision,
             item_ops:itemOps, edge_view_ops:edgeViewOps};
   },
-  async planV2SaveLayout(){
+
+async planV2SaveLayout(){
     if(!this.planV2Current || this.planV2PendingCount()===0) return;
     let payload;
     try{ payload=this._planV2BuildLayoutPayload(); }
@@ -7734,27 +7885,25 @@ function app(){ return {
     }
     this.planV2Saving=false;
   },
-  planV2ConfirmDiscardReload(){
+
+planV2ConfirmDiscardReload(){
     this.planV2RevisionConflict=false;
     const id=this.planV2Current.id;
     this._planV2ResetDraft();
     this.selectPlanV2(id);
   },
 
-  // --- edge_views: рисование ломаной (waypoints) через leaflet-geoman ---
-  // (по образцу v1 startZoneDraw/_planOnPmCreate/saveZoneDraw/cancelZoneDraw,
-  // см. выше — та же связка enableDraw/pm:create/getLatLngs). Один и тот же
-  // приём для существующего edge_view (ключ — String(id), число) и ещё не
-  // сохранённого черновичного (ключ 'newedge:N').
-  _planV2BaseEdgeFields(view){
+_planV2BaseEdgeFields(view){
     return {edge_id:view.edge_id, from_item_id:view.from_item_id ?? null,
             to_item_id:view.to_item_id ?? null, view_kind:view.view_kind || 'structural',
             waypoints:view.waypoints ?? null};
   },
-  _planV2CleanupDrawLayer(){
+
+_planV2CleanupDrawLayer(){
     if(_planV2DrawLayer){ try{_planV2Map.removeLayer(_planV2DrawLayer);}catch(e){} _planV2DrawLayer=null; }
   },
-  planV2StartDrawWaypoints(view){
+
+planV2StartDrawWaypoints(view){
     if(!view || this.planV2DrawingEdgeKey!==null || !_planV2Map || !this.planV2EditMode) return;
     this.planV2DrawingEdgeKey=String(view.id);
     this.planV2HasPendingEdgeDraw=false;
@@ -7768,7 +7917,8 @@ function app(){ return {
     if(_planV2Map.doubleClickZoom) _planV2Map.doubleClickZoom.disable();
     _planV2Map.pm.enableDraw('Line', {snappable:true, finishOn:'dblclick'});
   },
-  _planV2OnPmCreate(e){
+
+_planV2OnPmCreate(e){
     if(e.shape==='Line' && this.planV2DrawingEdgeKey!==null){
       if(_planV2DrawLayer){ try{_planV2Map.removeLayer(_planV2DrawLayer);}catch(err){} }
       _planV2DrawLayer=e.layer;
@@ -7805,12 +7955,8 @@ function app(){ return {
       this._planV2ProposeAssignForPointsInPolygon(key);
     }
   },
-  // Партия 6, задача 2 (§3): "когда метка точки попадает внутрь
-  // контура места — ПРЕДЛОЖИТЬ отнести точку к этому месту, с явным
-  // подтверждением, никогда не молча". Только предлагает — пишет
-  // installation_location_id (существующая ручка PATCH .../points/<id>,
-  // не новая) только по явному "Да" пользователя.
-  _planV2PointInPolygon(x, y, ring){
+
+_planV2PointInPolygon(x, y, ring){
     let inside=false;
     for(let i=0,j=ring.length-1;i<ring.length;j=i++){
       const xi=ring[i][0], yi=ring[i][1], xj=ring[j][0], yj=ring[j][1];
@@ -7819,12 +7965,14 @@ function app(){ return {
     }
     return inside;
   },
-  _planV2FindContainingLocation(x, y){
+
+_planV2FindContainingLocation(x, y){
     const items=this._planV2EffectiveItems().filter(it=>
       it.kind==='location' && Array.isArray(it.geometry) && it.geometry.length>=3 && it.location_id!=null);
     return items.find(it=>this._planV2PointInPolygon(x, y, it.geometry)) || null;
   },
-  _planV2ProposePointLocationIfInside(pointRef){
+
+_planV2ProposePointLocationIfInside(pointRef){
     const loc=this._planV2FindContainingLocation(pointRef.geometry.x, pointRef.geometry.y);
     if(!loc) return;
     const structPoint=(this.structPoints||[]).find(p=>p.point_id===pointRef.point_id);
@@ -7838,7 +7986,8 @@ function app(){ return {
       locationName: (planLoc&&planLoc.name) || ('#'+loc.location_id),
     };
   },
-  _planV2ProposeAssignForPointsInPolygon(polygonItemKey){
+
+_planV2ProposeAssignForPointsInPolygon(polygonItemKey){
     const polyItem=this.planV2Draft.items[polygonItemKey];
     if(!polyItem || !Array.isArray(polyItem.geometry)) return;
     const items=this._planV2EffectiveItems().filter(it=>
@@ -7848,7 +7997,8 @@ function app(){ return {
     // если контур случайно охватил сразу несколько уже нанесённых точек.
     if(hit) this._planV2ProposePointLocationIfInside(hit);
   },
-  async planV2ConfirmLocationAssign(){
+
+async planV2ConfirmLocationAssign(){
     const p=this.planV2LocationAssignProposal;
     if(!p) return;
     try{
@@ -7863,8 +8013,10 @@ function app(){ return {
     }catch(e){ this.showToast('Ошибка сети: '+e, false); }
     this.planV2LocationAssignProposal=null;
   },
-  planV2DeclineLocationAssign(){ this.planV2LocationAssignProposal=null; },
-  planV2StartPlacePolygon(){
+
+planV2DeclineLocationAssign(){ this.planV2LocationAssignProposal=null; },
+
+planV2StartPlacePolygon(){
     if(this.planV2AddKind!=='location' || !this.planV2AddRefId){
       this.showToast('Выберите место для размещения', false); return;
     }
@@ -7873,12 +8025,14 @@ function app(){ return {
     if(_planV2Map.doubleClickZoom) _planV2Map.doubleClickZoom.disable();
     _planV2Map.pm.enableDraw('Polygon', {snappable:true, finishOn:'dblclick'});
   },
-  planV2CancelPlacePolygon(){
+
+planV2CancelPlacePolygon(){
     if(_planV2Map && _planV2Map.pm) _planV2Map.pm.disableDraw('Polygon');
     if(_planV2Map && _planV2Map.doubleClickZoom) _planV2Map.doubleClickZoom.enable();
     this.planV2PlacingPolygon=false;
   },
-  planV2SaveDrawnWaypoints(){
+
+planV2SaveDrawnWaypoints(){
     if(!_planV2DrawLayer || this.planV2DrawingEdgeKey===null || !this.planV2Current) return;
     const key=this.planV2DrawingEdgeKey;
     const view=this._planV2EffectiveEdgeViews().find(v=>String(v.id)===key);
@@ -7898,16 +8052,16 @@ function app(){ return {
     this._planV2RenderItems();
     this.showToast('Линия связи обновлена в черновике', true);
   },
-  planV2CancelDrawWaypoints(){
+
+planV2CancelDrawWaypoints(){
     if(_planV2Map && _planV2Map.pm) _planV2Map.pm.disableDraw('Line');
     if(_planV2Map && _planV2Map.doubleClickZoom) _planV2Map.doubleClickZoom.enable();
     this._planV2CleanupDrawLayer();
     this.planV2DrawingEdgeKey=null;
     this.planV2HasPendingEdgeDraw=false;
   },
-  // Сбросить нарисованную линию — вернуться к прямой между метками
-  // (waypoints:null, как у edge_view без ручного рисования).
-  planV2ClearWaypoints(view){
+
+planV2ClearWaypoints(view){
     if(!view || !view.waypoints) return;
     this._planV2PushHistory();
     const key=String(view.id);
@@ -7917,8 +8071,7 @@ function app(){ return {
     this._planV2RenderItems();
   },
 
-  // --- отрисовка ---
-  _planV2ItemLayerFor(item, height){
+_planV2ItemLayerFor(item, height){
     if(item.coord_space!=='image_px_xy_v2' && item.coord_space!=='canvas_xy_v2'){
       console.warn('planV2: неподдерживаемый coord_space на элементе', item);
       return null;
@@ -7960,7 +8113,8 @@ function app(){ return {
     }
     return layer;
   },
-  _planV2RenderItems(){
+
+_planV2RenderItems(){
     if(!_planV2Map || !this.planV2Current) return;
     _planV2ItemLayers.forEach(layer=>{ try{_planV2Map.removeLayer(layer);}catch(e){} });
     _planV2ItemLayers.clear();
@@ -7999,7 +8153,8 @@ function app(){ return {
       _planV2EdgeLayers.set(String(v.id), line);
     });
   },
-  _planV2RenderBase(){
+
+_planV2RenderBase(){
     if(!_planV2Map || !this.planV2Current) return;
     if(_planV2ImageLayer){ try{_planV2Map.removeLayer(_planV2ImageLayer);}catch(e){} _planV2ImageLayer=null; }
 
@@ -8014,636 +8169,66 @@ function app(){ return {
     _planV2Map.fitBounds(bounds);
     this._planV2RenderItems();
   },
-  planV2ItemKindLabel(kind){
+
+planV2ItemKindLabel(kind){
     const labels={point:'Точка учёта', location:'Место', group:'Группа',
                   node:'Узел сети', port:'Переход на другой план', annotation:'Подпись'};
     return labels[kind]||kind;
   },
-  // ТЗ §8.3: "тот же инспектор... открывается идентично из плана, дерева,
-  // отчёта и списка проблем" — точка/узел/группа плана открывают общий
-  // openInspector (см. <script> секцию Структура); у place/port/annotation
-  // своего инспектора нет (это координаты на плане, не предмет учёта/сети).
-  planV2ItemInspectorTarget(item){
+
+planV2ItemInspectorTarget(item){
     if(!item) return null;
     if(item.kind==='point' && item.point_id!=null) return {kind:'point', id:item.point_id};
     if(item.kind==='node' && item.node_id!=null) return {kind:'node', id:item.node_id};
     if(item.kind==='group' && item.group_id!=null) return {kind:'group', id:item.group_id};
     return null;
   },
-  openInspectorForPlanItem(item){
+
+openInspectorForPlanItem(item){
     const t=this.planV2ItemInspectorTarget(item);
     if(t) this.openInspector(t.kind, t.id);
   },
 
-  // ================= «План v3» (docs/TZ-batch6-plan-v3.md) =================
-  // Единый экран: на карту наносятся УЗЛЫ сети (не точки учёта — какая
-  // точка "стоит" в узле выводится из того, какую смежную линию она
-  // измеряет, см. карточку узла ниже и plan_v3_service.describe_node_lines).
-  // В отличие от «Плана v2» — без черновика/undo: каждое действие (узел,
-  // линия, зона) пишется на сервер сразу одним запросом и сразу
-  // перечитывается с сервера (§0 задания: "клик → узел появился →
-  // карточка сразу", "публикация не должна быть видна отдельным шагом").
-  // «Структура» и «План v2» не удаляются и остаются рабочими — запасной
-  // путь, если что-то здесь не получится проверить в браузере.
-  async openPlanV3Tab(){
-    if(!_planV3Map) this.initPlanV3Map();
-    if(!this.planV3Inited){
-      this.planV3Inited=true;
-      const loads=[this.loadPlanV3List()];
-      if(!this.structInited){ this.structInited=true; loads.push(this._loadStructureLists()); }
-      // Э3/B4: «Приборы без точки учёта» в правой панели, когда ничего
-      // не выбрано — тот же список, что структура грузит по требованию
-      // (см. openStructureTab), здесь нужен сразу.
-      if(!this.structKnownDevicesLoaded) loads.push(this._loadKnownDevices());
-      await Promise.all(loads);
-    }
-    // Партия 7, Этап 3, B1: контейнер карты мог быть невидим (display:none
-    // за x-show), когда _planV3RenderBase() уже пытался вписать план —
-    // Leaflet вписывает в нулевой размер и остаётся на zoom=-4 насовсем.
-    // Здесь, после $nextTick (контейнер уже получил реальный размер),
-    // довписываем то, что не удалось раньше (_planV3NeedsFit).
-    this.$nextTick(()=>{ if(_planV3Map){ _planV3Map.invalidateSize(); this._planV3TryFit(); } });
-  },
-  initPlanV3Map(){
-    if(_planV3Map) return;
-    const el=this.$refs.planV3Map;
-    // Э3/B1, доп. правка: zoomSnap:0 — без этого Leaflet округляет
-    // fitBounds() до ЦЕЛОГО уровня зума (zoomSnap=1 по умолчанию) вниз
-    // до ближайшего, который ТОЧНО помещается — план у которого
-    // соотношение сторон не попадает ровно на степень двойки от
-    // контейнера, вписывается с запасом ДО ПОЛОВИНЫ контейнера пустым
-    // полем (один шаг зума — это 2×), а не "впритык". Итог на браузерном
-    // прогоне test_b02: клик в верхнюю левую четверть ХОЛСТА (контейнера
-    // карты) попадал за пределы реально нарисованного плана ("Точка вне
-    // границ плана"), хотя пользователь целился именно в план — то же
-    // самое произошло бы и у живого пользователя на объекте с планом
-    // нестандартных пропорций. С zoomSnap:0 fitBounds() вписывает план
-    // впритык (дробный зум), без резкого запаса вдвое.
-    _planV3Map=L.map(el, {crs:L.CRS.Simple, minZoom:-4, zoomSnap:0, zoomControl:true,
-                          attributionControl:false});
-    _planV3Map.setView([0,0],0);
-    _planV3Map.on('click', (e)=>this._planV3OnMapClick(e));
-    _planV3Map.on('pm:create', (e)=>this._planV3OnPmCreate(e));
-    window.addEventListener('resize', ()=>{ if(_planV3Map) _planV3Map.invalidateSize(); });
-    // Э3/B1, доп. правка (найдено браузерным прогоном test_b02 ПОСЛЕ
-    // первой версии фикса выше): $nextTick после смены вкладки/выбора
-    // плана НЕ гарантирует, что x-show родительского контейнера
-    // (planV3Plans.length>0) уже применился к DOM в тот же тик — на
-    // практике Alpine иногда применяет его позже. Тогда _planV3TryFit(),
-    // вызванный из $nextTick в openPlanV3Tab()/selectPlanV3(), видит
-    // контейнер ещё нулевого размера и оставляет _planV3NeedsFit висеть
-    // НАВСЕГДА — больше никто не пробует ещё раз: план визуально
-    // виден, но карта осталась на zoom/центре из setView([0,0],0) выше,
-    // а не вписанной по границам — из-за этого клик по видимой части
-    // холста давал координату вне логических границ плана ("Точка вне
-    // границ плана"), хотя пользователь кликал ровно там, где нарисован
-    // план. ResizeObserver — сигнал, не зависящий от того, чем именно
-    // вызвано появление контейнера (Alpine, смена вкладки, ресайз окна,
-    // сворачивание/разворачивание DevTools): на каждое изменение размера
-    // пробуем довписать отложенные границы; когда вписывать нечего
-    // (_planV3NeedsFit уже null) — _planV3TryFit() дешёвый no-op.
-    if(window.ResizeObserver){
-      new ResizeObserver(()=>{
-        if(_planV3Map){ _planV3Map.invalidateSize(); this._planV3TryFit(); }
-      }).observe(el);
-    }
-  },
-  async loadPlanV3List(){
-    this.planV3Loading=true;
-    try{
-      const r=await fetch('/api/v2/plans');
-      const d=await r.json();
-      this.planV3Plans=Array.isArray(d)?d:[];
-      if(this.planV3Plans.length>0 && !this.planV3CurrentId){
-        await this.selectPlanV3(this.planV3Plans[0].id);
-      }
-    }catch(e){ console.error(e); }
-    this.planV3Loading=false;
-  },
-  // Пустой план "с нуля" — на чистой БД мигрировать легаси-данные
-  // (единственный способ завести план в «Плане v2») неоткуда, а «План
-  // v3» обязан работать и без него (мандатный e2e-сценарий задания §8:
-  // "чистая БД"). single_line — тот же вид, что у пустого однолинейного
-  // плана v2 (без фонового изображения, логический холст).
-  async planV3CreateEmptyPlan(){
-    const name=(this.planV3NewPlanName||'').trim() || 'План v3';
-    this.planV3Saving=true;
-    try{
-      const fd=new FormData();
-      fd.append('name', name); fd.append('plan_kind', 'single_line');
-      fd.append('canvas_width', '2000'); fd.append('canvas_height', '1200');
-      const r=await fetch('/api/v2/plans', {method:'POST', body:fd});
-      const d=await r.json();
-      if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
-      this.planV3NewPlanName='';
-      await this.loadPlanV3List();
-      await this.selectPlanV3(d.id);
-    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
-    finally{ this.planV3Saving=false; }
-  },
-  // Полная загрузка плана + фон + вписывание вида — только при смене
-  // плана (селектор) или первом входе (Э3/B2). Все действия ПОСЛЕ этого
-  // (узел, перетаскивание, линия, отходящая линия, зона, счётчик)
-  // должны звать reloadPlanV3Items() ниже, а не эту функцию — иначе
-  // каждое действие сбрасывает zoom/центр обратно к fitBounds (это и
-  // была причина «зум сбрасывается после каждого действия», найденная в
-  // test_b02 после Этапа 1). Образец — разделение
-  // _planV2RenderBase/_planV2RenderItems «Плана v2».
-  async selectPlanV3(id){
-    if(!id) return;
-    this.planV3CancelTool();
-    this.planV3CurrentId=id;
-    this.closeInspector();
-    try{
-      const r=await fetch('/api/v2/plans/'+id);
-      if(!r.ok){ this.showToast('Не удалось загрузить план', false); return; }
-      this.planV3Current=await r.json();
-    }catch(e){ console.error(e); return; }
-    this._planV3RenderBase();
-    // Б1: контейнер мог стать видимым ТОЛЬКО что (например, только что
-    // созданный первый план — x-show="planV3Plans.length>0" переключился
-    // синхронно с этим же тиком) — $nextTick ждёт, пока Alpine применит
-    // DOM-патч, и тогда пробуем вписать ещё раз.
-    this.$nextTick(()=>this._planV3TryFit());
-  },
-  // Перечитать план и перерисовать элементы/линии БЕЗ смены вида (zoom/
-  // центр), активного инструмента и открытой карточки — карточку того
-  // же объекта перечитываем (Э3/B2). Используется всеми действиями на
-  // карте вместо полного selectPlanV3().
-  async reloadPlanV3Items(){
-    if(!this.planV3Current) return;
-    try{
-      const r=await fetch('/api/v2/plans/'+this.planV3Current.id);
-      if(!r.ok) return;
-      this.planV3Current=await r.json();
-    }catch(e){ console.error(e); return; }
-    this._planV3RenderItems();
-    if(this.structInspector && (this.structInspector.kind==='node' || this.structInspector.kind==='edge')){
-      await this.openInspectorInPlace(this.structInspector.kind, this.structInspector.id);
-    }
-  },
-  _planV3EffectiveDims(plan){
-    if(plan.image_width && plan.image_height) return [plan.image_width, plan.image_height];
-    return [plan.canvas_width||2000, plan.canvas_height||1200];
-  },
-  _planV3XyToLatLng(x, y, height){ return [height-y, x]; },
-  _planV3LatLngToXy(latlng, height){ return [latlng.lng, height-latlng.lat]; },
-  _planV3CoordSpace(){
-    return this.planV3Current && this.planV3Current.plan_kind==='floor'
-      ? 'image_px_xy_v2' : 'canvas_xy_v2';
-  },
-  planV3SetTool(tool){
-    this.planV3CancelTool();
-    this.planV3Tool=tool;
-    if(tool==='node'){ this.planV3PendingNodeForm={kind:'panel', name:''}; }
-  },
-  planV3CancelTool(){
-    this.planV3Tool=null;
-    this.planV3EdgeFirstItem=null;
-    this.planV3ZoneGroupId='';
-    this.planV3PlacingExistingNodeId=null;
-    this._planV3CancelDrawZone();
-  },
-
-  // --- узлы: разместить бланк-узел одним кликом (§1 задания) ---
-  _planV3OnMapClick(e){
-    if(!this.planV3Current) return;
-    if(this.planV3Tool==='node'){
-      const name=(this.planV3PendingNodeForm.name||'').trim();
-      if(!name){ this.showToast('Укажите название узла', false); return; }
-      const [W,H]=this._planV3EffectiveDims(this.planV3Current);
-      const [x,y]=this._planV3LatLngToXy(e.latlng, H);
-      if(x<0||x>W||y<0||y>H){ this.showToast('Точка вне границ плана', false); return; }
-      this.planV3PlaceNode(x,y);
-      return;
-    }
-    // Э3/B4: «Разместить на карте» у уже заведённого, но ещё не
-    // нанесённого узла — тот же клик по карте, что и «+ Узел», только
-    // без создания нового узла (id уже есть, см. planV3StartPlaceExistingNode).
-    if(this.planV3Tool==='node-existing' && this.planV3PlacingExistingNodeId!=null){
-      const [W,H]=this._planV3EffectiveDims(this.planV3Current);
-      const [x,y]=this._planV3LatLngToXy(e.latlng, H);
-      if(x<0||x>W||y<0||y>H){ this.showToast('Точка вне границ плана', false); return; }
-      this.planV3PlaceExistingNode(x,y);
-    }
-  },
-  // Э3/B4: строка «Узлы» в правой панели (ничего не выбрано) — начать
-  // размещение уже существующего, но ещё не нанесённого на ЭТОТ план
-  // узла. Дальше — обычный клик по карте (_planV3OnMapClick выше).
-  planV3StartPlaceExistingNode(nodeId){
-    this.planV3CancelTool();
-    this.planV3Tool='node-existing';
-    this.planV3PlacingExistingNodeId=nodeId;
-    this.showToast('Кликните на карте, чтобы разместить узел', true);
-  },
-  async planV3PlaceExistingNode(x,y){
-    const nodeId=this.planV3PlacingExistingNodeId;
-    if(nodeId==null) return;
-    const node=(this.structNodes||[]).find(n=>n.id===nodeId);
-    this.planV3PanelUnplacedBusy=nodeId;
-    try{
-      const ir=await fetch('/api/v2/plans/'+this.planV3Current.id+'/items', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({kind:'node', node_id:nodeId, geometry:{x,y},
-          coord_space:this._planV3CoordSpace(), label:node?node.name:''})});
-      const id_=await ir.json();
-      if(!ir.ok){ this.showToast(this._apiErrorMessage(id_, ir.status), false); return; }
-      this.showToast('Узел «'+(node?node.name:nodeId)+'» размещён на плане', true);
-      this.planV3PlacingExistingNodeId=null; this.planV3Tool=null;
-      await this._loadStructureLists();
-      await this.reloadPlanV3Items();
-      await this.openInspectorInPlace('node', nodeId);
-    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
-    finally{ this.planV3PanelUnplacedBusy=null; }
-  },
-  async planV3PlaceNode(x,y){
-    const form=this.planV3PendingNodeForm;
-    const name=(form.name||'').trim();
-    try{
-      const nr=await fetch('/api/v2/topology/nodes', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({code:'pv3-'+form.kind+'-'+Date.now(), name, kind:form.kind})});
-      const nd=await nr.json();
-      if(!nr.ok){ this.showToast(this._apiErrorMessage(nd, nr.status), false); return; }
-      const ir=await fetch('/api/v2/plans/'+this.planV3Current.id+'/items', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({kind:'node', node_id:nd.id, geometry:{x,y},
-          coord_space:this._planV3CoordSpace(), label:name})});
-      const id_=await ir.json();
-      if(!ir.ok){ this.showToast(this._apiErrorMessage(id_, ir.status), false); return; }
-      this.showToast('Узел «'+name+'» размещён', true);
-      this.planV3PendingNodeForm={kind:form.kind, name:''};
-      await this._loadStructureLists();
-      await this.reloadPlanV3Items();
-      await this.openInspectorInPlace('node', nd.id);
-    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
-  },
-  // Перетаскивание уже размещённого узла — сразу пишет новую геометрию
-  // (plan_items не защищены ревизией, см. api_v2.py — чисто визуальный
-  // слой), без отдельного режима редактирования, как у Плана v2.
-  async _planV3OnItemDragEnd(item, latlng, height){
-    const [x,y]=this._planV3LatLngToXy(latlng, height);
-    try{
-      const r=await fetch('/api/v2/plans/'+this.planV3Current.id+'/items/'+item.id, {
-        method:'PATCH', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({geometry:{x,y}, coord_space:item.coord_space})});
-      if(!r.ok){ const d=await r.json(); this.showToast(this._apiErrorMessage(d, r.status), false); }
-      await this.reloadPlanV3Items();
-    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
-  },
-  _planV3OnNodeMarkerClick(item){
-    if(this.planV3Tool==='edge'){
-      if(!this.planV3EdgeFirstItem){
-        this.planV3EdgeFirstItem=item;
-      }else{
-        const fromItem=this.planV3EdgeFirstItem;
-        this.planV3EdgeFirstItem=null;
-        if(fromItem.node_id===item.node_id){
-          this.showToast('Нельзя соединить узел с самим собой', false); return;
-        }
-        this.planV3ConnectNodes(fromItem, item);
-      }
-      return;
-    }
-    this.openInspectorInPlace('node', item.node_id);
-  },
-
-  // --- линии: «соединить линией» (§2 задания) — два клика по узлам ---
-  async planV3ConnectNodes(fromItem, toItem){
-    try{
-      const rev=await this._structCurrentRev();
-      const r=await fetch('/api/v2/topology/edges/connect', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({from_node_id: fromItem.node_id, to_node_id: toItem.node_id,
-                               expected_revision: rev})});
-      const d=await r.json();
-      if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
-      await fetch('/api/v2/plans/'+this.planV3Current.id+'/edges', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({edge_id:d.id, from_item_id:fromItem.id, to_item_id:toItem.id,
-                               view_kind:'structural'})});
-      this.showToast('Линия проведена', true);
-      await this._loadStructureLists();
-      await this.reloadPlanV3Items();
-    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
-    finally{ this.planV3Tool=null; }
-  },
-
-  // Э3/B9: «＋ Новая группа» рядом с выбором учётной группы у инструмента
-  // «Зона» — не заставлять уходить на «Структуру», чтобы завести группу
-  // под совсем новую зону. POST /api/v2/groups не требует
-  // expected_revision (см. api_v2.py::v2_groups — bump_revision внутри
-  // сам создаёт и коммитит), поэтому здесь нет протокола ревизий.
-  async planV3CreateGroupInline(){
-    const name=(this.planV3NewZoneGroupName||'').trim();
-    if(!name) return;
-    this.planV3NewZoneGroupError=null;
-    try{
-      const r=await fetch('/api/v2/groups', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({name})});
-      const d=await r.json();
-      if(!r.ok){ this.planV3NewZoneGroupError=this._apiErrorMessage(d, r.status); return; }
-      this.structGroups.push(d);
-      this.planV3ZoneGroupId=d.id;
-      this.planV3NewZoneGroupOpen=false; this.planV3NewZoneGroupName='';
-      this.showToast('Группа «'+d.name+'» создана', true);
-    }catch(e){ this.planV3NewZoneGroupError='Ошибка сети: '+e; }
-  },
-
-  // --- зоны: учётные группы контуром поверх карты (§3 задания — раньше
-  // было сломано: валидация геометрии допускала полигон только для
-  // kind='location', см. фикс в plan_geo_v2.py) ---
-  planV3StartDrawZone(){
-    if(!this.planV3ZoneGroupId || !_planV3Map) return;
-    this.planV3DrawingZone=true;
-    if(_planV3Map.doubleClickZoom) _planV3Map.doubleClickZoom.disable();
-    _planV3Map.pm.enableDraw('Polygon', {snappable:true, finishOn:'dblclick'});
-  },
-  _planV3CancelDrawZone(){
-    if(_planV3Map && _planV3Map.pm) _planV3Map.pm.disableDraw('Polygon');
-    if(_planV3Map && _planV3Map.doubleClickZoom) _planV3Map.doubleClickZoom.enable();
-    this.planV3DrawingZone=false;
-  },
-  async _planV3OnPmCreate(e){
-    if(e.shape!=='Polygon' || !this.planV3DrawingZone || !this.planV3Current) return;
-    const rings=e.layer.getLatLngs();
-    const ring=Array.isArray(rings[0]) ? rings[0] : rings;
-    try{_planV3Map.removeLayer(e.layer);}catch(err){}
-    const groupId=this.planV3ZoneGroupId;
-    this._planV3CancelDrawZone();
-    if(ring.length<3){ this.showToast('Контур должен содержать минимум 3 точки', false); return; }
-    const [,H]=this._planV3EffectiveDims(this.planV3Current);
-    const geometry=ring.map(ll=>this._planV3LatLngToXy(ll, H));
-    try{
-      const r=await fetch('/api/v2/plans/'+this.planV3Current.id+'/items', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({kind:'group', group_id:groupId, geometry,
-                               coord_space:this._planV3CoordSpace()})});
-      const d=await r.json();
-      if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
-      this.showToast('Зона нанесена', true);
-      this.planV3Tool=null; this.planV3ZoneGroupId='';
-      await this.reloadPlanV3Items();
-    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
-  },
-
-  // --- карточка узла: имя/место, список линий, назначение счётчика,
-  // «добавить отходящую линию» одним действием (§1/§2 задания) ---
-  async planV3SaveNodeCard(){
-    if(!this.structInspector || this.structInspector.kind!=='node') return;
-    this.planV3NodeCardError=null;
-    try{
-      const rev=await this._structCurrentRev();
-      const r=await fetch('/api/v2/topology/nodes/'+this.structInspector.id, {
-        method:'PATCH', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({
-          name: this.structInspector.nameDraft,
-          location_text: this.structInspector.locationTextDraft,
-          kind: this.structInspector.kindDraft,
-          expected_revision: rev,
-        })});
-      const d=await r.json();
-      if(!r.ok){ this.planV3NodeCardError=this._apiErrorMessage(d, r.status); return; }
-      this.showToast('Узел обновлён', true);
-      const id=this.structInspector.id;
-      await this._loadStructureLists();
-      // reloadPlanV3Items() сама перечитывает открытую карточку того же
-      // узла (structInspector.id уже равен id здесь) — отдельный
-      // openInspectorInPlace не нужен, не дублируем запрос (Э3/B2).
-      if(this.planV3Current) await this.reloadPlanV3Items();
-      else await this.openInspectorInPlace('node', id);
-    }catch(e){ this.planV3NodeCardError='Ошибка сети: '+e; }
-  },
-  // «поставить счётчик на линию» / «снять» (§1 задания) — существующая
-  // PATCH .../topology/edges/<id> с новой ручкой primary_point_id
-  // (topology_service.py: ElectricalEdgeRepo.set_primary_point).
-  async planV3AssignMeter(edgeId, pointId){
-    try{
-      const rev=await this._structCurrentRev();
-      const r=await fetch('/api/v2/topology/edges/'+edgeId, {
-        method:'PATCH', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({primary_point_id: pointId, expected_revision: rev})});
-      const d=await r.json();
-      if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
-      this.showToast(pointId?'Счётчик назначен':'Счётчик снят', true);
-      await this._loadStructureLists();
-      // Линия на карте должна сразу перекраситься/перестать быть
-      // пунктирной (Э3/B3) — без этого цвет обновлялся только при
-      // следующей полной перезагрузке плана.
-      this._planV3RenderItems();
-      if(this.structInspector && (this.structInspector.kind==='node' || this.structInspector.kind==='edge')){
-        await this.openInspectorInPlace(this.structInspector.kind, this.structInspector.id);
-      }
-    }catch(e){ this.showToast('Ошибка сети: '+e, false); }
-  },
-  // «Добавить отходящую линию» (§1 задания) — новый узел-потребитель и
-  // линия к нему ОДНИМ действием пользователя (одна кнопка, только
-  // имя) — /api/v2/topology/nodes/<id>/add-consumer уже делает это
-  // атомарно на сервере; здесь только следом наносим новый узел на
-  // карту (авто-смещение от родителя, чтобы сразу было видно и можно
-  // было перетащить) и проводим визуальную линию между ними.
-  async planV3AddConsumerSubmit(){
-    if(!this.structInspector || this.structInspector.kind!=='node') return;
-    const name=(this.planV3AddConsumerName||'').trim();
-    if(!name){ this.planV3AddConsumerError='Укажите название'; return; }
-    this.planV3AddConsumerError=null;
-    try{
-      const rev=await this._structCurrentRev();
-      const r=await fetch('/api/v2/topology/nodes/'+this.structInspector.id+'/add-consumer', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({name, expected_revision: rev})});
-      const d=await r.json();
-      if(!r.ok){ this.planV3AddConsumerError=this._apiErrorMessage(d, r.status); return; }
-      if(this.planV3Current){
-        const parentItem=(this.planV3Current.items||[]).find(
-          it=>it.kind==='node' && it.node_id===this.structInspector.id);
-        const [W,H]=this._planV3EffectiveDims(this.planV3Current);
-        let x=W/2, y=H/2;
-        if(parentItem && parentItem.geometry){
-          x=Math.min(W, parentItem.geometry.x+60); y=Math.min(H, parentItem.geometry.y+60);
-        }
-        const ir=await fetch('/api/v2/plans/'+this.planV3Current.id+'/items', {
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({kind:'node', node_id:d.node.id, geometry:{x,y},
-            coord_space:this._planV3CoordSpace(), label:d.node.name})});
-        const itemD=await ir.json();
-        if(ir.ok && parentItem){
-          await fetch('/api/v2/plans/'+this.planV3Current.id+'/edges', {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({edge_id:d.edge.id, from_item_id:parentItem.id,
-                                   to_item_id:itemD.id, view_kind:'structural'})});
-        }
-      }
-      this.showToast('Отходящая линия добавлена', true);
-      this.planV3AddConsumerName='';
-      const id=this.structInspector.id;
-      await this._loadStructureLists();
-      // reloadPlanV3Items() перечитывает уже открытую карточку родителя
-      // (structInspector.id всё ещё id родителя здесь) сама — Э3/B2.
-      if(this.planV3Current) await this.reloadPlanV3Items();
-      else await this.openInspectorInPlace('node', id);
-    }catch(e){ this.planV3AddConsumerError='Ошибка сети: '+e; }
-  },
-
-  // --- отрисовка ---
-  _planV3ItemLayerFor(item, height){
-    // Зона (учётная группа) — контур-полигон, кликом только подсказка,
-    // без своей карточки (сама группа управляется на «Структуре»).
-    if(item.kind==='group' && Array.isArray(item.geometry)){
-      if(item.geometry.length<3) return null;
-      const latlngs=item.geometry.map(([x,y])=>this._planV3XyToLatLng(x,y,height));
-      const color=_planCssVar('--accent2');
-      const layer=L.polygon(latlngs, {color, fillColor:color, fillOpacity:.18, weight:2});
-      const group=(this.structGroups||[]).find(g=>g.id===item.group_id);
-      layer.on('click', (e)=>{
-        if(e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
-        this.showToast(group?('Учётная группа: '+group.name):'Учётная группа', true);
-      });
-      return layer;
-    }
-    if(item.kind!=='node' || !item.geometry || typeof item.geometry.x!=='number') return null;
-    const node=(this.structNodes||[]).find(n=>n.id===item.node_id);
-    const colors={source:'#4fa8f5', panel:'#3dd6c0', junction:'#9aa0a8', load:'#f0a83c'};
-    const color=colors[node?node.kind:'']||'#3dd6c0';
-    const latlng=this._planV3XyToLatLng(item.geometry.x, item.geometry.y, height);
-    const layer=L.circleMarker(latlng, {radius:9, color, fillColor:color, fillOpacity:.8, weight:2});
-    // Э3/B3: постоянная подпись узла (не только по наведению) — иначе
-    // на плане с десятком узлов не разобрать, где что, не кликая по
-    // каждому. Leaflet вставляет текст как HTML — _planEscapeHtml (A45).
-    if(node){
-      layer.bindTooltip(_planEscapeHtml(node.name||node.code||''),
-        {permanent:true, direction:'right', className:'planv3-node-tip'});
-    }
-    layer.on('click', (e)=>{
-      if(e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
-      this._planV3OnNodeMarkerClick(item);
-    });
-    // Перетаскивание — как у Плана v2, всегда включено (нет отдельного
-    // режима редактирования — все действия здесь прямые).
-    if(layer.pm){
-      layer.pm.enableLayerDrag();
-      layer.on('pm:dragend', ()=>{ this._planV3OnItemDragEnd(item, layer.getLatLng(), height); });
-    }
-    return layer;
-  },
-  _planV3RenderItems(){
-    if(!_planV3Map || !this.planV3Current) return;
-    _planV3ItemLayers.forEach(l=>{ try{_planV3Map.removeLayer(l);}catch(e){} });
-    _planV3ItemLayers.clear();
-    _planV3EdgeLayers.forEach(l=>{ try{_planV3Map.removeLayer(l);}catch(e){} });
-    _planV3EdgeLayers.clear();
-
-    const [,H]=this._planV3EffectiveDims(this.planV3Current);
-    const items=this.planV3Current.items||[];
-    items.forEach(it=>{
-      const layer=this._planV3ItemLayerFor(it, H);
-      if(layer){ layer.addTo(_planV3Map); _planV3ItemLayers.set(String(it.id), layer); }
-    });
-
-    (this.planV3Current.edges||[]).forEach(v=>{
-      const fromIt=v.from_item_id!=null ? items.find(i=>i.id===v.from_item_id) : null;
-      const toIt=v.to_item_id!=null ? items.find(i=>i.id===v.to_item_id) : null;
-      if(!fromIt || !toIt || !fromIt.geometry || !toIt.geometry) return;
-      const latlngs=[this._planV3XyToLatLng(fromIt.geometry.x, fromIt.geometry.y, H),
-                     this._planV3XyToLatLng(toIt.geometry.x, toIt.geometry.y, H)];
-      const edge=(this.structEdges||[]).find(e2=>e2.id===v.edge_id);
-      const metered=!!(edge && edge.primary_point_id);
-      const color=metered ? _planCssVar('--ok') : '#e0995f';
-      // Э3/B3: линии без счётчика — пунктиром, не только другим цветом
-      // (различимо и без цвета, например при дальтонизме/ч-б печати).
-      const line=L.polyline(latlngs, {color, weight:3, dashArray: metered?null:'6,6'});
-      // Э3/B3: подпись по наведению — имя связи или «A → B» по концам.
-      if(edge){
-        const label=edge.name || edge.code ||
-          (this.structNodeName(edge.from_node_id)+' → '+this.structNodeName(edge.to_node_id));
-        line.bindTooltip(_planEscapeHtml(label), {sticky:true});
-      }
-      line.on('click', (e)=>{
-        if(e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
-        // Э3/B5: у линии теперь своя карточка (имя/номинал/кабель,
-        // счётчик, живой ток/загрузка) — до этой партии клика было
-        // некуда деть, счётчик назначался только из карточки узла.
-        if(edge) this.openInspectorInPlace('edge', edge.id);
-      });
-      line.addTo(_planV3Map);
-      _planV3EdgeLayers.set(String(v.id), line);
-    });
-  },
-  _planV3RenderBase(){
-    if(!_planV3Map || !this.planV3Current) return;
-    if(_planV3ImageLayer){ try{_planV3Map.removeLayer(_planV3ImageLayer);}catch(e){} _planV3ImageLayer=null; }
-    const pc=this.planV3Current;
-    const [W,H]=this._planV3EffectiveDims(pc);
-    const bounds=[[0,0],[H,W]];
-    if(pc.plan_kind==='floor'){
-      _planV3ImageLayer=L.imageOverlay('/api/v2/plans/'+pc.id+'/image', bounds).addTo(_planV3Map);
-    }else{
-      _planV3ImageLayer=L.rectangle(bounds, {color:_planCssVar('--line'), weight:1, fill:false, dashArray:'4,4'}).addTo(_planV3Map);
-    }
-    // Э3/B1: fitBounds НЕ вызывается напрямую здесь — если контейнер в
-    // этот момент невидим/нулевого размера (x-show ещё не применился),
-    // Leaflet вписывает в нулевой прямоугольник и дальше держит
-    // zoom=-4 насовсем, даже когда контейнер потом появляется. Вместо
-    // этого запоминаем границы и пробуем вписать сразу; если не вышло —
-    // openPlanV3Tab()/selectPlanV3() довписывают через $nextTick, когда
-    // контейнер уже получил реальный размер.
-    _planV3NeedsFit=bounds;
-    this._planV3RenderItems();
-    this._planV3TryFit();
-  },
-  // Вписать план в границы, если контейнер уже имеет ненулевой размер;
-  // иначе оставить флаг _planV3NeedsFit — следующий вызов (после
-  // $nextTick/invalidateSize) попробует снова. Возвращает true, если
-  // вписывание реально произошло.
-  _planV3TryFit(){
-    if(!_planV3Map || !_planV3NeedsFit) return false;
-    const el=this.$refs.planV3Map;
-    if(!el || el.offsetWidth===0 || el.offsetHeight===0) return false;
-    const bounds=_planV3NeedsFit;
-    _planV3NeedsFit=null;
-    _planV3Map.invalidateSize();
-    _planV3Map.fitBounds(bounds);
-    return true;
-  },
-
-  showToast(msg, ok=true){
+showToast(msg, ok=true){
     clearTimeout(this._toastTimer);
     this.toast={msg,ok};
     this._toastTimer=setTimeout(()=>{ this.toast=null; },3000);
-  },
-}; }
+  }
+  };
+  // Сборщик частей интерфейса (партия 9, F5, docs/TZ-batch9-split-frontend.md §3.2).
+  // Копируем через defineProperty/getOwnPropertyDescriptor, а не простым
+  // присваиванием (out[k]=frag[k]) — в исходном объекте есть computed-поля
+  // через get xyz(){...} (groupedMeters, totalPowerKw и т.п.), и присваивание
+  // вызвало бы геттер один раз при сборке и превратило его в статическое
+  // значение, молча сломав реактивность Alpine (решение согласовано
+  // отдельно, т.к. это отличается от текста ТЗ — см. commit message).
+  const reg = window.WBEM || { parts: [], conflicts: [] };
+  for (const part of reg.parts) {
+    const frag = part();
+    for (const k of Object.keys(frag)) {
+      if (k in out) reg.conflicts.push(k + ' (повтор в «' + (part.name||'?') + '»)');
+      Object.defineProperty(out, k, Object.getOwnPropertyDescriptor(frag, k));
+    }
+  }
+  return out;
+}
 
-// ---- План объекта (ТЗ v0.11.0): состояние карты Leaflet — ВНЕ
-// реактивности Alpine (§3.4 ТЗ). Это обычные переменные модуля, а не
-// свойства data() компонента: L.Map, завёрнутый в реактивный Proxy
-// Alpine, ведёт себя непредсказуемо (Leaflet держит собственный DOM и
-// свои внутренние структуры, которые Proxy-обёртка ломает).
 let _planMap=null;
 let _planImageLayer=null;
-const _planZoneLayers=new Map();   // group_id -> {layer, popup, zone}
-const _planLinkLayers=new Map();   // link_id -> polyline
-let _planDrawLayer=null;           // временный слой контура во время рисования зоны
-let _planOpenPopupGroupId=null;    // группа последнего открытого попапа (для ссылки в нём)
+const _planZoneLayers=new Map();
+const _planLinkLayers=new Map();
+let _planDrawLayer=null;
+let _planOpenPopupGroupId=null;
 let _planV2Map=null;
 let _planV2ImageLayer=null;
-const _planV2ItemLayers=new Map();   // item_id (String) -> layer
-const _planV2EdgeLayers=new Map();   // edge_view_id (String) -> polyline
-let _planV2DrawLayer=null;           // временный слой линии во время рисования waypoints edge_view
-let _planV3Map=null;
-let _planV3ImageLayer=null;
-const _planV3ItemLayers=new Map();   // item_id (String) -> layer
-const _planV3EdgeLayers=new Map();   // plan_edge_view id (String) -> polyline
-// Партия 7, Этап 3, B1: границы плана, ожидающие fitBounds, пока
-// контейнер карты невидим/нулевого размера — см. _planV3RenderBase/
-// _planV3TryFit. null, если вписывание уже произошло (или план не грузился).
-let _planV3NeedsFit=null;
+const _planV2ItemLayers=new Map();
+const _planV2EdgeLayers=new Map();
+let _planV2DrawLayer=null;
 function _planV2KindColor(kind){
   const colors={point:'#3dd6c0', location:'#8a7cff', group:'#f0a83c',
                 node:'#4fa8f5', port:'#e05fae', annotation:'#9aa0a8'};
   return colors[kind] || '#3dd6c0';
 }
-
 function _planCssVar(name){
   try{
     const v=getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -8658,16 +8243,11 @@ function _planLinkColor(state){
   return ({ok:_planCssVar('--ok'), warn:_planCssVar('--warn'),
            danger:_planCssVar('--err')})[state] || _planCssVar('--accent2');
 }
-
 function lsGet(k,def){ try{ return localStorage.getItem(k)||def; }catch(e){ return def; } }
 function lsGetJSON(k,def){
   try{ const v=localStorage.getItem(k); return v?JSON.parse(v):def; }catch(e){ return def; }
 }
-// Промежуточные (не терминальные) состояния самообновления — совпадают
-// с ACTIVE_STATES в wb_energy_meter/updater.py (ТЗ v0.9.0).
 const UPD_ACTIVE_STATES=['starting','downloading','installing','verifying','rolling_back'];
-// Фолбэк-список категорий каналов на случай, если /api/channels/dictionary
-// ещё не успел загрузиться (модалка деталей не должна из-за этого падать).
 const FALLBACK_CATEGORIES=[
   {id:'voltage',label:'Напряжение',open:false},
   {id:'current',label:'Ток',open:false},

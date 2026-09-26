@@ -10,6 +10,24 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from wb_energy_meter.api import create_app, _AppState, _load_static
 
+_STATIC_JS_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "wb_energy_meter", "static", "js")
+
+
+def _load_ui_all():
+    """index.html + все static/js/*.js — партия 9 (F5) разнесла JS из
+    index.html по файлам, поэтому проверки методов/строк интерфейса
+    больше не могут смотреть только на index.html (см.
+    docs/TZ-batch9-split-frontend.md §4)."""
+    parts = [_load_static("index.html")]
+    if os.path.isdir(_STATIC_JS_DIR):
+        for name in sorted(os.listdir(_STATIC_JS_DIR)):
+            if name.endswith(".js"):
+                with open(os.path.join(_STATIC_JS_DIR, name), "r", encoding="utf-8") as f:
+                    parts.append(f.read())
+    return "\n".join(parts)
+
 
 # ---- Проверка баланса HTML-тегов (см. AGENTS.md: незакрытый <template>
 # уже приводил к белому экрану без единой ошибки в консоли — самая
@@ -159,7 +177,7 @@ def test_docs_still_works():
 
 
 def test_ui_has_dashboard_and_consumption():
-    content = _load_static("index.html")
+    content = _load_ui_all()
     # Вкладки
     assert "tab=='dash'" in content
     assert "tab=='consumption'" in content
@@ -176,7 +194,7 @@ def test_ui_has_overview_v2_branch_table():
     """Обзор v2 (ТЗ §8.2) — таблица веток верхнего уровня поверх
     GroupRepoV2.resolve_effective_members (Шаг 24/25). Регрессия на
     случайное удаление разметки/методов при последующих правках index.html."""
-    content = _load_static("index.html")
+    content = _load_ui_all()
     assert "tab=='overviewv2'" in content
     assert "overviewV2BranchRows" in content
     assert "overviewV2GroupMembers" in content
