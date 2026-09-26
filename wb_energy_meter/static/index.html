@@ -764,9 +764,25 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     x-text="(ovSummary||{}).imbalance_percent!=null?'('+((ovSummary||{}).imbalance_percent>0?'+':'')+(ovSummary||{}).imbalance_percent.toFixed(2)+'% от итога объекта)':'(% не определён)'"
                     :title="(ovSummary||{}).imbalance_percent==null?('Процент не рассчитан: '+((ovSummary||{}).imbalance_percent_reason||'нет данных')):''"></span>
             </div>
+            <!-- Проверено на живом контроллере 27.09.2026: на объекте, где
+                 ввод ещё не назначен, экран говорил одновременно «Не все
+                 вводы объекта измеряются — честный итог посчитать нельзя»
+                 и двумя строками ниже «все ветви измерены». Оба
+                 утверждения по отдельности верны (ввод и ветвь — разные
+                 вещи), но рядом читаются как противоречие, и вторая фраза
+                 успокаивает ровно тогда, когда успокаивать нечем: ветвей
+                 нет вовсе, поэтому «все измерены» истинно впустую.
+                 Поэтому строка про покрытие ветвей показывается только
+                 когда ветви ЕСТЬ; иначе — прямая причина. -->
             <div class="muted" style="font-size:11px;margin-bottom:12px">
-              <template x-if="(ovSummary||{}).boundary_coverage==='verified'">
+              <template x-if="(ovSummary||{}).boundary_coverage==='verified'
+                              && ((ovSummary||{}).network_branches||[]).length>0">
                 <span>все ветви измерены</span>
+              </template>
+              <template x-if="(ovSummary||{}).boundary_coverage==='verified'
+                              && ((ovSummary||{}).network_branches||[]).length===0">
+                <span>ветвей нет: от назначенного ввода не отходит ни одной
+                      измеряемой линии</span>
               </template>
               <template x-if="(ovSummary||{}).boundary_coverage==='has_unmetered_branches'">
                 <span>есть неизмеренные ветви: <span x-text="((ovSummary||{}).unmetered_branches||[]).map(b=>b.name).join(', ')"></span></span>
