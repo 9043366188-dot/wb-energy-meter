@@ -178,6 +178,18 @@ if [[ -f "$PROJECT_ROOT/scripts/wb-energy-meter.conf.example" ]]; then
 fi
 chmod 0755 "$INSTALL_DIR/scripts/"*.sh 2>/dev/null || true
 
+# Партия 10, этап C: systemd-юнит ниже ссылается на этот файл в
+# ExecStartPre. Копирование выше -- `cp -f ... || true`, то есть само
+# по себе не остановит установку при сбое. Без этой проверки сервис
+# получил бы юнит с ExecStartPre на несуществующий файл и не запустился
+# бы вообще -- лучше сказать об этом сейчас, при установке, чем потом
+# гадать по journalctl, почему сервис не встаёт.
+if [[ ! -x "$INSTALL_DIR/scripts/check-generation.sh" ]]; then
+  echo "ОШИБКА: $INSTALL_DIR/scripts/check-generation.sh не скопировался или не исполняемый." >&2
+  echo "        systemd-юнит ссылается на него в ExecStartPre — сервис не запустится." >&2
+  exit 4
+fi
+
 echo ">>> Запись VERSION.json..."
 NEW_APP_VERSION="$(grep -m1 '__version__' "$INSTALL_DIR/wb_energy_meter/__init__.py" \
     | sed -E "s/.*__version__[[:space:]]*=[[:space:]]*[\"']([^\"']+)[\"'].*/\1/")"
@@ -219,6 +231,16 @@ Type=simple
 User=root
 Group=root
 Environment=PYTHONPATH=$INSTALL_DIR
+# Партия 10, этап C (F4, docs/migration-plan-v2.md §7 п.3): страж
+# поколений домена. До этого поколение проверял только self-update.sh
+# при своём собственном автоматическом откате — ручной откат (старый
+# install.sh из старого коммита, ручной systemctl start) проходил мимо
+# этой проверки, и код мог молча подняться на БД поколения, которое не
+# понимает. ExecStartPre срабатывает при КАЖДОМ старте сервиса, а не
+# только при самообновлении. Ненулевой код выхода ExecStartPre не даёт
+# ExecStart запуститься вовсе (это поведение systemd, не нужно
+# настраивать отдельно).
+ExecStartPre=$INSTALL_DIR/scripts/check-generation.sh $DB_PATH $INSTALL_DIR/wb_energy_meter/__init__.py
 ExecStart=/usr/bin/python3 -m wb_energy_meter.main --config $CONFIG_PATH --db-path $DB_PATH
 Restart=on-failure
 RestartSec=5
