@@ -83,6 +83,31 @@ mosquitto на `127.0.0.1:1883` с `allow_anonymous true`.
 
 CI (`.github/workflows/ci.yml`) гоняет матрицу Python 3.9–3.12 на ubuntu-latest.
 
+### Браузерные тесты в песочнице агента (проверено 26.09.2026)
+
+`tests/browser/run.py` **запускается прямо здесь** — не нужно ждать CI и
+не нужно писать в отчёте «в браузере не открывалось». Мешает только то,
+что `playwright install --with-deps` требует sudo, которого нет.
+Системные библиотеки ставятся рядом, без root:
+
+```bash
+pip install playwright
+python3 -m playwright install chromium        # БЕЗ --with-deps: sudo недоступен
+mkdir -p /tmp/xlibs && cd /tmp/xlibs
+apt-get download libxdamage1 libxfixes3 libxrandr2 libxcomposite1 \
+  libxkbcommon0 libatk1.0-0 libatk-bridge2.0-0 libcups2 libatspi2.0-0 \
+  libasound2 libpango-1.0-0 libcairo2 libnspr4 libnss3 libdrm2 libgbm1
+for d in *.deb; do dpkg-deb -x "$d" /tmp/xroot; done
+export LD_LIBRARY_PATH=/tmp/xroot/usr/lib/x86_64-linux-gnu:/tmp/xroot/lib/x86_64-linux-gnu
+cd /путь/к/wb-energy-meter && python3 tests/browser/run.py
+```
+
+Без `LD_LIBRARY_PATH` Chromium падает с `error while loading shared
+libraries: libXdamage.so.1`, а playwright показывает это как
+`TargetClosedError: BrowserType.launch` — ошибка выглядит как проблема
+теста, хотя это отсутствующая библиотека. Playwright — только тестовая
+зависимость, в рантайм и в `pyproject.toml` не входит.
+
 ## Правила и грабли
 
 - **paho-mqtt 2.x**: при QoS=1 `wait_for_publish()` виснет навсегда без `loop_start()`.
