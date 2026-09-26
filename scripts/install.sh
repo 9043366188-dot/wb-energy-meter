@@ -107,6 +107,21 @@ if [[ ! -f "$INSTALL_DIR/wb_energy_meter/static/index.html" ]]; then
   echo "    (сервис и API продолжат работать)" >&2
 fi
 
+# С партии 9 весь JS интерфейса лежит в static/js/ отдельными файлами, и
+# index.html без них — пустая разметка (заглушка «не загрузились файлы»).
+# Здесь копируется каталог целиком, так что пропасть они могут только при
+# оборванном копировании, — но проверка стоит рядом с проверкой
+# index.html по той же причине: молча поставить нерабочий интерфейс хуже,
+# чем сказать об этом в лог установки.
+if [[ -f "$INSTALL_DIR/wb_energy_meter/static/index.html" ]]; then
+  JS_REFS="$(grep -c 'src="/static/js/' "$INSTALL_DIR/wb_energy_meter/static/index.html" 2>/dev/null || echo 0)"
+  JS_FILES="$(find "$INSTALL_DIR/wb_energy_meter/static/js" -name '*.js' 2>/dev/null | wc -l)"
+  if [[ "$JS_REFS" -gt 0 && "$JS_FILES" -lt "$JS_REFS" ]]; then
+    echo "[!] index.html ссылается на $JS_REFS файлов static/js/, а найдено $JS_FILES —" >&2
+    echo "    веб-интерфейс не запустится. Проверьте /api/selfcheck после старта." >&2
+  fi
+fi
+
 echo ">>> Копирование scripts/ (нужно для самообновления, ТЗ v0.9.0)..."
 mkdir -p "$INSTALL_DIR/scripts"
 cp -f "$PROJECT_ROOT/scripts/"*.sh "$INSTALL_DIR/scripts/" 2>/dev/null || true
