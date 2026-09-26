@@ -274,26 +274,44 @@ class ElectricalNodeRepo:
             domain_generation.mark_v2_domain_write(c)
         return self.get_by_id(node_id)
 
-    def update_fields(self, node_id, *, name=None, location_id=_UNSET_NODE):
-        """Переименовать узел / сменить место (партия 6, «План v3», §2:
-        карточка узла редактируется на месте — «где стоит» приходит сюда
-        уже разрешённым в location_id, поиск/заведение места по
-        свободному тексту делает вызывающий код api_v2.py, не репозиторий).
-        location_id=_UNSET_NODE (по умолчанию) значит «не менять»;
-        location_id=None — явно снять место (в отличие от «не менять» —
-        нужен отдельный маркер, как и у installation_location_id точек)."""
-        if name is None and location_id is _UNSET_NODE:
+    def update_fields(self, node_id, *, name=None, location_id=_UNSET_NODE,
+                      kind=None):
+        """Переименовать узел / сменить место / сменить ТИП (партия 6,
+        «План v3», §2: карточка узла редактируется на месте — «где стоит»
+        приходит сюда уже разрешённым в location_id, поиск/заведение места
+        по свободному тексту делает вызывающий код api_v2.py, не
+        репозиторий). location_id=_UNSET_NODE (по умолчанию) значит «не
+        менять»; location_id=None — явно снять место (в отличие от «не
+        менять» — нужен отдельный маркер, как и у
+        installation_location_id точек).
+
+        kind=None значит «не менять». Смена типа нужна потому, что
+        «добавить отходящую линию» заводит узел жёстко как `load`
+        (plan_v3_service.add_consumer), а от `load` отходящую линию
+        провести уже нельзя (§4.3 большого ТЗ) — то есть потребитель,
+        который на объекте оказался щитом, без этого оставался тупиком
+        навсегда. Инварианты «source не бывает приёмником» и «load не
+        бывает источником» здесь НЕ проверяются: репозиторий не видит
+        рёбер. Их проверяет вызывающий код (api_v2.py) — там же, где
+        формулируется человеческий текст отказа."""
+        if name is None and location_id is _UNSET_NODE and kind is None:
             return self.get_by_id(node_id)
         if self.get_by_id(node_id) is None:
             raise ValueError(f"Узел {node_id} не найден")
         if name is not None:
             name = validate_name(name)
+        if kind is not None and kind not in VALID_NODE_KINDS:
+            raise ValueError(
+                f"неизвестный тип узла: {kind!r}. Допустимые: {VALID_NODE_KINDS}")
         now = int(time.time())
         set_parts = ["updated_at = ?"]
         params = [now]
         if name is not None:
             set_parts.append("name = ?")
             params.append(name)
+        if kind is not None:
+            set_parts.append("kind = ?")
+            params.append(kind)
         if location_id is not _UNSET_NODE:
             set_parts.append("location_id = ?")
             params.append(location_id)

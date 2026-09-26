@@ -873,7 +873,43 @@ def register_v2_routes(app, state, json_response):
         # по имени, см. plan_v3_service.resolve_location_text). Раньше
         # (до этой партии) у узла вообще не было ручки на изменение
         # чего-либо, кроме archived.
-        if "name" in data or "location_text" in data or "location_id" in data:
+        #
+        # `kind` добавлен позже (проверка от 26.09.2026): PATCH с
+        # {"kind": "panel"} отдавал 200 и НЕ МЕНЯЛ НИЧЕГО — тело просто
+        # не содержало ни одного знакомого поля и проваливалось в
+        # `return json_response(...)` внизу. Узел-потребитель, заведённый
+        # через «добавить отходящую линию», превратить в щит было нельзя
+        # вообще, а API при этом рапортовал об успехе. Поэтому здесь два
+        # изменения сразу: тип узла меняется по-настоящему, а тело без
+        # единого знакомого поля больше не отвечает молчаливым 200 (см.
+        # конец обработчика).
+        if ("name" in data or "location_text" in data
+                or "location_id" in data or "kind" in data):
+            new_kind = data.get("kind") if "kind" in data else None
+            if new_kind is not None and new_kind != n.kind:
+                # Инварианты леса (§4.3 большого ТЗ, те же, что проверяет
+                # validate_forest: source_has_incoming / load_has_outgoing) —
+                # проверяем ДО записи и объясняем в терминах узлов и линий,
+                # а не кодами валидатора («План v3», §2).
+                erepo = _edge_repo()
+                edges = list(erepo.list_active_published()) + list(erepo.list_drafts())
+                if new_kind == "source" and any(
+                        e.to_node_id == node_id for e in edges):
+                    body, status = _err(
+                        "topology_conflict",
+                        f"«{n.name}» нельзя сделать вводом: в него уже входит "
+                        f"линия. Сначала удалите входящую линию.",
+                        409, ids=[node_id])
+                    return json_response(body, status)
+                if new_kind == "load" and any(
+                        e.from_node_id == node_id for e in edges):
+                    body, status = _err(
+                        "topology_conflict",
+                        f"«{n.name}» нельзя сделать потребителем: от него "
+                        f"отходят линии. Сначала удалите отходящие линии.",
+                        409, ids=[node_id])
+                    return json_response(body, status)
+
             def _mutate():
                 location_id = _UNSET
                 if "location_text" in data:
@@ -885,6 +921,8 @@ def register_v2_routes(app, state, json_response):
                 kwargs = {}
                 if location_id is not _UNSET:
                     kwargs["location_id"] = location_id
+                if new_kind is not None:
+                    kwargs["kind"] = new_kind
                 return repo.update_fields(node_id, name=data.get("name"), **kwargs)
             try:
                 _, new_rev = with_revision_check(
@@ -898,7 +936,18 @@ def register_v2_routes(app, state, json_response):
             out = _node_to_dict(repo.get_by_id(node_id))
             out["configuration_revision"] = new_rev
             return json_response(out)
-        return json_response(_node_to_dict(repo.get_by_id(node_id)))
+        # Ни одного знакомого поля в теле: раньше здесь был молчаливый
+        # 200 с неизменённым узлом — из-за него смена типа выглядела
+        # успешной, ничего не делая (см. комментарий выше). Ответ 200 на
+        # запрос, который ничего не изменил, — худший вид ошибки: клиент
+        # ей верит. Все известные вызывающие (карточка узла в «Плане v3»,
+        # архивирование) всегда шлют хотя бы одно поле.
+        body, status = _err(
+            "bad_request",
+            "нечего менять: укажите name, kind, location_text, location_id "
+            "или archived",
+            400, ids=[node_id])
+        return json_response(body, status)
 
     @app.route("/api/v2/topology/edges", methods=["GET", "POST"])
     def v2_topology_edges():
@@ -1911,6 +1960,27 @@ def register_v2_routes(app, state, json_response):
                         e.from_node_id in plan_node_ids or e.to_node_id in plan_node_ids):
                     plan_point_ids.add(e.primary_point_id)
 
+        # «Где стоит» в модели «Плана v3» живёт на УЗЛЕ, а не на точке
+        # (§0/§2 задания партии 6: "локации отдельными областями не
+        # рисуются — достаточно написать в узле, где он стоит"). До этой
+        # правки (проверено 26.09.2026) «Чего не хватает» смотрело только
+        # на points.installation_location_id, поэтому после заполнения
+        # «где стоит» у щита претензия no_location к его точкам НЕ
+        # исчезала — и убрать её из «Плана v3» было нечем вообще: экран
+        # не задаёт место точке. Правило то же, что уже применено выше к
+        # no_plan: точка считается размещённой/локализованной по узлам
+        # ЛИНИИ, которую она измеряет.
+        located_point_ids = set()
+        nodes_with_location = {
+            n.id for n in node_repo.list_all(include_archived=True)
+            if n.location_id is not None}
+        if nodes_with_location:
+            for e in published_edges:
+                if e.primary_point_id is not None and (
+                        e.from_node_id in nodes_with_location
+                        or e.to_node_id in nodes_with_location):
+                    located_point_ids.add(e.primary_point_id)
+
         # §8.2 (задача 4, известное поведение): точка ввода не обязана
         # состоять в ветвях/группах — это не забытая настройка, а
         # нормальное свойство ввода. Тот же список, что уже считает
@@ -1929,7 +1999,7 @@ def register_v2_routes(app, state, json_response):
         for p in points:
             if binding_repo.get_open_primary(p.id) is None:
                 points_without_meter.append(p)
-            if p.installation_location_id is None:
+            if p.installation_location_id is None and p.id not in located_point_ids:
                 points_without_location.append(p)
             if p.id not in group_point_ids and p.id not in input_point_ids:
                 points_without_group.append(p)

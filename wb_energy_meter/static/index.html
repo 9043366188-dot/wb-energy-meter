@@ -2536,6 +2536,22 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <button class="btn btn-sm" @click="planV3SaveNodeCard()">Сохранить</button>
                 </div>
               </div>
+              <!-- Тип узла. «Добавить отходящую линию» заводит узел
+                   жёстко как «Нагрузка», а от нагрузки отходящую линию
+                   провести нельзя — без этого поля потребитель, который
+                   на объекте оказался щитом, оставался тупиком. -->
+              <div class="structure-field">
+                <div class="sf-lbl">Тип</div>
+                <div style="display:flex;gap:6px">
+                  <select x-model="structInspector.kindDraft" style="flex:1">
+                    <option value="source">Ввод</option>
+                    <option value="panel">Щит</option>
+                    <option value="junction">Узел</option>
+                    <option value="load">Нагрузка</option>
+                  </select>
+                  <button class="btn btn-sm" @click="planV3SaveNodeCard()">Сохранить</button>
+                </div>
+              </div>
               <div class="structure-field">
                 <div class="sf-lbl">Где стоит</div>
                 <div style="display:flex;gap:6px">
@@ -6961,6 +6977,7 @@ function app(){ return {
     }
     this.structInspector = {kind:'node', id, data, lines,
       nameDraft: data.name, locationTextDraft: locationText,
+      kindDraft: data.kind,
       lineLive:{}, lineEnergy:{}, balance:null, balanceLoading:false, balanceError:null};
     this.planV3NodeCardError = null;
     this.planV3AddConsumerError = null; this.planV3AddConsumerName = '';
@@ -8547,6 +8564,7 @@ function app(){ return {
         body: JSON.stringify({
           name: this.structInspector.nameDraft,
           location_text: this.structInspector.locationTextDraft,
+          kind: this.structInspector.kindDraft,
           expected_revision: rev,
         })});
       const d=await r.json();

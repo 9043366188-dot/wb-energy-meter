@@ -573,6 +573,99 @@ def test_placed_on_plan_true_via_measured_edge_node_and_false_without_it():
         db.close(); os.unlink(path)
 
 
+# ---------------------------------------------------------------------
+# Смена типа узла (проверка 26.09.2026): «добавить отходящую линию»
+# заводит узел жёстко как load, а от load отходящую линию провести
+# нельзя — потребитель, который на объекте оказался щитом, был тупиком
+# навсегда. Хуже того, PATCH с {"kind": ...} отдавал 200 и НЕ МЕНЯЛ
+# НИЧЕГО: поле было неизвестно обработчику, и он проваливался в ответ
+# «вот узел как есть». 200 на запрос, который ничего не сделал, — худший
+# вид ошибки, клиент ей верит.
+# ---------------------------------------------------------------------
+
+def test_node_kind_change_and_forest_invariants_still_enforced():
+    client, db, path = make_client()
+    try:
+        n_vvod = _make_node(client, "n-vvod", "Ввод", "source")
+        n_shr = _make_node(client, "n-shr1", "ЩР-1", "panel")
+        _connect(client, n_vvod["id"], n_shr["id"])
+
+        r = _add_consumer(client, n_shr["id"], "ЩР-2")
+        assert r.status_code == 201, r.get_json()
+        n2 = r.get_json()["node"]
+        assert n2["kind"] == "load", n2
+
+        # до смены типа отходящую линию провести нельзя ------------------
+        r = _add_consumer(client, n2["id"], "Серверная")
+        assert r.status_code == 409, r.get_json()
+
+        # смена типа работает по-настоящему, а не 200 без изменений ------
+        rev = current_rev(client)
+        r = client.patch(f"/api/v2/topology/nodes/{n2['id']}", json={
+            "kind": "panel", "expected_revision": rev})
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()["kind"] == "panel", (
+            "PATCH kind обязан менять тип, а не отвечать 200 с прежним",
+            r.get_json())
+        assert client.get(
+            f"/api/v2/topology/nodes/{n2['id']}").get_json()["kind"] == "panel"
+
+        # ... и после неё линия проводится (парная «легитимная» проверка)
+        r = _add_consumer(client, n2["id"], "Серверная")
+        assert r.status_code == 201, r.get_json()
+
+        # инварианты леса не ослаблены: source не бывает приёмником ------
+        rev = current_rev(client)
+        r = client.patch(f"/api/v2/topology/nodes/{n2['id']}", json={
+            "kind": "source", "expected_revision": rev})
+        assert r.status_code == 409, r.get_json()
+        assert "входит линия" in r.get_json()["message"], r.get_json()
+
+        # ... load не бывает источником ----------------------------------
+        rev = current_rev(client)
+        r = client.patch(f"/api/v2/topology/nodes/{n2['id']}", json={
+            "kind": "load", "expected_revision": rev})
+        assert r.status_code == 409, r.get_json()
+        assert "отходят линии" in r.get_json()["message"], r.get_json()
+
+        # тип не изменился ни от одного из двух отказов -------------------
+        assert client.get(
+            f"/api/v2/topology/nodes/{n2['id']}").get_json()["kind"] == "panel"
+
+        # ... а легитимная смена (junction допустим при любых линиях) идёт
+        rev = current_rev(client)
+        r = client.patch(f"/api/v2/topology/nodes/{n2['id']}", json={
+            "kind": "junction", "expected_revision": rev})
+        assert r.status_code == 200 and r.get_json()["kind"] == "junction"
+
+        # мусорный тип отклонён ------------------------------------------
+        rev = current_rev(client)
+        r = client.patch(f"/api/v2/topology/nodes/{n2['id']}", json={
+            "kind": "щиток", "expected_revision": rev})
+        assert r.status_code == 400, r.get_json()
+
+        # тело без единого знакомого поля — 400, а не молчаливый 200 -----
+        rev = current_rev(client)
+        r = client.patch(f"/api/v2/topology/nodes/{n2['id']}", json={
+            "expected_revision": rev})
+        assert r.status_code == 400, (
+            "тело без знакомых полей обязано отвечать 400: молчаливый 200 "
+            "и был причиной того, что смена типа «работала», ничего не "
+            "меняя", r.get_json())
+
+        # ... и рядом — тот же PATCH с полем всё ещё работает ------------
+        rev = current_rev(client)
+        r = client.patch(f"/api/v2/topology/nodes/{n2['id']}", json={
+            "name": "ЩР-2 (бывш. потребитель)", "expected_revision": rev})
+        assert r.status_code == 200, r.get_json()
+
+        print("[OK] тип узла меняется (load -> panel), инварианты леса "
+              "(source_has_incoming / load_has_outgoing) держатся, тело без "
+              "знакомых полей -> 400 вместо молчаливого 200")
+    finally:
+        db.close(); os.unlink(path)
+
+
 if __name__ == "__main__":
     test_e2e_input_panel_two_metered_consumers_and_one_unmetered_line()
     test_cycle_rejected_in_node_terms_and_legit_connection_still_works()
@@ -582,4 +675,5 @@ if __name__ == "__main__":
     test_node_rename_and_location_text_and_empty_name_rejected()
     test_group_polygon_zone_accepted_point_polygon_still_rejected()
     test_placed_on_plan_true_via_measured_edge_node_and_false_without_it()
+    test_node_kind_change_and_forest_invariants_still_enforced()
     print("\nВсе тесты «Плана v3» (Шаг 39) пройдены.")

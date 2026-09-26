@@ -272,9 +272,59 @@ def test_validation_route_does_not_require_expected_revision():
         db.close(); os.unlink(path)
 
 
+def test_points_without_location_counts_node_of_measured_edge():
+    """ПРОБЛЕМА (найдено 26.09.2026): в модели «Плана v3» «где стоит»
+    задаётся у УЗЛА, а не у точки (задание партии 6, §0/§2: "локации
+    отдельными областями не рисуются — достаточно написать в узле, где
+    он стоит"). Сводка же смотрела только на
+    points.installation_location_id, поэтому претензия no_location к
+    точкам щита не исчезала никогда: снять её из «Плана v3» было нечем,
+    экран не задаёт место точке. Правило теперь то же, что уже
+    действует для no_plan — по узлам ЛИНИИ, которую точка измеряет.
+
+    ЛЕГИТИМНЫЙ СЛУЧАЙ: точка, чья линия не касается ни одного узла с
+    местом, по-прежнему в списке."""
+    client, db, path = make_client()
+    try:
+        points = MeteringPointRepo(db)
+        locations = LocationRepo(db)
+        nodes = ElectricalNodeRepo(db)
+        edges = ElectricalEdgeRepo(db)
+
+        loc = locations.add(name="Электрощитовая", kind="room")
+        src = nodes.add(code="s1", name="Ввод", kind="source")
+        shr = nodes.add(code="p1", name="ЩР-1", kind="panel", location_id=loc.id)
+        far = nodes.add(code="p2", name="ЩР-2 (без места)", kind="panel")
+        load = nodes.add(code="l1", name="Станки", kind="load")
+
+        p_in = points.add(code="in.1", name="Ввод объекта")
+        p_far = points.add(code="far.1", name="Точка вдали от мест")
+        e_in = edges.add_draft(src.id, shr.id, code="L1",
+                                primary_point_id=p_in.id)
+        e_far = edges.add_draft(far.id, load.id, code="L2",
+                                 primary_point_id=p_far.id)
+        edges.publish_edges([e_in.id, e_far.id])
+
+        body = client.get("/api/v2/validation").get_json()
+        ids = {x["point_id"] for x in body["points_without_location"]}
+        assert p_in.id not in ids, (
+            "точка на линии, входящей в узел с заданным «где стоит», не "
+            "должна считаться без места", body["points_without_location"])
+        assert p_far.id in ids, (
+            "ЛЕГИТИМНЫЙ СЛУЧАЙ сломан: точка, чья линия не касается ни "
+            "одного узла с местом, обязана остаться в списке",
+            body["points_without_location"])
+        print("[OK] points_without_location учитывает «где стоит» у узлов "
+              "измеряемой линии (модель «Плана v3»), но не прощает точку "
+              "без места вовсе")
+    finally:
+        db.close(); os.unlink(path)
+
+
 if __name__ == "__main__":
     test_points_without_meter_partitioned_correctly()
     test_points_without_location_partitioned_correctly()
+    test_points_without_location_counts_node_of_measured_edge()
     test_points_without_group_excludes_input_point()
     test_points_without_plan_partitioned_correctly()
     test_nodes_and_edges_partitioned_correctly()
