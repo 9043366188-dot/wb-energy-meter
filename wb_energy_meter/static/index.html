@@ -686,8 +686,31 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               <div style="margin-bottom:12px">
                 <div class="val mono" style="font-size:28px;color:var(--txt3)">—</div>
                 <div class="empty" style="text-align:left;font-size:12px">
-                  Не все вводы объекта измеряются — честный итог посчитать нельзя
-                  (сумма измеряемых вводов подряд была бы заниженной).
+                  <!-- Итог может быть неизвестен по РАЗНЫМ причинам, и до
+                       27.09.2026 на все случаи писалась одна — «не все вводы
+                       измеряются». Поймано прогоном на живом контроллере и
+                       воспроизведено локально: при полностью измеренном вводе,
+                       но пустом периоде сервер отдаёт value=null,
+                       unmetered_inputs=[] — и экран всё равно посылал
+                       пользователя чинить схему, хотя чинить нечего, просто
+                       за период нет показаний. Теперь три состояния
+                       различаются по unmetered_inputs и object_input_point_ids. -->
+                  <template x-if="((ovSummary||{}).unmetered_inputs||[]).length>0">
+                    <span>Не все вводы объекта измеряются — честный итог посчитать
+                          нельзя (сумма измеряемых вводов подряд была бы
+                          заниженной).</span>
+                  </template>
+                  <template x-if="((ovSummary||{}).unmetered_inputs||[]).length===0
+                                  && ((ovSummary||{}).object_input_point_ids||[]).length>0">
+                    <span>За выбранный период нет показаний по вводу объекта.
+                          Схема в порядке — вводы измеряются; выберите другой
+                          период или проверьте связь со счётчиком ввода.</span>
+                  </template>
+                  <!-- Третьего случая «ввод не назначен» здесь нет намеренно:
+                       тогда сервер отдаёт object_total=null (а не объект со
+                       value=null), и работает отдельная ветка ниже, со своим
+                       текстом и кнопкой «Настроить границу объекта». Дублировать
+                       её тут — значит завести недостижимый код. -->
                   <template x-if="((ovSummary||{}).object_total||{}).known_value!=null">
                     <div style="margin-top:6px">
                       Известно по измеряемым вводам:
@@ -775,14 +798,28 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                  Поэтому строка про покрытие ветвей показывается только
                  когда ветви ЕСТЬ; иначе — прямая причина. -->
             <div class="muted" style="font-size:11px;margin-bottom:12px">
-              <template x-if="(ovSummary||{}).boundary_coverage==='verified'
+              <!-- «Все ветви измерены» говорится ТОЛЬКО когда итог объекта
+                   посчитан. Иначе фраза успокаивает не по делу: при
+                   неизмеренном вводе экран строкой выше уже сказал, что
+                   честный итог посчитать нельзя, и добавлять к этому
+                   «всё измерено» — прямое противоречие (поймано на живом
+                   контроллере 27.09.2026). Проблема в таком состоянии
+                   одна — ввод, про него и пишем. -->
+              <template x-if="((ovSummary||{}).object_total||{}).value!=null
+                              && (ovSummary||{}).boundary_coverage==='verified'
                               && ((ovSummary||{}).network_branches||[]).length>0">
                 <span>все ветви измерены</span>
               </template>
-              <template x-if="(ovSummary||{}).boundary_coverage==='verified'
+              <template x-if="((ovSummary||{}).object_total||{}).value!=null
+                              && (ovSummary||{}).boundary_coverage==='verified'
                               && ((ovSummary||{}).network_branches||[]).length===0">
                 <span>ветвей нет: от назначенного ввода не отходит ни одной
                       измеряемой линии</span>
+              </template>
+              <template x-if="(ovSummary||{}).object_total
+                              && ((ovSummary||{}).object_total||{}).value==null">
+                <span>покрытие ветвей не показываем: пока не измерены все вводы,
+                      сверять с чем нечего</span>
               </template>
               <template x-if="(ovSummary||{}).boundary_coverage==='has_unmetered_branches'">
                 <span>есть неизмеренные ветви: <span x-text="((ovSummary||{}).unmetered_branches||[]).map(b=>b.name).join(', ')"></span></span>
@@ -792,47 +829,19 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               </template>
             </div>
 
-            <!-- Учётные группы (branches, старое поле) — распределение
-                 живого снимка по группам, отдельно от небаланса выше:
-                 группы могут пересекаться (одна точка в нескольких
-                 группах), поэтому суммы здесь НЕ обязаны сходиться с
-                 «Ветвями сети» и не участвуют в расчёте небаланса. -->
-            <template x-if="((ovSummary||{}).branches||[]).length>0">
-              <div class="section-title" style="font-size:13px;margin-bottom:6px">Распределение по учётным группам</div>
-            </template>
-            <table class="rep-table" x-show="((ovSummary||{}).branches||[]).length>0">
-              <thead><tr>
-                <th>Группа</th><th class="num">кВт·ч</th><th class="num">% объекта</th><th>Статус</th>
-              </tr></thead>
-              <tbody>
-                <template x-for="b in ((ovSummary||{}).branches||[])" :key="b.group_id">
-                  <tr>
-                    <td x-text="b.name"></td>
-                    <td class="num mono" x-text="b.mode==='sum'&&b.result?fmt(b.result.value,1):'—'"></td>
-                    <td class="num mono" x-text="b.percentage_of_object!=null?fmt(b.percentage_of_object,1)+'%':'—'"></td>
-                    <td class="muted" style="font-size:11px"
-                        x-text="b.mode==='comparison'?'электрическое пересечение — точки ниже':(b.result?'':'нет данных')"></td>
-                  </tr>
-                </template>
-              </tbody>
-            </table>
-
-            <template x-for="b in ((ovSummary||{}).branches||[]).filter(x=>x.mode==='comparison')" :key="'cmp_'+b.group_id">
-              <div style="margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px">
-                <div class="muted" x-text="b.name+' — '+(b.conflict_reason||'подтверждённое электрическое пересечение')"></div>
-                <template x-for="pid in Object.keys(b.points||{})" :key="pid">
-                  <div style="display:flex;justify-content:space-between;padding:2px 0">
-                    <span x-text="ovPointName(pid)"></span>
-                    <span class="mono" x-text="b.points[pid].value!=null?fmt(b.points[pid].value,1)+' кВт·ч':ovPointDataStateLabel(Number(pid))"></span>
-                  </div>
-                </template>
-              </div>
-            </template>
-
-            <div class="muted" style="font-size:11px;margin-top:6px" x-show="((ovSummary||{}).branches||[]).length>0"
-                 x-text="(ovSummary||{}).groups_note||'распределение по учётным группам; группы могут пересекаться, в небалансе не участвуют'"></div>
-            <div class="muted" style="font-size:11px;margin-top:6px" x-show="((ovSummary||{}).ungrouped_point_ids||[]).length>0"
-                 x-text="((ovSummary||{}).ungrouped_point_ids||[]).length+' точек не входит ни в одну группу'"></div>
+            <!-- Таблица учётных групп отсюда УБРАНА и объединена с
+                 «Ветками (группы верхнего уровня)» ниже (решение Кира от
+                 27.09.2026 по итогам прогона на контроллере). До этого на
+                 одном экране стояли подряд две таблицы про одни и те же
+                 группы: здесь — расход за период (часто прочерки), ниже —
+                 живой снимок (0.0 / 0.3). Одна «Тестовая зона» дважды с
+                 разными числами и без объяснения разницы читалась как
+                 сбой. Теперь строка на группу одна, а период и снимок —
+                 её колонки. -->
+            <div class="muted" style="font-size:11px;margin-top:6px"
+                 x-show="((ovSummary||{}).branches||[]).length>0 || overviewV2Groups.length>0">
+              Распределение по учётным группам — в таблице «Учётные группы» ниже.
+            </div>
           </div>
         </template>
       </div>
@@ -871,22 +880,41 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           </div>
         </div>
       </template>
-      <template x-if="overviewV2Groups.length>0 || overviewV2GroupsError">
+      <!-- ОДНА таблица учётных групп вместо двух (27.09.2026). Слева
+           живой снимок (P сейчас / E), справа расход за выбранный период
+           из ovSummary.branches — то, что раньше было отдельной таблицей
+           внутри карточки «Итог объекта за период». Строки берутся из
+           overviewV2BranchRows(); если снимок ещё не пришёл, а период уже
+           есть — строки строятся из ovSummary.branches, чтобы таблица не
+           пропадала. Группы намеренно остаются ВНЕ расчёта небаланса: они
+           могут пересекаться (ТЗ §4.4), и именно попытка вычитать их из
+           итога была главной ошибкой, найденной ревью 23.09.2026. -->
+      <template x-if="overviewV2Groups.length>0 || overviewV2GroupsError
+                      || ((ovSummary||{}).branches||[]).length>0">
         <div style="margin-bottom:24px">
-          <div class="section-title">Ветки (группы верхнего уровня)</div>
+          <div class="section-title">Учётные группы</div>
           <template x-if="overviewV2GroupsError">
             <div class="empty" style="color:var(--err)" x-text="overviewV2GroupsError"></div>
           </template>
-          <template x-if="!overviewV2GroupsError && overviewV2Groups.length>0">
+          <template x-if="!overviewV2GroupsError">
             <table class="rep-table">
               <thead><tr>
-                <th>Ветвь</th>
+                <th>Группа</th>
                 <th class="num">P сейчас, кВт</th>
                 <th class="num">E (снимок), кВт·ч</th>
+                <th class="num">За период, кВт·ч</th>
+                <th class="num">% объекта</th>
                 <th class="num">Точки</th>
+                <th>Статус</th>
               </tr></thead>
               <tbody>
-                <template x-for="row in overviewV2BranchRows()" :key="row.group.id">
+                <template x-for="row in (overviewV2BranchRows().length
+                            ? overviewV2BranchRows()
+                            : ((ovSummary||{}).branches||[]).map(b=>({
+                                group:{id:b.group_id,name:b.name},
+                                power_kw:null,energy_kwh:null,
+                                knownCount:0,pointCount:0})))"
+                          :key="row.group.id">
                   <tr>
                     <td>
                       <span style="display:inline-block;width:10px;height:10px;border-radius:3px;
@@ -898,17 +926,46 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     </td>
                     <td class="num mono" x-text="row.power_kw!=null?fmt(row.power_kw,1):'—'"></td>
                     <td class="num mono" x-text="row.energy_kwh!=null?fmt(row.energy_kwh,1):'—'"></td>
+                    <td class="num mono"
+                        x-text="(() => { const b=((ovSummary||{}).branches||[]).find(x=>x.group_id===row.group.id);
+                                 return (b && b.mode==='sum' && b.result) ? fmt(b.result.value,1) : '—'; })()"></td>
+                    <td class="num mono"
+                        x-text="(() => { const b=((ovSummary||{}).branches||[]).find(x=>x.group_id===row.group.id);
+                                 return (b && b.percentage_of_object!=null) ? fmt(b.percentage_of_object,1)+'%' : '—'; })()"></td>
                     <td class="num mono" x-text="row.knownCount+'/'+row.pointCount"></td>
+                    <td class="muted" style="font-size:11px"
+                        x-text="(() => { const b=((ovSummary||{}).branches||[]).find(x=>x.group_id===row.group.id);
+                                 if(!b) return '';
+                                 return b.mode==='comparison' ? 'электрическое пересечение — точки ниже'
+                                                              : (b.result ? '' : 'за период нет данных'); })()"></td>
                   </tr>
                 </template>
               </tbody>
             </table>
           </template>
+
+          <!-- Разбор подтверждённых электрических пересечений — относится
+               к тем же группам, поэтому переехал сюда вместе с таблицей. -->
+          <template x-for="b in ((ovSummary||{}).branches||[]).filter(x=>x.mode==='comparison')"
+                    :key="'cmp_'+b.group_id">
+            <div style="margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px">
+              <div class="muted" x-text="b.name+' — '+(b.conflict_reason||'подтверждённое электрическое пересечение')"></div>
+              <template x-for="pid in Object.keys(b.points||{})" :key="pid">
+                <div style="display:flex;justify-content:space-between;padding:2px 0">
+                  <span x-text="ovPointName(pid)"></span>
+                  <span class="mono" x-text="b.points[pid].value!=null?fmt(b.points[pid].value,1)+' кВт·ч':ovPointDataStateLabel(Number(pid))"></span>
+                </div>
+              </template>
+            </div>
+          </template>
+
           <div class="muted" style="font-size:11px;margin-top:6px" x-show="overviewV2UngroupedCount()>0"
                x-text="overviewV2UngroupedCount()+' точек не входит ни в одну группу'"></div>
           <div class="muted" style="font-size:11px;margin-top:4px">
-            Суммы по веткам — разбивка текущего снимка по составу группы, не проверенный итог объекта;
-            ветки могут пересекаться (точка вправе состоять в нескольких группах, ТЗ §4.4).
+            «P сейчас» и «E (снимок)» — разбивка текущего снимка по составу группы;
+            «За период» — расход за выбранный выше период. Это не проверенный итог
+            объекта: группы могут пересекаться (точка вправе состоять в нескольких
+            группах, ТЗ §4.4) и в расчёте небаланса не участвуют.
           </div>
         </div>
       </template>
