@@ -71,13 +71,29 @@ def _hour_periods(ts_from, ts_to):
 # ---------------------------------------------------------------------
 
 def measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
-                    point_id, ts_from, ts_to, timezone="UTC"):
+                    point_id, ts_from, ts_to, timezone="UTC", _cache=None):
     """§5.1 measured. Сегментирует период по истории привязок точки
     (resolve_primary_segments) и суммирует часовые агрегаты только внутри
     одного сегмента за раз. Час, пересекающий границу замены прибора,
     НЕ делится по доле времени (A19) — считается неизвестным для этого
     часа, quality_flags получает edge_approx как пояснение "частично
-    покрыт, но не сведён"."""
+    покрыт, но не сведён".
+
+    `_cache` (партия 10, этап E, docs/load-test-2026-09.md) — необязательный
+    dict {(point_id, ts_from, ts_to, timezone): MetricResult}, общий на ОДИН
+    HTTP-запрос. Без него ничего не меняется (совместимость со всеми
+    существующими вызовами). С ним — устраняет конкретно найденную нагрузочным
+    прогоном избыточность: overview/summary и reports/query считают
+    measured_point для ОДНИХ И ТЕХ ЖЕ точек по нескольку раз за один ответ
+    (один раз — для показа по отдельности, второй — внутри
+    balance_from_point_sets/sum_points при расчёте небаланса; у reports/query
+    ещё и третий — при формировании строк отчёта). Ключ кэша — сама точка И
+    период, поэтому подстановка результата детерминирована и не зависит от
+    порядка вызовов."""
+    cache_key = (point_id, ts_from, ts_to, timezone)
+    if _cache is not None and cache_key in _cache:
+        return _cache[cache_key]
+
     bindings = point_binding_repo.list_for_point(point_id)
     segments = resolve_primary_segments(bindings, ts_from, ts_to)
 
@@ -86,6 +102,27 @@ def measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
     parts: List[Optional[float]] = []
     valid_ids: List[str] = []
     flags = set()
+
+    # Партия 10, этап E (нагрузочная проверка, docs/load-test-2026-09.md):
+    # раньше здесь было ДО ДВУХ SQL-запросов НА КАЖДЫЙ ЧАС периода —
+    # meter_source_repo.get_by_id() и aggregates_repo.get() по одному часу.
+    # На месячном отчёте (~720 часов) на КАЖДУЮ точку/ветвь это давало
+    # тысячи запросов на один HTTP-ответ (нагрузочный прогон на ~100
+    # точках поймал 9-28 тысяч запросов на один overview/summary или
+    # reports/query — на порядки больше, чем реально нужно). Сегментов у
+    # точки на практике 1-2 (замена прибора внутри запрошенного периода —
+    # редкость), поэтому источник и агрегаты сегмента загружаются ОДНИМ
+    # запросом каждый — на сегмент, а не на час; результат раскладывается
+    # по часам в памяти. Логика по часам (гэпы/edge_approx/reset) не
+    # изменилась ни на строчку — изменился только способ достать данные.
+    seg_data = {}  # id(segment) -> (meter_id | None, {period_start: HourlyAggregate})
+    for seg in segments:
+        src = meter_source_repo.get_by_id(seg.meter_source_id)
+        if src is None:
+            seg_data[id(seg)] = (None, {})
+            continue
+        rows = aggregates_repo.list_range(src.meter_id, seg.ts_from, seg.ts_to)
+        seg_data[id(seg)] = (src.meter_id, {a.period_start: a for a in rows})
 
     for h_start, h_end in hours:
         hour_id = str(h_start)
@@ -100,13 +137,13 @@ def measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
             continue
 
         seg = covering[0]
-        src = meter_source_repo.get_by_id(seg.meter_source_id)
-        if src is None:
+        meter_id, agg_by_hour = seg_data[id(seg)]
+        if meter_id is None:
             parts.append(None)
             flags.add(QF_GAP)
             continue
 
-        agg = aggregates_repo.get(src.meter_id, h_start)
+        agg = agg_by_hour.get(h_start)
         if agg is None or agg.ap_energy_delta is None:
             parts.append(None)
             if agg is not None and agg.quality_flag == "reset":
@@ -132,7 +169,7 @@ def measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
     else:
         availability = AVAILABILITY_PARTIAL
 
-    return MetricResult(
+    result = MetricResult(
         metric="energy_import", unit="kWh", mode=MODE_MEASURED,
         value=value, known_value=known_value, availability=availability,
         quality_flags=sorted(flags), structure_quality=STRUCTURE_VERIFIED,
@@ -142,6 +179,9 @@ def measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
         period=ResultPeriod(ts_from=str(ts_from), ts_to=str(ts_to), timezone=timezone),
         explanation={"point_id": point_id},
     )
+    if _cache is not None:
+        _cache[cache_key] = result
+    return result
 
 
 # ---------------------------------------------------------------------
@@ -199,11 +239,13 @@ def check_sum_overlap(edge_repo, point_ids):
 
 
 def sum_points(point_binding_repo, aggregates_repo, meter_source_repo, edge_repo,
-               point_ids, ts_from, ts_to, timezone="UTC"):
+               point_ids, ts_from, ts_to, timezone="UTC", _cache=None):
     """§5.1 sum: сумма независимых точек. A05: повторяющиеся ID точки
     учитываются один раз (дедупликация с сохранением порядка). A04:
     электрическое перекрытие отклоняется целиком, а не молча исключает
-    точку из состава."""
+    точку из состава.
+
+    `_cache` — см. measured_point(); пробрасывается без изменения смысла."""
     point_ids = list(dict.fromkeys(point_ids))  # дедуп, порядок сохранён
 
     root_by_point = check_sum_overlap(edge_repo, point_ids)
@@ -214,7 +256,7 @@ def sum_points(point_binding_repo, aggregates_repo, meter_source_repo, edge_repo
 
     results = [
         measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
-                        p, ts_from, ts_to, timezone)
+                        p, ts_from, ts_to, timezone, _cache=_cache)
         for p in point_ids
     ]
 
@@ -261,7 +303,7 @@ def sum_points(point_binding_repo, aggregates_repo, meter_source_repo, edge_repo
 
 def balance_from_point_sets(point_binding_repo, aggregates_repo, meter_source_repo,
                              edge_repo, input_ids, output_ids, ts_from, ts_to,
-                             timezone="UTC"):
+                             timezone="UTC", _cache=None):
     """§5.2 A08/A09, ядро (партия 7, Этап 2, Э2.2): R = ΣE_in − ΣE_out
     сохраняет знак; неполнота обязательного входа/выхода делает строгий
     небаланс null (value=None), но известные части остаются отдельно
@@ -272,15 +314,21 @@ def balance_from_point_sets(point_binding_repo, aggregates_repo, meter_source_re
     вычисленные из топологии (назначенный ввод узла/объекта и
     first_measurements). balance() ниже — тонкая обёртка над этим ядром
     для balance_scopes; test_step17/test_step28 не должны увидеть разницы
-    в поведении."""
+    в поведении.
+
+    `_cache` (партия 10, этап E) — см. measured_point(): здесь особенно
+    важен, потому что input_ids/output_ids overview_service.object_summary()
+    и balance_node() уже успели измерить ПО ОТДЕЛЬНОСТИ (для показа) до
+    вызова этой функции — без общего кэша те же точки за тот же период
+    считались бы ЕЩЁ РАЗ."""
     in_result = (
         sum_points(point_binding_repo, aggregates_repo, meter_source_repo, edge_repo,
-                   input_ids, ts_from, ts_to, timezone)
+                   input_ids, ts_from, ts_to, timezone, _cache=_cache)
         if input_ids else None
     )
     out_result = (
         sum_points(point_binding_repo, aggregates_repo, meter_source_repo, edge_repo,
-                   output_ids, ts_from, ts_to, timezone)
+                   output_ids, ts_from, ts_to, timezone, _cache=_cache)
         if output_ids else None
     )
 

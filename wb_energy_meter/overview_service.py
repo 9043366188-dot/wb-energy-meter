@@ -175,7 +175,7 @@ def _branch_name(edges_by_id: Dict[int, object], node_repo, edge_id: int,
 
 def balance_node(point_binding_repo, aggregates_repo, meter_source_repo,
                   edge_repo, node_repo, node_id, ts_from, ts_to,
-                  timezone="UTC") -> NodeBalanceResult:
+                  timezone="UTC", _cache=None) -> NodeBalanceResult:
     """Таблица Э2.3:
 
     - incoming(N) нет (источник/висячий узел) -> no_incoming_line;
@@ -183,7 +183,14 @@ def balance_node(point_binding_repo, aggregates_repo, meter_source_repo,
       ветви всё равно в ответе;
     - нет выходов и нет неизмеренных ветвей (лист) -> no_outgoing_lines;
     - иначе -> ядро с input=[incoming.primary_point_id],
-      output=first_measurements(N)."""
+      output=first_measurements(N).
+
+    `_cache` (партия 10, этап E) — см. object_summary(): input/outputs
+    считаются здесь напрямую (для показа), а затем ещё раз внутри
+    balance_from_point_sets() — тот же самый повтор, что и в
+    object_summary(), только на один узел вместо всего объекта."""
+    if _cache is None:
+        _cache = {}
     edges = edge_repo.list_active_published()
     edges_by_id = _edges_by_id(edges)
     incoming = next((e for e in edges if e.to_node_id == node_id), None)
@@ -197,7 +204,7 @@ def balance_node(point_binding_repo, aggregates_repo, meter_source_repo,
     input_point_id = incoming.primary_point_id
     input_result = (
         measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
-                        input_point_id, ts_from, ts_to, timezone)
+                        input_point_id, ts_from, ts_to, timezone, _cache=_cache)
         if input_point_id is not None else None
     )
     input_entry = {
@@ -210,7 +217,7 @@ def balance_node(point_binding_repo, aggregates_repo, meter_source_repo,
     outputs = []
     for b in boundaries:
         r = measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
-                            b.point_id, ts_from, ts_to, timezone)
+                            b.point_id, ts_from, ts_to, timezone, _cache=_cache)
         outputs.append({
             "edge_id": b.edge_id, "point_id": b.point_id, "to_node_id": b.to_node_id,
             "name": _branch_name(edges_by_id, node_repo, b.edge_id, b.to_node_id),
@@ -241,7 +248,7 @@ def balance_node(point_binding_repo, aggregates_repo, meter_source_repo,
         result = balance_from_point_sets(
             point_binding_repo, aggregates_repo, meter_source_repo, edge_repo,
             [input_point_id], [b.point_id for b in boundaries],
-            ts_from, ts_to, timezone,
+            ts_from, ts_to, timezone, _cache=_cache,
         )
     except AccountingConflict as e:
         raise BalanceAlgorithmError(
@@ -277,8 +284,19 @@ def _resolve_source_edges(node_repo, edge_repo):
 
 def object_summary(point_binding_repo, aggregates_repo, meter_source_repo,
                     edge_repo, node_repo, ts_from, ts_to,
-                    timezone="UTC") -> ObjectSummary:
+                    timezone="UTC", _cache=None) -> ObjectSummary:
     """Э2.4: итог и небаланс объекта.
+
+    `_cache` (партия 10, этап E, docs/load-test-2026-09.md) — необязательный
+    dict, общий на один HTTP-запрос, см. measured_point(). Внутри ЭТОЙ
+    функции те же точки считаются дважды: напрямую (для network_branches и
+    measured_sum) и ещё раз внутри balance_from_point_sets() — нагрузочный
+    прогон на ~100 точках поймал это как основную причину, почему
+    reports/query за месяц не укладывался в целевые 500 мс даже после
+    устранения "запрос на каждый час" в measured_point(). Если вызывающий
+    код (api_v2.py) кэш не передал, создаём локальный — поведение и
+    результат не меняются, меняется только то, сколько раз пересчитывается
+    одно и то же.
 
     - Нет ни одной линии от source: object_total=None,
       reason="no_input_assigned" (UI-кнопка "Настроить границу объекта").
@@ -293,6 +311,8 @@ def object_summary(point_binding_repo, aggregates_repo, meter_source_repo,
       итог объекта неполный — imbalance принудительно null, причина
       "object_total_incomplete" (а не generic "no_data" resolve_percentage,
       чтобы UI мог показать точную причину)."""
+    if _cache is None:
+        _cache = {}
     source_edges = _resolve_source_edges(node_repo, edge_repo)
 
     if not source_edges:
@@ -318,7 +338,7 @@ def object_summary(point_binding_repo, aggregates_repo, meter_source_repo,
     try:
         measured_sum = (
             sum_points(point_binding_repo, aggregates_repo, meter_source_repo,
-                       edge_repo, input_point_ids, ts_from, ts_to, timezone)
+                       edge_repo, input_point_ids, ts_from, ts_to, timezone, _cache=_cache)
             if input_point_ids else None
         )
     except AccountingConflict as e:
@@ -377,7 +397,7 @@ def object_summary(point_binding_repo, aggregates_repo, meter_source_repo,
     network_branches = []
     for b in boundaries:
         r = measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
-                            b.point_id, ts_from, ts_to, timezone)
+                            b.point_id, ts_from, ts_to, timezone, _cache=_cache)
         pct, pct_reason = resolve_percentage(
             r.value, object_total.value if object_total is not None else None)
         network_branches.append({
@@ -413,7 +433,7 @@ def object_summary(point_binding_repo, aggregates_repo, meter_source_repo,
             imbalance = balance_from_point_sets(
                 point_binding_repo, aggregates_repo, meter_source_repo, edge_repo,
                 input_point_ids, [b.point_id for b in boundaries],
-                ts_from, ts_to, timezone,
+                ts_from, ts_to, timezone, _cache=_cache,
             )
         except AccountingConflict as e:
             raise BalanceAlgorithmError(
@@ -445,11 +465,18 @@ def object_summary(point_binding_repo, aggregates_repo, meter_source_repo,
 # ---------------------------------------------------------------------
 
 def network_branches_for_reports(point_binding_repo, aggregates_repo, meter_source_repo,
-                                  edge_repo, node_repo, ts_from, ts_to, timezone="UTC"):
+                                  edge_repo, node_repo, ts_from, ts_to, timezone="UTC",
+                                  _cache=None):
     """Тонкая обёртка над object_summary() для /api/v2/reports/query
     dimension="branch" (Э2.6) — берёт те же network_branches, что и
     Обзор, чтобы числа на экране, в отчёте и в CSV совпадали по
-    построению (A43), а не пересчитывались отдельной формулой."""
+    построению (A43), а не пересчитывались отдельной формулой.
+
+    `_cache` — см. measured_point()/object_summary(): api_v2.py передаёт
+    сюда ОБЩИЙ кэш всего запроса reports/query, потому что после этого
+    вызова вызывающий код ещё раз считает результат по КАЖДОЙ ветви для
+    самих строк отчёта (см. _reports_row_result) — без общего кэша это
+    было бы третьим пересчётом тех же точек за тот же период."""
     summary = object_summary(point_binding_repo, aggregates_repo, meter_source_repo,
-                              edge_repo, node_repo, ts_from, ts_to, timezone)
+                              edge_repo, node_repo, ts_from, ts_to, timezone, _cache=_cache)
     return summary.network_branches

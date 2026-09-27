@@ -484,12 +484,20 @@ def test_a43_metrics_query_pins_snapshot_against_concurrent_write():
         allow_calc_finish = threading.Event()
         writer_result = {}
 
-        orig_get = AggregateRepo.get
+        # Партия 10, этап E: measured_point() теперь читает агрегаты сегмента
+        # ОДНИМ запросом через AggregateRepo.list_range() вместо запроса на
+        # каждый час через .get() (см. accounting_service.py — там же почему:
+        # нагрузочная проверка поймала тысячи запросов на один HTTP-ответ).
+        # Замедлять нужно ту функцию, которую расчёт реально вызывает сейчас
+        # — иначе entered_calc никогда не взводится, и этот тест ломается не
+        # из-за нарушения A43, а из-за того, что "медленная" точка ушла в
+        # метод, который никто не патчит.
+        orig_list_range = AggregateRepo.list_range
 
-        def slow_get(self, *a, **kw):
+        def slow_list_range(self, *a, **kw):
             entered_calc.set()
             allow_calc_finish.wait(timeout=5)
-            return orig_get(self, *a, **kw)
+            return orig_list_range(self, *a, **kw)
 
         def writer():
             entered_calc.wait(timeout=5)
@@ -500,7 +508,7 @@ def test_a43_metrics_query_pins_snapshot_against_concurrent_write():
             writer_result["status"] = r.status_code
             writer_result["body"] = r.get_json()
 
-        AggregateRepo.get = slow_get
+        AggregateRepo.list_range = slow_list_range
         try:
             t = threading.Thread(target=writer)
             t.start()
@@ -511,7 +519,7 @@ def test_a43_metrics_query_pins_snapshot_against_concurrent_write():
             allow_calc_finish.set()
             t.join(timeout=5)
         finally:
-            AggregateRepo.get = orig_get
+            AggregateRepo.list_range = orig_list_range
 
         assert r.status_code == 200, r.get_json()
         body = r.get_json()

@@ -1372,6 +1372,9 @@ def register_v2_routes(app, state, json_response):
         aggregates_repo = _aggregates_repo()
         source_repo = _source_repo()
         edge_repo = _edge_repo()
+        # Партия 10, этап E: один кэш measured_point() на весь запрос — см.
+        # accounting_service.measured_point/overview_service.balance_node.
+        _cache = {}
 
         with db.read() as c:
             if requested_revision is not None:
@@ -1394,7 +1397,7 @@ def register_v2_routes(app, state, json_response):
             try:
                 nb = overview_service.balance_node(
                     binding_repo, aggregates_repo, source_repo, edge_repo, node_repo,
-                    node_id, ts_from, ts_to, timezone_name)
+                    node_id, ts_from, ts_to, timezone_name, _cache=_cache)
             except BalanceAlgorithmError as e:
                 log.exception("Ошибка алгоритма баланса узла %s: %s", node_id, e)
                 body, status = _err(
@@ -2183,6 +2186,9 @@ def register_v2_routes(app, state, json_response):
         edge_repo = _edge_repo()
         node_repo = _node_repo()
         group_repo = _group_repo_v2()
+        # Партия 10, этап E: один кэш measured_point() на весь запрос — см.
+        # accounting_service.measured_point/overview_service.object_summary.
+        _cache = {}
 
         with db.read() as c:
             if requested_revision is not None:
@@ -2206,7 +2212,7 @@ def register_v2_routes(app, state, json_response):
                 try:
                     summary = overview_service.object_summary(
                         binding_repo, aggregates_repo, source_repo, edge_repo, node_repo,
-                        ts_from, ts_to, timezone_name)
+                        ts_from, ts_to, timezone_name, _cache=_cache)
                 except BalanceAlgorithmError as e:
                     log.exception("Ошибка алгоритма баланса при overview/summary: %s", e)
                     body, status = _err(
@@ -2358,25 +2364,33 @@ def register_v2_routes(app, state, json_response):
         return [m["point_id"] for m in group_repo.resolve_effective_members(group_id, at=at)]
 
     def _reports_row_result(dimension, point_ids, binding_repo, aggregates_repo,
-                             source_repo, edge_repo, ts_from, ts_to, timezone_name):
+                             source_repo, edge_repo, ts_from, ts_to, timezone_name,
+                             _cache=None):
         """Точка — measured_point по единственному id; ветвь/группа —
         sum_points по составу. A04: подтверждённое электрическое
         пересечение НЕ схлопывает всю выгрузку — только эта строка
         получает conflict_reason и result=None, остальные строки
         считаются как обычно (в отличие от Обзора, здесь без отката в
         comparison — отчёт технический, конфликт должен быть виден и
-        устранён в топологии, а не молча подменён поточной раскладкой)."""
+        устранён в топологии, а не молча подменён поточной раскладкой).
+
+        `_cache` (партия 10, этап E) — для dimension="branch" точки этих
+        же строк уже посчитаны выше, внутри
+        overview_service.network_branches_for_reports() (само оно —
+        обёртка над object_summary()); без общего кэша это был бы третий
+        пересчёт одного и того же за один ответ."""
         if dimension == "point":
             if not point_ids:
                 return None, "точка не найдена"
             result = measured_point(binding_repo, aggregates_repo, source_repo,
-                                     point_ids[0], ts_from, ts_to, timezone_name)
+                                     point_ids[0], ts_from, ts_to, timezone_name,
+                                     _cache=_cache)
             return result, None
         if not point_ids:
             return None, None
         try:
             result = sum_points(binding_repo, aggregates_repo, source_repo, edge_repo,
-                                 point_ids, ts_from, ts_to, timezone_name)
+                                 point_ids, ts_from, ts_to, timezone_name, _cache=_cache)
             return result, None
         except AccountingConflict as e:
             return None, str(e)
@@ -2396,6 +2410,12 @@ def register_v2_routes(app, state, json_response):
         A43: один db.read() на весь расчёт — тот же приём, что и в
         metrics/query и overview/summary (см. их докстринги)."""
         data = request.get_json(silent=True) or {}
+        # Партия 10, этап E: один кэш measured_point() на весь HTTP-запрос
+        # (см. accounting_service.measured_point/overview_service.object_summary)
+        # — для dimension="branch" точки уже посчитаны внутри
+        # network_branches_for_reports(), без кэша строки отчёта пересчитывали
+        # бы их заново.
+        _cache = {}
         dimension = data.get("dimension")
         if dimension not in ("point", "branch", "group", "balance_scope"):
             body, status = _err(
@@ -2495,7 +2515,7 @@ def register_v2_routes(app, state, json_response):
                     # состава учётных групп у dimension="group" ниже.
                     for nb in overview_service.network_branches_for_reports(
                             binding_repo, aggregates_repo, source_repo, edge_repo,
-                            node_repo, ts_from, ts_to, timezone_name):
+                            node_repo, ts_from, ts_to, timezone_name, _cache=_cache):
                         targets.append((nb["edge_id"], nb["name"], [nb["point_id"]]))
                 elif dimension == "group":
                     for gid in scope_ids:
@@ -2526,7 +2546,7 @@ def register_v2_routes(app, state, json_response):
                     else:
                         result, conflict_reason = _reports_row_result(
                             dimension, point_ids, binding_repo, aggregates_repo, source_repo,
-                            edge_repo, ts_from, ts_to, timezone_name)
+                            edge_repo, ts_from, ts_to, timezone_name, _cache=_cache)
                         member_ids = point_ids
 
                     if result is not None:
@@ -2563,7 +2583,8 @@ def register_v2_routes(app, state, json_response):
                         else:
                             cmp_result, cmp_conflict = _reports_row_result(
                                 dimension, cmp_point_ids, binding_repo, aggregates_repo,
-                                source_repo, edge_repo, cmp_ts_from, cmp_ts_to, timezone_name)
+                                source_repo, edge_repo, cmp_ts_from, cmp_ts_to, timezone_name,
+                                _cache=_cache)
                             cmp_member_ids = cmp_point_ids
 
                         if cmp_result is not None:
