@@ -22,7 +22,8 @@
     `reports/query` за месяц -- разница показывает, насколько долго
     расчёт фактически не даёт писателю продвинуться.
 
-Только stdlib -- никаких requests/psutil и т.п. (см. AGENTS.md).
+Только stdlib -- никаких requests/psutil и т.п. (см.
+docs/TZ-batch10-reliability-and-load.md §6).
 
 Использование:
     python scripts/loadtest/measure.py --db /tmp/wbem_loadtest_full.db --minutes 10

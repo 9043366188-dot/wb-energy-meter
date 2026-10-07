@@ -22,7 +22,7 @@ TZ-batch7-review-fixes.md, §B5/B8: "тест — в test_step41 (ниже)",
    POST /points/<id>/bindings).
 
 Каждая проверка "отказ" — с парной "легитимный запрос работает" (см.
-AGENTS.md).
+CODING_STANDARDS.md#api-и-проверки-поведения).
 
 Самостоятельный скрипт (не pytest):
     python tests/test_step41_planv3_api.py

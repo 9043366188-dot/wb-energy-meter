@@ -18,7 +18,8 @@
 #       --description="Обновление wb-energy-meter" \
 #       /bin/bash /opt/wb-energy-meter/scripts/self-update.sh
 #
-# Причина в AGENTS.md: у wb-energy-meter.service KillMode=mixed и
+# Причина описана в CODING_STANDARDS.md: у wb-energy-meter.service
+# KillMode=mixed и
 # MemoryMax=256M. Если апдейтер — дочерний процесс сервиса, он попадает
 # в ту же cgroup, и шаг 7 ниже (`systemctl stop` внутри install.sh)
 # убивает systemd ВСЮ cgroup, включая сам апдейтер — обновление
@@ -396,7 +397,8 @@ wait_for_health() {
 
 run_selfcheck() {
   # ТЗ v0.11.1, §2.2. /health отвечает "всё хорошо" даже когда интерфейс
-  # не грузится (белый экран 09.09.2026, см. AGENTS.md) — демон жив, а
+  # не грузится (белый экран 09.09.2026, см.
+  # docs/agent-guides/frontend.md) — демон жив, а
   # alpine.min.js не отдаётся, и /health этого не видит. /api/selfcheck
   # проверяет именно это: что все файлы, на которые ссылается index.html,
   # реально отдаются. Разбираем ответ без jq (на контроллере его может не

@@ -29,7 +29,8 @@ def _load_ui_all():
     return "\n".join(parts)
 
 
-# ---- Проверка баланса HTML-тегов (см. AGENTS.md: незакрытый <template>
+# ---- Проверка баланса HTML-тегов (см. docs/agent-guides/frontend.md:
+# незакрытый <template>
 # уже приводил к белому экрану без единой ошибки в консоли — самая
 # дорогая ошибка в истории проекта). Снимаем <script>/<style>/комментарии,
 # затем вручную сканируем строку посимвольно с учётом кавычек в атрибутах
@@ -210,7 +211,8 @@ def test_ui_has_overview_v2_branch_table():
 
 
 def test_index_html_tag_balance():
-    """Регрессия на незакрытый <template> (см. AGENTS.md) — самая дорогая
+    """Регрессия на незакрытый <template> (см.
+    docs/agent-guides/frontend.md) — самая дорогая
     ошибка в истории проекта: белый экран без единой ошибки в консоли."""
     content = _load_static("index.html")
     errors = check_tag_balance(content)

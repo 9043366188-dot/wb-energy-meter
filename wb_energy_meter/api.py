@@ -1321,7 +1321,8 @@ def create_app(state):
         2.0. Импорт `from werkzeug.utils import safe_join` на боевом
         контроллере падал с ImportError, обработчик отдавал 500,
         `alpine.min.js` не загружался — и весь интерфейс превращался в
-        белый экран (см. AGENTS.md). Своя проверка от версий не зависит.
+        белый экран (см. docs/agent-guides/frontend.md). Своя проверка от
+        версий не зависит.
         """
         parts = filename.replace("\\", "/").split("/")
         for part in parts:

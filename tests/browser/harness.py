@@ -13,11 +13,13 @@ app.test_client() того же самого app — это быстрее пр�
 in-memory MeterRegistry).
 
 Устроено по образцу tests/test_step39_plan_v3.py::make_client /
-make_client_with_plans (см. AGENTS.md — этот же паттерн _AppState).
+make_client_with_plans (см. `wb_energy_meter/api.py` — тот же паттерн
+_AppState).
 
 Не pytest-фикстура: тесты этого каталога — самостоятельные скрипты
 (python tests/browser/test_bNN_*.py), как и все остальные tests/*.py в
-проекте (см. AGENTS.md → «Команды»). Harness — обычный контекст-менеджер:
+проекте (см. CODING_STANDARDS.md → «Тестирование»). Harness — обычный
+контекст-менеджер:
 
     from harness import Harness, open_browser
 
@@ -269,7 +271,8 @@ class BrowserPage:
 
 def open_browser(url: str, viewport=None) -> BrowserPage:
     """Открыть страницу url в Chromium (PLAYWRIGHT_BROWSERS_PATH из
-    окружения — см. AGENTS.md/README, playwright install не запускать)."""
+    окружения — см. docs/agent-guides/browser-testing-linux.md;
+    playwright install не запускать)."""
     from playwright.sync_api import sync_playwright
 
     pw = sync_playwright().start()

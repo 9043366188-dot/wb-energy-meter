@@ -34,8 +34,8 @@
   (+ до ±1%) — небаланс объекта получается небольшим и правдоподобным,
   а не тождественным нулём и не хаосом.
 
-Только стандартная библиотека — без numpy/pandas и т.п. (см. AGENTS.md
-и docs/TZ-batch10-reliability-and-load.md §6: "только stdlib плюс
+Только стандартная библиотека — без numpy/pandas и т.п. (см.
+docs/TZ-batch10-reliability-and-load.md §6: "только stdlib плюс
 flask, paho-mqtt, pyyaml").
 
 Использование:
