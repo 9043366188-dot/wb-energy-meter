@@ -12,8 +12,8 @@
   файл через `write_status`, чтобы формат и атомарность были едины;
 - запуск апдейтера (`start_update`).
 
-Про запуск апдейтера отдельным юнитом — см. AGENTS.md, раздел про
-`systemd-run` и cgroup: апдейтер НЕЛЬЗЯ запускать обычным дочерним
+Про запуск апдейтера отдельным юнитом — см. CODING_STANDARDS.md, раздел
+«Установщик и самообновление»: апдейтер НЕЛЬЗЯ запускать обычным дочерним
 процессом сервиса, иначе `systemctl stop` из install.sh прибьёт его
 вместе с сервисом посреди обновления (KillMode=mixed убивает всю cgroup
 wb-energy-meter.service, плюс MemoryMax=256M на неё же).
@@ -295,7 +295,7 @@ def start_update(*, install_dir: str, status_path: str,
     except (OSError, FileNotFoundError) as e:
         log.warning(
             "systemd-run недоступен (%s) — использую фолбэк setsid/nohup. "
-            "Это НЕ рекомендуемый путь, см. AGENTS.md.", e)
+            "Это НЕ рекомендуемый путь, см. CODING_STANDARDS.md.", e)
         fallback_cmd = ["setsid", "nohup", "bash", script_path]
         try:
             launch(fallback_cmd, env_vars)

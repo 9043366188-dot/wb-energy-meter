@@ -39,7 +39,10 @@ test_step48_runner.py — цепляет саму себя, потому что 
   - иначе сам пробует достучаться до 127.0.0.1:1883 — если брокер
     отвечает (как в job `test` ci.yml, где mosquitto поднимается ДО
     вызова этого раннера), гоняет их как обычно; если нет — пропускает
-    их с явной пометкой SKIPPED, а не тихо и не как провал.
+    их с явной пометкой SKIPPED, а не тихо и не как провал. Адрес
+    проверки переопределяется WBEM_TEST_MQTT_PROBE=host:port — это
+    нужно тестам самого раннера (test_step48), чтобы не зависеть от
+    того, поднят ли mosquitto на машине.
 Пропущенные так тесты не влияют на код выхода — раннер остаётся
 зелёным и полезным без брокера, но НЕ прячет тот факт, что часть
 покрытия не выполнилась: это видно в сводке.
@@ -92,6 +95,32 @@ def _needs_mosquitto(path):
     return fnmatch.fnmatch(base, "*_daemon.py") or fnmatch.fnmatch(base, "*_e2e.py")
 
 
+PROBE_ENV = "WBEM_TEST_MQTT_PROBE"
+DEFAULT_PROBE = ("127.0.0.1", 1883)
+
+
+def _probe_address():
+    """Куда стучаться, чтобы понять, поднят ли брокер.
+
+    По умолчанию 127.0.0.1:1883 -- так работает job `test` в ci.yml и
+    человек у себя. Переменная окружения WBEM_TEST_MQTT_PROBE=host:port
+    нужна тестам самого раннера (test_step48): им надо самим решать,
+    «есть брокер» или «нет», независимо от того, поднят ли mosquitto на
+    машине. Без этого тест, молча предполагавший отсутствие брокера,
+    валил весь job `test`, где mosquitto поднимается ДО раннера.
+
+    Кривое значение -- ValueError: молча вернуться к умолчанию значило бы
+    проверять не тот адрес, который просили."""
+    raw = os.environ.get(PROBE_ENV, "").strip()
+    if not raw:
+        return DEFAULT_PROBE
+    host, sep, port = raw.rpartition(":")
+    if not sep or not host or not port.isdigit():
+        raise ValueError(
+            f"{PROBE_ENV}={raw!r}: ожидается host:port, например 127.0.0.1:1883")
+    return host, int(port)
+
+
 def _mosquitto_reachable(host="127.0.0.1", port=1883, timeout=0.5):
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -110,8 +139,16 @@ def run(argv=None):
     parser.add_argument(
         "--skip-mosquitto", action="store_true",
         help="безусловно пропустить тесты, которым нужен mosquitto "
-             "(иначе раннер сам проверит 127.0.0.1:1883)")
+             "(иначе раннер сам проверит 127.0.0.1:1883 или адрес из "
+             f"{PROBE_ENV}=host:port)")
     args = parser.parse_args(argv)
+
+    try:
+        probe_host, probe_port = _probe_address()
+    except ValueError as e:
+        print(f"ОШИБКА: {e}", file=sys.stderr)
+        return 2
+    probe_label = f"{probe_host}:{probe_port}"
 
     all_files = _discover()
     on_disk_count = len(glob.glob(GLOB_PATTERN))
@@ -148,10 +185,10 @@ def run(argv=None):
                 print(f"SKIP {base} (--skip-mosquitto)")
                 continue
             if broker_up is None:
-                broker_up = _mosquitto_reachable()
+                broker_up = _mosquitto_reachable(probe_host, probe_port)
             if not broker_up:
-                results.append((base, "SKIP", "нет mosquitto на 127.0.0.1:1883"))
-                print(f"SKIP {base} (нет mosquitto на 127.0.0.1:1883)")
+                results.append((base, "SKIP", f"нет mosquitto на {probe_label}"))
+                print(f"SKIP {base} (нет mosquitto на {probe_label})")
                 continue
 
         start = time.time()

@@ -2,7 +2,8 @@
 печатает сводку, код выхода != 0 при падении хотя бы одного сценария.
 
 Тот же принцип, что и у остальных tests/*.py (самостоятельные скрипты,
-не pytest — см. AGENTS.md → «Команды»). Требует Chromium/Playwright
+не pytest — см. CODING_STANDARDS.md → «Тестирование»). Требует
+Chromium/Playwright
 (PLAYWRIGHT_BROWSERS_PATH, см. README) — mosquitto НЕ требуется:
 браузерные сценарии не используют MQTT, только HTTP и прямые записи в
 БД через harness.py.

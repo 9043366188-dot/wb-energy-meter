@@ -41,7 +41,7 @@ def _load_package_data_globs():
 
     Своими руками, а не через tomllib: на контроллере Python 3.9, где
     tomllib отсутствует, а тянуть зависимость ради одного списка нельзя
-    (AGENTS.md — только stdlib + flask/paho-mqtt/pyyaml)."""
+    (см. CODING_STANDARDS.md#совместимость-с-контроллером)."""
     with open(PYPROJECT, "r", encoding="utf-8") as f:
         lines = f.read().splitlines()
 

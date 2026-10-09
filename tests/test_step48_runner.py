@@ -18,6 +18,7 @@ import glob
 import importlib.util
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -161,20 +162,70 @@ def test_mosquitto_detection_by_name_and_skip_flag():
             "упоминанием mosquitto/1883 текстом -- не должен пропускаться:\n"
             + r.stdout)
 
-        # Без флага: раннер сам не находит брокер на 127.0.0.1:1883 (в
-        # этой изолированной проверке предполагаем, что тестовое
-        # окружение CI/песочницы его не поднимало) и тоже пропускает
-        # *_daemon.py/*_e2e.py, а не пытается реально запустить и не виснет.
+        # Без флага, брокера НЕТ: адрес проверки направлен на заведомо
+        # закрытый порт через WBEM_TEST_MQTT_PROBE. Раньше здесь молча
+        # предполагалось, что на 127.0.0.1:1883 никого нет, -- а в job
+        # `test` ci.yml mosquitto поднимается ДО раннера, и этот тест
+        # валил весь job на всех версиях Python (найдено 09.10.2026).
         r2 = subprocess.run(
             [sys.executable, os.path.join(tmp_tests, "run_all.py")],
-            cwd=tmp, capture_output=True, text=True, timeout=30)
+            cwd=tmp, capture_output=True, text=True, timeout=30,
+            env=_env_with_probe(f"127.0.0.1:{_closed_port()}"))
         assert r2.returncode == 0, r2.stdout + r2.stderr
         assert "SKIP test_step92_fake_daemon.py" in r2.stdout, r2.stdout
         assert "SKIP test_step93_fake_e2e.py" in r2.stdout, r2.stdout
         assert "PASS test_step94_e2e_but_no_broker.py" in r2.stdout, r2.stdout
+
+        # Парная проверка: без флага, брокер ЕСТЬ (слушающий сокет на
+        # свободном порту). Раннер обязан попытаться запустить
+        # *_daemon.py/*_e2e.py; фальшивые падают -- код выхода != 0. Без
+        # этой половины тест выше прошёл бы и у раннера, который всегда
+        # всё пропускает.
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(4)
+            port = listener.getsockname()[1]
+            r3 = subprocess.run(
+                [sys.executable, os.path.join(tmp_tests, "run_all.py")],
+                cwd=tmp, capture_output=True, text=True, timeout=30,
+                env=_env_with_probe(f"127.0.0.1:{port}"))
+        finally:
+            listener.close()
+        assert r3.returncode != 0, r3.stdout + r3.stderr
+        assert "FAIL test_step92_fake_daemon.py" in r3.stdout, r3.stdout
+        assert "FAIL test_step93_fake_e2e.py" in r3.stdout, r3.stdout
+        assert "PASS test_step94_e2e_but_no_broker.py" in r3.stdout, r3.stdout
+
+        # Кривой адрес -- ошибка раннера (код 2), а не тихий откат к
+        # 127.0.0.1:1883.
+        r4 = subprocess.run(
+            [sys.executable, os.path.join(tmp_tests, "run_all.py")],
+            cwd=tmp, capture_output=True, text=True, timeout=30,
+            env=_env_with_probe("не-адрес"))
+        assert r4.returncode == 2, r4.stdout + r4.stderr
+        assert "WBEM_TEST_MQTT_PROBE" in r4.stderr, r4.stderr
         print("[OK] *_daemon.py/*_e2e.py распознаются по имени и пропускаются "
-              "(флагом и автоматически); файл с 'e2e' не как точный суффикс "
-              "и с mosquitto/1883 в тексте -- запускается как обычно")
+              "(флагом и при недоступном брокере), запускаются при доступном; "
+              "файл с 'e2e' не как точный суффикс и с mosquitto/1883 в тексте "
+              "-- запускается как обычно; кривой WBEM_TEST_MQTT_PROBE -- код 2")
+
+
+def _closed_port():
+    """Порт, на котором заведомо никто не слушает: занять свободный порт
+    и сразу отпустить."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+    finally:
+        s.close()
+
+
+def _env_with_probe(value):
+    env = dict(os.environ)
+    env["WBEM_TEST_MQTT_PROBE"] = value
+    return env
 
 
 def test_missing_file_protection_guard():
