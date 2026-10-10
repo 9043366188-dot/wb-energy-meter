@@ -45,6 +45,11 @@ B/C (BindingConflict/TopologyConflict/AccountingConflict/ValueError) в
   мастер переноса связей старой модели планов в electrical_edges;
   только с явным подтверждением каждой связи, идемпотентно через
   migration_map (см. migration_wizard_service.py, v2_migration_legacy_links).
+  Партия 11 (этап 11.5): `GET /api/v2/migration/status` (версия схемы,
+  поколения домена, счётчики migration_map, неподтверждённые связи —
+  migration_wizard_service.migration_status) и `PATCH /api/v2/plans/<id>`
+  (имя и «план по умолчанию»; вид и размеры плана неизменны; через протокол
+  ревизий).
   `GET /api/v2/structure/points` (§8.3, задача 1) — поиск точек учёта по
   имени/коду/MQTT ID/серийнику прибора/пути размещения (A02) для левой
   панели дерева экрана «Структура»; отдаёт также непривязанные/
@@ -54,7 +59,7 @@ B/C (BindingConflict/TopologyConflict/AccountingConflict/ValueError) в
 
   НЕ РЕАЛИЗОВАНО (сознательно отложено — вне этой задачи):
   metrics/jobs (долгие расчёты/подписки); plans/items/layout (это стадия D
-  плана — редактор плана v2); migration/status; инспектор объекта/
+  плана — редактор плана v2); инспектор объекта/
   однолинейная схема как второй канвас; адаптивная вёрстка (§8.5).
   Протокол ревизий не хранит и не восстанавливает историческую
   электрическую топологию "как было на ревизии N" (см. ограничение в
@@ -2554,7 +2559,16 @@ def register_v2_routes(app, state, json_response):
             return json_response(body, status)
         return json_response(_plan_to_dict_v2(plan), 201)
 
-    @app.route("/api/v2/plans/<int:plan_id>", methods=["GET", "DELETE"])
+    # Партия 11, этап 11.5 (дыра §9.2): PATCH плана. Меняются только имя и
+    # «план по умолчанию»; вид плана, размеры и фон — нет (см.
+    # SitePlanRepoV2.update). Запись идёт через протокол ревизий, как и
+    # остальные PATCH v2: expected_revision обязателен, устаревший → 409.
+    _PLAN_PATCH_FIELDS = ("name", "is_default")
+    _PLAN_IMMUTABLE_FIELDS = (
+        "plan_kind", "canvas_width", "canvas_height", "canvas_revision",
+        "image_width", "image_height", "image_file")
+
+    @app.route("/api/v2/plans/<int:plan_id>", methods=["GET", "DELETE", "PATCH"])
     def v2_plan_detail(plan_id):
         plan, err = _plan_or_404_v2(plan_id)
         if err:
@@ -2563,6 +2577,59 @@ def register_v2_routes(app, state, json_response):
         if request.method == "DELETE":
             _plan_repo_v2().delete(plan_id)
             return json_response({"ok": True, "id": plan_id})
+
+        if request.method == "PATCH":
+            data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+            immutable = [f for f in _PLAN_IMMUTABLE_FIELDS if f in data]
+            if immutable:
+                body, status = _err(
+                    "bad_request",
+                    "эти поля плана не меняются через PATCH: "
+                    + ", ".join(immutable) + " (вид и размеры плана неизменны, "
+                    "фон заменяется через POST /api/v2/plans/<id>/image)",
+                    400, fields=immutable, ids=[plan_id])
+                return json_response(body, status)
+            fields = {f: data[f] for f in _PLAN_PATCH_FIELDS if f in data}
+            if not fields:
+                body, status = _err(
+                    "bad_request",
+                    "нечего менять: укажите хотя бы одно из полей "
+                    + ", ".join(_PLAN_PATCH_FIELDS),
+                    400, fields=list(_PLAN_PATCH_FIELDS), ids=[plan_id])
+                return json_response(body, status)
+            if "name" in fields and not isinstance(fields["name"], str):
+                body, status = _err(
+                    "bad_request", "name должно быть строкой", 400,
+                    fields=["name"], ids=[plan_id])
+                return json_response(body, status)
+            if "is_default" in fields and not isinstance(fields["is_default"], bool):
+                body, status = _err(
+                    "bad_request", "is_default должно быть true или false", 400,
+                    fields=["is_default"], ids=[plan_id])
+                return json_response(body, status)
+
+            repo = _plan_repo_v2()
+            try:
+                updated, new_rev = with_revision_check(
+                    db, data.get("expected_revision"),
+                    lambda: repo.update(plan_id, **fields),
+                    touched=[("plan", plan_id)])
+            except GlobalRevisionConflict as e:
+                return _revision_conflict(e, ids=[plan_id])
+            except PlanError as e:
+                if repo.get_by_id(plan_id) is None:
+                    # План удалили между проверкой выше и записью.
+                    body, status = _err("not_found", f"План {plan_id} не найден",
+                                         404, ids=[plan_id])
+                else:
+                    # is_default проверен выше, так что доменная ошибка
+                    # SitePlanRepoV2.update — это пустое/слишком длинное имя.
+                    body, status = _err("bad_request", str(e), 400,
+                                         fields=["name"], ids=[plan_id])
+                return json_response(body, status)
+            out = _plan_to_dict_v2(updated)
+            out["configuration_revision"] = new_rev
+            return json_response(out)
 
         out = _plan_to_dict_v2(plan)
         out["items"] = [_plan_item_to_dict(i) for i in _plan_item_repo().list_for_plan(plan_id)]
@@ -2756,6 +2823,14 @@ def register_v2_routes(app, state, json_response):
     # пользователем (см. migration_wizard_service.py — там же почему
     # автоматика запрещена большим ТЗ). Старая модель не удаляется и не
     # меняется этими маршрутами.
+
+    @app.route("/api/v2/migration/status", methods=["GET"])
+    def v2_migration_status():
+        """Партия 11, этап 11.5: версия схемы, поколения домена, счётчики
+        `migration_map`, неподтверждённые связи мастера. Тонкий обработчик —
+        состав и смысл ключей описаны в
+        `migration_wizard_service.migration_status`. Только чтение."""
+        return json_response(migration_wizard_service.migration_status(db))
 
     @app.route("/api/v2/migration/legacy-links", methods=["GET"])
     def v2_migration_legacy_links():

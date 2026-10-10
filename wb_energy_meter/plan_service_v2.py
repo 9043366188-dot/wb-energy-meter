@@ -237,6 +237,49 @@ class SitePlanRepoV2:
         log.info("Создан план v2: %r (id=%d, kind=%s)", name, plan_id, plan_kind)
         return self.get_by_id(plan_id)
 
+    def update(self, plan_id: int, *, name: Optional[str] = None,
+               is_default: Optional[bool] = None) -> PlanV2:
+        """Партия 11, этап 11.5: переименование плана и смена «плана по
+        умолчанию». `None` у аргумента = «не менять» (имя `null` в JSON
+        обработчик отсекает до вызова — оно не равно «не менять»).
+
+        `plan_kind` и размеры/изображение здесь НЕ меняются: смена вида
+        (floor ↔ single_line) сделала бы недействительными `plan_items`/
+        `plan_edge_views` с `coord_space` прежнего вида, а фон версионируется
+        отдельным `replace_image`. Поэтому метод и не принимает эти поля.
+
+        `is_default=True` делает план единственным по умолчанию: у остальных
+        флаг снимается в той же транзакции (нет окна «два плана по умолчанию»
+        и нет окна «ни одного» между двумя запросами, как было бы при
+        последовательных вызовах); `is_default=False` снимает флаг только с
+        этого плана (как v1 `SitePlanRepo.update` — «по умолчанию» нет совсем,
+        интерфейс тогда показывает первый план списка)."""
+        validated_name = _validate_plan_name(name) if name is not None else None
+        if is_default is not None and not isinstance(is_default, bool):
+            raise PlanError("is_default должен быть true или false")
+        now = int(time.time())
+        with self._db.transaction() as c:
+            row = c.execute("SELECT id FROM site_plans WHERE id = ?",
+                            (plan_id,)).fetchone()
+            if row is None:
+                raise PlanError(f"План id={plan_id} не найден")
+            if is_default:
+                c.execute("UPDATE site_plans SET is_default = 0 "
+                          "WHERE is_default = 1 AND id != ?", (plan_id,))
+            sets, params = [], []
+            if validated_name is not None:
+                sets.append("name = ?"); params.append(validated_name)
+            if is_default is not None:
+                sets.append("is_default = ?"); params.append(1 if is_default else 0)
+            if sets:
+                sets.append("updated_at = ?"); params.append(now)
+                params.append(plan_id)
+                c.execute(f"UPDATE site_plans SET {', '.join(sets)} WHERE id = ?",
+                          tuple(params))
+        log.info("Обновлён план v2 id=%d: name=%r is_default=%r",
+                 plan_id, validated_name, is_default)
+        return self.get_by_id(plan_id)
+
     def replace_image(self, plan_id: int, image_bytes: bytes) -> PlanV2:
         """Новый фон версионируется, старый файл НЕ удаляется (§7.2:
         откат должен быть возможен). Геометрия существующих plan_items
