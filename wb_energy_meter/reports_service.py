@@ -19,6 +19,17 @@ A21/A22 — режимы состава группы:
   резолвятся исторически верно: `measured_point()` всегда сегментирует
   период по истории привязок точки независимо от режима.
 
+Партия 12 (12.2) — `structure_mode` ("current" по умолчанию | "as_was"):
+  "as_was" делит период на интервалы постоянной структуры
+  (`topology_history`): состав группы определяется на начало КАЖДОГО
+  интервала (A21: точка перенесена с 15-го — расход делится по дате),
+  связи, измерители линий и виды узлов — как они были (сетевые ветви).
+  Результаты интервалов суммируются; часть периода до начала журнала
+  изменений помечается `assumed_legacy` (A23). "current" — структура
+  «сейчас»; измеритель, ставший неактивным (архив, `enabled=0`), перестаёт
+  быть измерителем линии с даты выбытия (A39, сеть). Границы баланса
+  (`balance_scope`) считаются по текущему составу в обоих режимах.
+
 Сквозной `cache` (партия 10, этап E) — один словарь на ОДИН HTTP-ответ,
 общий для всех вызовов `measured_point`/`sum_points`: для
 `dimension="branch"` точки этих же строк уже посчитаны внутри
@@ -34,6 +45,9 @@ from . import overview_service
 from .accounting_contract import resolve_percentage
 from .accounting_service import (
     AccountingConflict, balance, measured_point, sum_points,
+)
+from .topology_history import (
+    STRUCTURE_MODES, group_composition_breakpoints, merge_results,
 )
 
 DIMENSIONS = ("point", "branch", "group", "balance_scope")
@@ -86,11 +100,37 @@ def row_result(dimension: str, point_ids: Optional[Sequence[int]], binding_repo,
         return None, str(e)
 
 
+def as_was_group_result(db, history, group_repo, group_id: int, binding_repo,
+                        aggregates_repo, source_repo, ts_from: int, ts_to: int,
+                        timezone_name: str, cache: Optional[dict] = None):
+    """Группа за период по истории (A21): состав — на начало каждого
+    интервала постоянной структуры, суммы интервалов складываются.
+    Возвращает `(MetricResult | None, conflict_reason | None, member_ids)`.
+    Подтверждённое электрическое пересечение в любом интервале делает
+    конфликтной всю строку (как и в режиме `current`)."""
+    extra = group_composition_breakpoints(db, group_id, ts_from, ts_to)
+    parts, member_ids = [], []
+    for iv in history.intervals(ts_from, ts_to, extra):
+        points = [m["point_id"]
+                  for m in group_repo.resolve_effective_members(group_id, at=iv.a)]
+        for pid in points:
+            if pid not in member_ids:
+                member_ids.append(pid)
+        result, conflict = row_result(
+            "group", points, binding_repo, aggregates_repo, source_repo,
+            iv.edge_repo, iv.a, iv.b, timezone_name, cache=cache)
+        if conflict:
+            return None, conflict, member_ids
+        parts.append((iv, result))
+    return merge_results(parts, ts_from, ts_to, timezone_name), None, member_ids
+
+
 def resolve_targets(c, *, dimension: str, scope_ids: Optional[Sequence[int]],
                     ts_from: int, ts_to: int, timezone_name: str,
                     composition_mode: str, binding_repo, aggregates_repo,
                     source_repo, edge_repo, node_repo, group_repo, point_repo,
-                    cache: dict) -> List[Tuple[int, str, Optional[List[int]]]]:
+                    cache: dict, history=None, branch_results: Optional[dict] = None
+                    ) -> List[Tuple[int, str, Optional[List[int]]]]:
     """Список `(id, name, point_ids | None)` по запрошенным срезам. Для
     `balance_scope` состав точек считает сам `balance()`, поэтому `None`.
     Несуществующий срез — `ReportTargetNotFound` (до какого-либо расчёта)."""
@@ -109,8 +149,11 @@ def resolve_targets(c, *, dimension: str, scope_ids: Optional[Sequence[int]],
         # вне объёма), в отличие от исторического состава учётных групп.
         for nb in overview_service.network_branches_for_reports(
                 binding_repo, aggregates_repo, source_repo, edge_repo,
-                node_repo, ts_from, ts_to, timezone_name, _cache=cache):
+                node_repo, ts_from, ts_to, timezone_name, _cache=cache,
+                history=history):
             targets.append((nb["edge_id"], nb["name"], [nb["point_id"]]))
+            if branch_results is not None:
+                branch_results[nb["edge_id"]] = nb["result"]
     elif dimension == "group":
         for gid in scope_ids:
             g = group_repo.get_by_id(gid)
@@ -134,7 +177,8 @@ def build_rows(c, *, db, dimension: str, scope_ids: Optional[Sequence[int]],
                binding_repo, aggregates_repo, source_repo, edge_repo, node_repo,
                group_repo, point_repo,
                tag_result: Callable[[object, int], object],
-               cache: Optional[dict] = None) -> List[Dict]:
+               cache: Optional[dict] = None,
+               structure_mode: str = "current", history=None) -> List[Dict]:
     """Строки отчёта. `c` — соединение открытого `db.read()` (один снимок на
     весь расчёт, A43); `tag_result(result, revision_id)` проставляет
     ревизию и `as_of` на готовый результат — это делает HTTP-слой, а не
@@ -144,16 +188,40 @@ def build_rows(c, *, db, dimension: str, scope_ids: Optional[Sequence[int]],
     чисел, посчитанных по разному составу точек)."""
     if cache is None:
         cache = {}
+    if structure_mode not in STRUCTURE_MODES:
+        raise ValueError(
+            f"structure_mode — допустимые: {'|'.join(STRUCTURE_MODES)}")
+    as_was = structure_mode == "as_was" and history is not None
     cmp_ts_from = cmp_ts_to = None
     if compare_range is not None:
         cmp_ts_from, cmp_ts_to = compare_range
+
+    # Сетевые ветви: если период пересекает изменение структуры (или режим
+    # as_was), строка берёт склеенный результат ветви из сводки по
+    # интервалам — те же числа, что на «Обзоре» (A43); иначе — прежний путь.
+    branch_results: Optional[dict] = None
+    cmp_branch_results: Optional[dict] = None
+    if dimension == "branch" and history is not None:
+        if not history.trivial(history.intervals(ts_from, ts_to)):
+            branch_results = {}
+        if (compare_range is not None
+                and not history.trivial(history.intervals(cmp_ts_from, cmp_ts_to))):
+            cmp_branch_results = {}
 
     targets = resolve_targets(
         c, dimension=dimension, scope_ids=scope_ids, ts_from=ts_from, ts_to=ts_to,
         timezone_name=timezone_name, composition_mode=composition_mode,
         binding_repo=binding_repo, aggregates_repo=aggregates_repo,
         source_repo=source_repo, edge_repo=edge_repo, node_repo=node_repo,
-        group_repo=group_repo, point_repo=point_repo, cache=cache)
+        group_repo=group_repo, point_repo=point_repo, cache=cache,
+        history=history, branch_results=branch_results)
+    if cmp_branch_results is not None:
+        # состав ветвей второго периода (может отличаться от основного)
+        for nb in overview_service.network_branches_for_reports(
+                binding_repo, aggregates_repo, source_repo, edge_repo, node_repo,
+                cmp_ts_from, cmp_ts_to, timezone_name, _cache=cache,
+                history=history):
+            cmp_branch_results[nb["edge_id"]] = nb["result"]
 
     rows = []
     for scope_id, name, point_ids in targets:
@@ -163,6 +231,13 @@ def build_rows(c, *, db, dimension: str, scope_ids: Optional[Sequence[int]],
             conflict_reason = None
             member_ids = (result.explanation.get("input_point_ids", [])
                           + result.explanation.get("output_point_ids", []))
+        elif dimension == "group" and as_was:
+            result, conflict_reason, member_ids = as_was_group_result(
+                db, history, group_repo, scope_id, binding_repo, aggregates_repo,
+                source_repo, ts_from, ts_to, timezone_name, cache=cache)
+        elif branch_results is not None:
+            result, conflict_reason = branch_results.get(scope_id), None
+            member_ids = point_ids
         else:
             result, conflict_reason = row_result(
                 dimension, point_ids, binding_repo, aggregates_repo, source_repo,
@@ -182,7 +257,7 @@ def build_rows(c, *, db, dimension: str, scope_ids: Optional[Sequence[int]],
         }
 
         if compare_range is not None:
-            if dimension == "group":
+            if dimension == "group" and not as_was:
                 cmp_point_ids = resolve_group_points(
                     group_repo, scope_id, composition_mode, cmp_ts_from)
             else:
@@ -199,6 +274,14 @@ def build_rows(c, *, db, dimension: str, scope_ids: Optional[Sequence[int]],
                 cmp_conflict = None
                 cmp_member_ids = (cmp_result.explanation.get("input_point_ids", [])
                                   + cmp_result.explanation.get("output_point_ids", []))
+            elif dimension == "group" and as_was:
+                cmp_result, cmp_conflict, cmp_member_ids = as_was_group_result(
+                    db, history, group_repo, scope_id, binding_repo,
+                    aggregates_repo, source_repo, cmp_ts_from, cmp_ts_to,
+                    timezone_name, cache=cache)
+            elif cmp_branch_results is not None:
+                cmp_result, cmp_conflict = cmp_branch_results.get(scope_id), None
+                cmp_member_ids = cmp_point_ids
             else:
                 cmp_result, cmp_conflict = row_result(
                     dimension, cmp_point_ids, binding_repo, aggregates_repo,
