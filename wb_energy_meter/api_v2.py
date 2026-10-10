@@ -45,6 +45,11 @@ B/C (BindingConflict/TopologyConflict/AccountingConflict/ValueError) в
   мастер переноса связей старой модели планов в electrical_edges;
   только с явным подтверждением каждой связи, идемпотентно через
   migration_map (см. migration_wizard_service.py, v2_migration_legacy_links).
+  Партия 11 (этап 11.5): `GET /api/v2/migration/status` (версия схемы,
+  поколения домена, счётчики migration_map, неподтверждённые связи —
+  migration_wizard_service.migration_status) и `PATCH /api/v2/plans/<id>`
+  (имя и «план по умолчанию»; вид и размеры плана неизменны; через протокол
+  ревизий).
   `GET /api/v2/structure/points` (§8.3, задача 1) — поиск точек учёта по
   имени/коду/MQTT ID/серийнику прибора/пути размещения (A02) для левой
   панели дерева экрана «Структура»; отдаёт также непривязанные/
@@ -54,7 +59,7 @@ B/C (BindingConflict/TopologyConflict/AccountingConflict/ValueError) в
 
   НЕ РЕАЛИЗОВАНО (сознательно отложено — вне этой задачи):
   metrics/jobs (долгие расчёты/подписки); plans/items/layout (это стадия D
-  плана — редактор плана v2); migration/status; инспектор объекта/
+  плана — редактор плана v2); инспектор объекта/
   однолинейная схема как второй канвас; адаптивная вёрстка (§8.5).
   Протокол ревизий не хранит и не восстанавливает историческую
   электрическую топологию "как было на ревизии N" (см. ограничение в
@@ -82,6 +87,7 @@ from .accounting_service import (
     AccountingConflict, measured_point, sum_points, balance, comparison,
 )
 from . import overview_service
+from . import reports_service
 from .overview_service import BalanceAlgorithmError
 from .binding_service import BindingConflict, PointBindingRepo
 from .location_repo import LocationRepo
@@ -1606,13 +1612,13 @@ def register_v2_routes(app, state, json_response):
         """A43 (ТЗ §13/§6.1, партия 2 задача 1): "внутри запроса один снимок,
         даже если внутри несколько обращений к репозиториям". Реализовано
         через ОДИН внешний `with db.read()` на весь расчёт (не по одному на
-        репозиторий, как раньше) — `Database` в этом проекте держит
-        единственное соединение под общим `threading.RLock()`
-        (см. db.py), поэтому пока этот блок не завершится, ни одна
-        конкурентная запись (`db.transaction()`, та же блокировка) не
-        может вклиниться между двумя внутренними чтениями расчёта; ревизия
-        фиксируется первой инструкцией внутри блока и используется на всё
-        время вычисления."""
+        репозиторий, как раньше). С партии 11 (этап 11.3) `db.read()` — это
+        одна читающая транзакция на отдельном соединении пула (режим WAL
+        даёт снимок): все SELECT внутри блока видят одно состояние базы, а
+        конкурентная запись (`db.transaction()` на соединении-писателе) не
+        ждёт читателя и не попадает в его снимок. Ревизия фиксируется первой
+        инструкцией внутри блока и используется на всё время вычисления;
+        новая структура доступна со следующим запросом."""
         data = request.get_json(silent=True) or {}
         mode = data.get("mode")
         timezone_name = data.get("timezone", "UTC")
@@ -1635,7 +1641,7 @@ def register_v2_routes(app, state, json_response):
         source_repo = _source_repo()
         edge_repo = _edge_repo()
 
-        # A43: держим ОДИН read-контекст (== одну блокировку) на весь
+        # A43: держим ОДИН read-контекст (== один снимок БД) на весь
         # расчёт, а не по одному на repo-вызов внутри measured/sum/balance —
         # см. докстринг метода.
         with db.read() as c:
@@ -2359,42 +2365,8 @@ def register_v2_routes(app, state, json_response):
     # Оба режима явно возвращаются в ответе (`composition_mode`) —
     # фронтенд обязан подписать выбранный режим и на экране, и в CSV,
     # чтобы никогда не выдавать один набор чисел за другой молча.
-    def _reports_resolve_group_points(group_repo, group_id, composition_mode, ts_from):
-        at = ts_from if composition_mode == "as_was" else None
-        return [m["point_id"] for m in group_repo.resolve_effective_members(group_id, at=at)]
-
-    def _reports_row_result(dimension, point_ids, binding_repo, aggregates_repo,
-                             source_repo, edge_repo, ts_from, ts_to, timezone_name,
-                             _cache=None):
-        """Точка — measured_point по единственному id; ветвь/группа —
-        sum_points по составу. A04: подтверждённое электрическое
-        пересечение НЕ схлопывает всю выгрузку — только эта строка
-        получает conflict_reason и result=None, остальные строки
-        считаются как обычно (в отличие от Обзора, здесь без отката в
-        comparison — отчёт технический, конфликт должен быть виден и
-        устранён в топологии, а не молча подменён поточной раскладкой).
-
-        `_cache` (партия 10, этап E) — для dimension="branch" точки этих
-        же строк уже посчитаны выше, внутри
-        overview_service.network_branches_for_reports() (само оно —
-        обёртка над object_summary()); без общего кэша это был бы третий
-        пересчёт одного и того же за один ответ."""
-        if dimension == "point":
-            if not point_ids:
-                return None, "точка не найдена"
-            result = measured_point(binding_repo, aggregates_repo, source_repo,
-                                     point_ids[0], ts_from, ts_to, timezone_name,
-                                     _cache=_cache)
-            return result, None
-        if not point_ids:
-            return None, None
-        try:
-            result = sum_points(binding_repo, aggregates_repo, source_repo, edge_repo,
-                                 point_ids, ts_from, ts_to, timezone_name, _cache=_cache)
-            return result, None
-        except AccountingConflict as e:
-            return None, str(e)
-
+    # Партия 11, этап 11.4: расчёт строк отчёта вынесен в reports_service.py;
+    # здесь остаются разбор тела, фиксация ревизии и перевод исключений в HTTP.
     @app.route("/api/v2/reports/query", methods=["POST"])
     def v2_reports_query():
         """Тело: {"dimension": "point"|"branch"|"group"|"balance_scope",
@@ -2497,128 +2469,20 @@ def register_v2_routes(app, state, json_response):
                 pinned_revision = current_revision_id(c)
 
             try:
-                targets = []  # (id, name, point_ids | None для balance_scope)
-                if dimension == "point":
-                    for pid in scope_ids:
-                        p = point_repo.get_by_id(pid)
-                        if p is None:
-                            body, status = _err("not_found", f"Точка {pid} не найдена", 404, ids=[pid])
-                            return json_response(body, status)
-                        targets.append((p.id, p.name, [p.id]))
-                elif dimension == "branch":
-                    # Партия 7, Этап 2, Э2.6: "branch" = сетевые ветви
-                    # уровня 1 из overview_service (те же числа, что на
-                    # Обзоре, A43) — БОЛЬШЕ НЕ дубль dimension="group".
-                    # composition_mode/ts_from здесь не участвуют:
-                    # структура сети — только "текущая" (Э2.1, историческая
-                    # топология вне объёма), в отличие от исторического
-                    # состава учётных групп у dimension="group" ниже.
-                    for nb in overview_service.network_branches_for_reports(
-                            binding_repo, aggregates_repo, source_repo, edge_repo,
-                            node_repo, ts_from, ts_to, timezone_name, _cache=_cache):
-                        targets.append((nb["edge_id"], nb["name"], [nb["point_id"]]))
-                elif dimension == "group":
-                    for gid in scope_ids:
-                        g = group_repo.get_by_id(gid)
-                        if g is None:
-                            body, status = _err("not_found", f"Группа {gid} не найдена", 404, ids=[gid])
-                            return json_response(body, status)
-                        pts = _reports_resolve_group_points(group_repo, gid, composition_mode, ts_from)
-                        targets.append((g.id, g.name, pts))
-                else:  # balance_scope
-                    for sid in scope_ids:
-                        row = c.execute(
-                            "SELECT * FROM balance_scopes WHERE id = ?", (sid,)).fetchone()
-                        if row is None:
-                            body, status = _err("not_found", f"Граница баланса {sid} не найдена",
-                                                 404, ids=[sid])
-                            return json_response(body, status)
-                        targets.append((row["id"], row["name"], None))
-
-                rows = []
-                for scope_id, name, point_ids in targets:
-                    if dimension == "balance_scope":
-                        result = balance(db, binding_repo, aggregates_repo, source_repo, edge_repo,
-                                          scope_id, ts_from, ts_to, timezone_name)
-                        conflict_reason = None
-                        member_ids = (result.explanation.get("input_point_ids", [])
-                                      + result.explanation.get("output_point_ids", []))
-                    else:
-                        result, conflict_reason = _reports_row_result(
-                            dimension, point_ids, binding_repo, aggregates_repo, source_repo,
-                            edge_repo, ts_from, ts_to, timezone_name, _cache=_cache)
-                        member_ids = point_ids
-
-                    if result is not None:
-                        _tag_result(result, pinned_revision)
-
-                    row = {
-                        "dimension": dimension,
-                        "id": scope_id,
-                        "name": name,
-                        "member_point_ids": member_ids,
-                        "result": result.to_dict() if result is not None else None,
-                        "conflict_reason": conflict_reason,
-                    }
-
-                    if compare is not None:
-                        if dimension == "group":
-                            cmp_point_ids = _reports_resolve_group_points(
-                                group_repo, scope_id, composition_mode, cmp_ts_from)
-                        else:
-                            # "branch" (Э2.6, партия 7): структура сети —
-                            # только текущая (Э2.1), у сетевой ветви нет
-                            # исторического состава, в отличие от учётной
-                            # группы — тот же point_id сравнивается за
-                            # оба периода.
-                            cmp_point_ids = point_ids
-
-                        if dimension == "balance_scope":
-                            cmp_result = balance(db, binding_repo, aggregates_repo, source_repo,
-                                                  edge_repo, scope_id, cmp_ts_from, cmp_ts_to,
-                                                  timezone_name)
-                            cmp_conflict = None
-                            cmp_member_ids = (cmp_result.explanation.get("input_point_ids", [])
-                                              + cmp_result.explanation.get("output_point_ids", []))
-                        else:
-                            cmp_result, cmp_conflict = _reports_row_result(
-                                dimension, cmp_point_ids, binding_repo, aggregates_repo,
-                                source_repo, edge_repo, cmp_ts_from, cmp_ts_to, timezone_name,
-                                _cache=_cache)
-                            cmp_member_ids = cmp_point_ids
-
-                        if cmp_result is not None:
-                            _tag_result(cmp_result, pinned_revision)
-
-                        # A21/A22: явно раскрываем отличие состава между
-                        # периодами, а не молча публикуем разницу чисел,
-                        # посчитанных по разному составу точек. В режиме
-                        # composition_mode="current" состав в обоих
-                        # периодах резолвится "на сейчас" (at=None) — по
-                        # определению одинаков, composition_changed всегда
-                        # False (это и есть смысл режима "current").
-                        composition_changed = (
-                            sorted(member_ids or []) != sorted(cmp_member_ids or [])
-                            if dimension == "group" else False
-                        )
-
-                        delta_value = None
-                        if (result is not None and cmp_result is not None
-                                and result.value is not None and cmp_result.value is not None):
-                            delta_value = round(result.value - cmp_result.value, 6)
-                        delta_pct, delta_pct_reason = resolve_percentage(
-                            delta_value, cmp_result.value if cmp_result is not None else None)
-
-                        row["compare_member_point_ids"] = cmp_member_ids
-                        row["compare_result"] = cmp_result.to_dict() if cmp_result is not None else None
-                        row["compare_conflict_reason"] = cmp_conflict
-                        row["composition_changed"] = composition_changed
-                        row["delta_value"] = delta_value
-                        row["delta_percentage"] = delta_pct
-                        row["delta_percentage_reason"] = delta_pct_reason
-
-                    rows.append(row)
-
+                rows = reports_service.build_rows(
+                    c, db=db, dimension=dimension, scope_ids=scope_ids,
+                    ts_from=ts_from, ts_to=ts_to, timezone_name=timezone_name,
+                    composition_mode=composition_mode,
+                    compare_range=(
+                        (cmp_ts_from, cmp_ts_to) if compare is not None else None),
+                    pinned_revision=pinned_revision,
+                    binding_repo=binding_repo, aggregates_repo=aggregates_repo,
+                    source_repo=source_repo, edge_repo=edge_repo, node_repo=node_repo,
+                    group_repo=group_repo, point_repo=point_repo,
+                    tag_result=_tag_result, cache=_cache)
+            except reports_service.ReportTargetNotFound as e:
+                body, status = _err("not_found", str(e), 404, ids=e.ids)
+                return json_response(body, status)
             except ContractViolation as e:
                 log.exception("ContractViolation при reports/query: %s", e)
                 body, status = _err("internal", "внутренняя ошибка формирования результата", 500)
@@ -2695,7 +2559,16 @@ def register_v2_routes(app, state, json_response):
             return json_response(body, status)
         return json_response(_plan_to_dict_v2(plan), 201)
 
-    @app.route("/api/v2/plans/<int:plan_id>", methods=["GET", "DELETE"])
+    # Партия 11, этап 11.5 (дыра §9.2): PATCH плана. Меняются только имя и
+    # «план по умолчанию»; вид плана, размеры и фон — нет (см.
+    # SitePlanRepoV2.update). Запись идёт через протокол ревизий, как и
+    # остальные PATCH v2: expected_revision обязателен, устаревший → 409.
+    _PLAN_PATCH_FIELDS = ("name", "is_default")
+    _PLAN_IMMUTABLE_FIELDS = (
+        "plan_kind", "canvas_width", "canvas_height", "canvas_revision",
+        "image_width", "image_height", "image_file")
+
+    @app.route("/api/v2/plans/<int:plan_id>", methods=["GET", "DELETE", "PATCH"])
     def v2_plan_detail(plan_id):
         plan, err = _plan_or_404_v2(plan_id)
         if err:
@@ -2704,6 +2577,59 @@ def register_v2_routes(app, state, json_response):
         if request.method == "DELETE":
             _plan_repo_v2().delete(plan_id)
             return json_response({"ok": True, "id": plan_id})
+
+        if request.method == "PATCH":
+            data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+            immutable = [f for f in _PLAN_IMMUTABLE_FIELDS if f in data]
+            if immutable:
+                body, status = _err(
+                    "bad_request",
+                    "эти поля плана не меняются через PATCH: "
+                    + ", ".join(immutable) + " (вид и размеры плана неизменны, "
+                    "фон заменяется через POST /api/v2/plans/<id>/image)",
+                    400, fields=immutable, ids=[plan_id])
+                return json_response(body, status)
+            fields = {f: data[f] for f in _PLAN_PATCH_FIELDS if f in data}
+            if not fields:
+                body, status = _err(
+                    "bad_request",
+                    "нечего менять: укажите хотя бы одно из полей "
+                    + ", ".join(_PLAN_PATCH_FIELDS),
+                    400, fields=list(_PLAN_PATCH_FIELDS), ids=[plan_id])
+                return json_response(body, status)
+            if "name" in fields and not isinstance(fields["name"], str):
+                body, status = _err(
+                    "bad_request", "name должно быть строкой", 400,
+                    fields=["name"], ids=[plan_id])
+                return json_response(body, status)
+            if "is_default" in fields and not isinstance(fields["is_default"], bool):
+                body, status = _err(
+                    "bad_request", "is_default должно быть true или false", 400,
+                    fields=["is_default"], ids=[plan_id])
+                return json_response(body, status)
+
+            repo = _plan_repo_v2()
+            try:
+                updated, new_rev = with_revision_check(
+                    db, data.get("expected_revision"),
+                    lambda: repo.update(plan_id, **fields),
+                    touched=[("plan", plan_id)])
+            except GlobalRevisionConflict as e:
+                return _revision_conflict(e, ids=[plan_id])
+            except PlanError as e:
+                if repo.get_by_id(plan_id) is None:
+                    # План удалили между проверкой выше и записью.
+                    body, status = _err("not_found", f"План {plan_id} не найден",
+                                         404, ids=[plan_id])
+                else:
+                    # is_default проверен выше, так что доменная ошибка
+                    # SitePlanRepoV2.update — это пустое/слишком длинное имя.
+                    body, status = _err("bad_request", str(e), 400,
+                                         fields=["name"], ids=[plan_id])
+                return json_response(body, status)
+            out = _plan_to_dict_v2(updated)
+            out["configuration_revision"] = new_rev
+            return json_response(out)
 
         out = _plan_to_dict_v2(plan)
         out["items"] = [_plan_item_to_dict(i) for i in _plan_item_repo().list_for_plan(plan_id)]
@@ -2897,6 +2823,14 @@ def register_v2_routes(app, state, json_response):
     # пользователем (см. migration_wizard_service.py — там же почему
     # автоматика запрещена большим ТЗ). Старая модель не удаляется и не
     # меняется этими маршрутами.
+
+    @app.route("/api/v2/migration/status", methods=["GET"])
+    def v2_migration_status():
+        """Партия 11, этап 11.5: версия схемы, поколения домена, счётчики
+        `migration_map`, неподтверждённые связи мастера. Тонкий обработчик —
+        состав и смысл ключей описаны в
+        `migration_wizard_service.migration_status`. Только чтение."""
+        return json_response(migration_wizard_service.migration_status(db))
 
     @app.route("/api/v2/migration/legacy-links", methods=["GET"])
     def v2_migration_legacy_links():

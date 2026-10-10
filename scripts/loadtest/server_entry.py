@@ -74,6 +74,29 @@ def main():
     def _tracer(sql):
         query_counter["n"] += 1
 
+    # Партия 11, этап 11.3: чтение теперь идёт через пул отдельных соединений
+    # (db.read()), а не через соединение-писатель, поэтому трассировку надо
+    # вешать и на них — иначе счётчик запросов видел бы только записи. Колбэк
+    # вешается на каждое новое читающее соединение один раз и сам проверяет
+    # флаг; служебные BEGIN/COMMIT/ROLLBACK читающей транзакции не считаем,
+    # чтобы число запросов оставалось сопоставимым с замерами до 0.21.0
+    # (там read() транзакций не открывал).
+    def _reader_tracer(sql):
+        if not query_counter["tracing"]:
+            return
+        if sql.lstrip()[:8].upper().startswith(("BEGIN", "COMMIT", "ROLLBACK")):
+            return
+        query_counter["n"] += 1
+
+    _orig_connect_reader = db._connect_reader
+
+    def _traced_connect_reader():
+        c = _orig_connect_reader()
+        c.set_trace_callback(_reader_tracer)
+        return c
+
+    db._connect_reader = _traced_connect_reader
+
     @app.route("/__loadtest/trace/start")
     def _lt_trace_start():
         query_counter["n"] = 0

@@ -39,7 +39,9 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from . import domain_generation
 from .legacy_migration import SCHEMA_MIGRATION_VERSION
+from .repo import KvRepo
 
 
 class WizardError(ValueError):
@@ -176,3 +178,77 @@ def confirm_links(c, plan_link_repo, node_repo, edge_repo,
             plan_link_id=link_id, status="created", edge_id=edge.id,
             from_node_id=from_node_id, to_node_id=to_node_id))
     return results
+
+
+def migration_status(db) -> Dict[str, Any]:
+    """Партия 11, этап 11.5: сводка «где эта БД относительно новой модели»
+    для `GET /api/v2/migration/status` и для пилота (docs/pilot-checklist.md:
+    Кир присылает этот JSON обратно). Только чтение, один снимок WAL на весь
+    ответ (A43): вложенные `KvRepo.get` внутри `db.read()` идут по тому же
+    соединению, поэтому числа не «разъезжаются», даже если параллельно идёт
+    запись.
+
+    Ключи:
+      schema_version              — максимальная применённая миграция схемы;
+      code_generation             — поколение, которое объявляет ЭТОТ код
+                                    (`domain_generation.CURRENT_GENERATION`);
+      domain_model_generation,
+      minimum_reader_generation   — ключи `kv` (нет ключа = поколение 1);
+      model_v2_first_write_revision — метка первой записи через /api/v2 или
+                                    `null`, если её ещё не было;
+      migration_map               — число записей по парам
+                                    (legacy_table → new_table), по алфавиту;
+      legacy_meters               — сколько строк `meters` в старой модели и
+                                    сколько из них уже перенесено в точки;
+      legacy_links                — связи старых планов (`plan_links`) и сколько
+                                    из них мастер ещё НЕ подтвердил
+                                    (`unconfirmed`; то же, что
+                                    `migration_status == "pending"` в
+                                    `GET /api/v2/migration/legacy-links`).
+    """
+    kv = KvRepo(db)
+    with db.read() as c:
+        row = c.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='schema_migrations'").fetchone()
+        schema_version = 0
+        if row is not None:
+            v = c.execute("SELECT MAX(version) AS v FROM schema_migrations").fetchone()
+            schema_version = int(v["v"] or 0)
+
+        map_rows = c.execute(
+            "SELECT legacy_table, new_table, COUNT(*) AS n FROM migration_map "
+            "GROUP BY legacy_table, new_table ORDER BY legacy_table, new_table"
+        ).fetchall()
+
+        meters_total = c.execute("SELECT COUNT(*) AS n FROM meters").fetchone()["n"]
+        meters_migrated = c.execute(
+            "SELECT COUNT(*) AS n FROM meters m WHERE EXISTS ("
+            "SELECT 1 FROM migration_map mm WHERE mm.legacy_table = 'meters' "
+            "AND mm.legacy_id = m.id AND mm.new_table = 'metering_points')"
+        ).fetchone()["n"]
+
+        links_total = c.execute("SELECT COUNT(*) AS n FROM plan_links").fetchone()["n"]
+        links_unconfirmed = c.execute(
+            "SELECT COUNT(*) AS n FROM plan_links pl WHERE NOT EXISTS ("
+            "SELECT 1 FROM migration_map mm WHERE mm.legacy_table = 'plan_links' "
+            "AND mm.legacy_id = pl.id AND mm.new_table = 'electrical_edges')"
+        ).fetchone()["n"]
+
+        return {
+            "schema_version": schema_version,
+            "code_generation": domain_generation.CURRENT_GENERATION,
+            "domain_model_generation": domain_generation.get_domain_generation(kv),
+            "minimum_reader_generation": domain_generation.get_min_reader_generation(kv),
+            "model_v2_first_write_revision":
+                domain_generation.get_v2_first_write_marker(kv),
+            "migration_map": [
+                {"legacy_table": r["legacy_table"], "new_table": r["new_table"],
+                 "count": r["n"]} for r in map_rows],
+            "legacy_meters": {
+                "total": meters_total, "migrated": meters_migrated,
+                "not_migrated": meters_total - meters_migrated},
+            "legacy_links": {
+                "total": links_total, "confirmed": links_total - links_unconfirmed,
+                "unconfirmed": links_unconfirmed},
+        }

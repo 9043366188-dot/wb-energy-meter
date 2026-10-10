@@ -383,6 +383,21 @@ class MeteringPointRepo:
                 (now, now, point_id)
             )
 
+            # ТЗ §13 A39: «текущий состав изменён с даты; старая история
+            # сохранена». Архивированная точка выходит из групп С МОМЕНТА
+            # архивации: открытые членства закрываются (valid_to = now), а
+            # строки и вся история до этого момента остаются (режим состава
+            # «как было» продолжает видеть точку за прошлые периоды).
+            # MAX(valid_from, now) — членство, начавшееся «в будущем»,
+            # закрывается пустым интервалом, а не интервалом valid_to <
+            # valid_from (так же remove_member отказал бы; архивация не
+            # должна падать из-за этого).
+            c.execute(
+                "UPDATE group_memberships SET valid_to = MAX(valid_from, ?) "
+                "WHERE point_id = ? AND valid_to IS NULL",
+                (now, point_id)
+            )
+
         log.info("Архивирована точка %d", point_id)
         return self.get_by_id(point_id)
 
