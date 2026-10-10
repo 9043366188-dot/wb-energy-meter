@@ -111,6 +111,7 @@ from .plan_repo import SitePlanRepo, PlanZoneRepo, PlanLinkRepo
 from . import migration_wizard_service
 from .repo import GroupRepo, MeterRepo, validate_device_id
 from .group_repo_v2 import GroupRepoV2
+from . import change_journal
 from .revision_service import (
     RevisionConflict as GlobalRevisionConflict, with_revision_check, bump_revision,
     current_revision_id, check_expected_revision, create_revision, revision_exists,
@@ -294,7 +295,92 @@ def register_v2_routes(app, state, json_response):
                              fields=["expected_revision"])
         return json_response(body, status)
 
-    # ------------------------------------------------------- revision (partия 2)
+    # ------------------------------------------------- журнал изменений (партия 12)
+
+    @app.before_request
+    def _change_journal_context():
+        """Контекст для записей change_log: операция, происхождение, адрес
+        клиента (аутентификации нет — «кто» не выдумываем, см.
+        change_journal.py). Сбрасывается в teardown_request."""
+        rule = request.url_rule.rule if request.url_rule is not None else request.path
+        change_journal.set_context(
+            op=f"{request.method} {rule}",
+            origin=change_journal.origin_for_path(request.path),
+            client=request.remote_addr)
+
+    @app.teardown_request
+    def _change_journal_context_clear(_exc):
+        change_journal.clear_context()
+
+    @app.route("/api/v2/change-log", methods=["GET"])
+    def v2_change_log():
+        """Журнал изменений — только чтение. Фильтры: entity_type, entity_id,
+        action, from, to (по времени записи), limit (1..500, по умолчанию
+        100), before_id (курсор: записи старше этого id), related=1 (плюс
+        записи подчинённых сущностей — история карточки). Новые сверху."""
+        args = request.args
+        known_types = sorted(set(change_journal.ENTITY_TABLE)
+                             | set(change_journal.EXPLICIT_ENTITY_TYPES))
+        entity_type = args.get("entity_type") or None
+        if entity_type is not None and entity_type not in known_types:
+            body, status = _err(
+                "bad_request",
+                f"entity_type — допустимые: {', '.join(known_types)}", 400,
+                fields=["entity_type"])
+            return json_response(body, status)
+
+        def _int_arg(name):
+            raw = args.get(name)
+            if raw in (None, ""):
+                return None
+            try:
+                return int(raw)
+            except ValueError:
+                raise ValueError(name)
+
+        try:
+            entity_id = _int_arg("entity_id")
+            before_id = _int_arg("before_id")
+            limit = _int_arg("limit")
+        except ValueError as e:
+            body, status = _err(
+                "bad_request", f"{e} должен быть целым числом", 400,
+                fields=[str(e)])
+            return json_response(body, status)
+        if limit is not None and limit < 1:
+            body, status = _err("bad_request", "limit должен быть положительным",
+                                400, fields=["limit"])
+            return json_response(body, status)
+        ts_from = ts_to = None
+
+        def _ts_arg(name):
+            raw = args.get(name)
+            if not raw:
+                return None
+            if raw.lstrip("-").isdigit():           # unix-секунды в строке запроса
+                return int(raw)
+            return _parse_ts(raw, name)
+
+        try:
+            ts_from = _ts_arg("from")
+            ts_to = _ts_arg("to")
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400, fields=["from", "to"])
+            return json_response(body, status)
+        with db.read() as c:
+            items, next_before = change_journal.query(
+                c, entity_type=entity_type, entity_id=entity_id,
+                action=args.get("action") or None, ts_from=ts_from, ts_to=ts_to,
+                limit=limit or change_journal.DEFAULT_LIMIT, before_id=before_id,
+                related=args.get("related") == "1")
+            started = change_journal.started_at(c)
+        return json_response({
+            "items": items, "next_before_id": next_before,
+            "limit": min(limit or change_journal.DEFAULT_LIMIT, change_journal.MAX_LIMIT),
+            "journal_started_at": started,
+        })
+
+    # ------------------------------------------------------- revision (партия 2)
 
     @app.route("/api/v2/revision", methods=["GET"])
     def v2_revision():
