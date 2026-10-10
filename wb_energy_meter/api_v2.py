@@ -82,6 +82,7 @@ from .accounting_service import (
     AccountingConflict, measured_point, sum_points, balance, comparison,
 )
 from . import overview_service
+from . import reports_service
 from .overview_service import BalanceAlgorithmError
 from .binding_service import BindingConflict, PointBindingRepo
 from .location_repo import LocationRepo
@@ -2359,42 +2360,8 @@ def register_v2_routes(app, state, json_response):
     # Оба режима явно возвращаются в ответе (`composition_mode`) —
     # фронтенд обязан подписать выбранный режим и на экране, и в CSV,
     # чтобы никогда не выдавать один набор чисел за другой молча.
-    def _reports_resolve_group_points(group_repo, group_id, composition_mode, ts_from):
-        at = ts_from if composition_mode == "as_was" else None
-        return [m["point_id"] for m in group_repo.resolve_effective_members(group_id, at=at)]
-
-    def _reports_row_result(dimension, point_ids, binding_repo, aggregates_repo,
-                             source_repo, edge_repo, ts_from, ts_to, timezone_name,
-                             _cache=None):
-        """Точка — measured_point по единственному id; ветвь/группа —
-        sum_points по составу. A04: подтверждённое электрическое
-        пересечение НЕ схлопывает всю выгрузку — только эта строка
-        получает conflict_reason и result=None, остальные строки
-        считаются как обычно (в отличие от Обзора, здесь без отката в
-        comparison — отчёт технический, конфликт должен быть виден и
-        устранён в топологии, а не молча подменён поточной раскладкой).
-
-        `_cache` (партия 10, этап E) — для dimension="branch" точки этих
-        же строк уже посчитаны выше, внутри
-        overview_service.network_branches_for_reports() (само оно —
-        обёртка над object_summary()); без общего кэша это был бы третий
-        пересчёт одного и того же за один ответ."""
-        if dimension == "point":
-            if not point_ids:
-                return None, "точка не найдена"
-            result = measured_point(binding_repo, aggregates_repo, source_repo,
-                                     point_ids[0], ts_from, ts_to, timezone_name,
-                                     _cache=_cache)
-            return result, None
-        if not point_ids:
-            return None, None
-        try:
-            result = sum_points(binding_repo, aggregates_repo, source_repo, edge_repo,
-                                 point_ids, ts_from, ts_to, timezone_name, _cache=_cache)
-            return result, None
-        except AccountingConflict as e:
-            return None, str(e)
-
+    # Партия 11, этап 11.4: расчёт строк отчёта вынесен в reports_service.py;
+    # здесь остаются разбор тела, фиксация ревизии и перевод исключений в HTTP.
     @app.route("/api/v2/reports/query", methods=["POST"])
     def v2_reports_query():
         """Тело: {"dimension": "point"|"branch"|"group"|"balance_scope",
@@ -2497,128 +2464,20 @@ def register_v2_routes(app, state, json_response):
                 pinned_revision = current_revision_id(c)
 
             try:
-                targets = []  # (id, name, point_ids | None для balance_scope)
-                if dimension == "point":
-                    for pid in scope_ids:
-                        p = point_repo.get_by_id(pid)
-                        if p is None:
-                            body, status = _err("not_found", f"Точка {pid} не найдена", 404, ids=[pid])
-                            return json_response(body, status)
-                        targets.append((p.id, p.name, [p.id]))
-                elif dimension == "branch":
-                    # Партия 7, Этап 2, Э2.6: "branch" = сетевые ветви
-                    # уровня 1 из overview_service (те же числа, что на
-                    # Обзоре, A43) — БОЛЬШЕ НЕ дубль dimension="group".
-                    # composition_mode/ts_from здесь не участвуют:
-                    # структура сети — только "текущая" (Э2.1, историческая
-                    # топология вне объёма), в отличие от исторического
-                    # состава учётных групп у dimension="group" ниже.
-                    for nb in overview_service.network_branches_for_reports(
-                            binding_repo, aggregates_repo, source_repo, edge_repo,
-                            node_repo, ts_from, ts_to, timezone_name, _cache=_cache):
-                        targets.append((nb["edge_id"], nb["name"], [nb["point_id"]]))
-                elif dimension == "group":
-                    for gid in scope_ids:
-                        g = group_repo.get_by_id(gid)
-                        if g is None:
-                            body, status = _err("not_found", f"Группа {gid} не найдена", 404, ids=[gid])
-                            return json_response(body, status)
-                        pts = _reports_resolve_group_points(group_repo, gid, composition_mode, ts_from)
-                        targets.append((g.id, g.name, pts))
-                else:  # balance_scope
-                    for sid in scope_ids:
-                        row = c.execute(
-                            "SELECT * FROM balance_scopes WHERE id = ?", (sid,)).fetchone()
-                        if row is None:
-                            body, status = _err("not_found", f"Граница баланса {sid} не найдена",
-                                                 404, ids=[sid])
-                            return json_response(body, status)
-                        targets.append((row["id"], row["name"], None))
-
-                rows = []
-                for scope_id, name, point_ids in targets:
-                    if dimension == "balance_scope":
-                        result = balance(db, binding_repo, aggregates_repo, source_repo, edge_repo,
-                                          scope_id, ts_from, ts_to, timezone_name)
-                        conflict_reason = None
-                        member_ids = (result.explanation.get("input_point_ids", [])
-                                      + result.explanation.get("output_point_ids", []))
-                    else:
-                        result, conflict_reason = _reports_row_result(
-                            dimension, point_ids, binding_repo, aggregates_repo, source_repo,
-                            edge_repo, ts_from, ts_to, timezone_name, _cache=_cache)
-                        member_ids = point_ids
-
-                    if result is not None:
-                        _tag_result(result, pinned_revision)
-
-                    row = {
-                        "dimension": dimension,
-                        "id": scope_id,
-                        "name": name,
-                        "member_point_ids": member_ids,
-                        "result": result.to_dict() if result is not None else None,
-                        "conflict_reason": conflict_reason,
-                    }
-
-                    if compare is not None:
-                        if dimension == "group":
-                            cmp_point_ids = _reports_resolve_group_points(
-                                group_repo, scope_id, composition_mode, cmp_ts_from)
-                        else:
-                            # "branch" (Э2.6, партия 7): структура сети —
-                            # только текущая (Э2.1), у сетевой ветви нет
-                            # исторического состава, в отличие от учётной
-                            # группы — тот же point_id сравнивается за
-                            # оба периода.
-                            cmp_point_ids = point_ids
-
-                        if dimension == "balance_scope":
-                            cmp_result = balance(db, binding_repo, aggregates_repo, source_repo,
-                                                  edge_repo, scope_id, cmp_ts_from, cmp_ts_to,
-                                                  timezone_name)
-                            cmp_conflict = None
-                            cmp_member_ids = (cmp_result.explanation.get("input_point_ids", [])
-                                              + cmp_result.explanation.get("output_point_ids", []))
-                        else:
-                            cmp_result, cmp_conflict = _reports_row_result(
-                                dimension, cmp_point_ids, binding_repo, aggregates_repo,
-                                source_repo, edge_repo, cmp_ts_from, cmp_ts_to, timezone_name,
-                                _cache=_cache)
-                            cmp_member_ids = cmp_point_ids
-
-                        if cmp_result is not None:
-                            _tag_result(cmp_result, pinned_revision)
-
-                        # A21/A22: явно раскрываем отличие состава между
-                        # периодами, а не молча публикуем разницу чисел,
-                        # посчитанных по разному составу точек. В режиме
-                        # composition_mode="current" состав в обоих
-                        # периодах резолвится "на сейчас" (at=None) — по
-                        # определению одинаков, composition_changed всегда
-                        # False (это и есть смысл режима "current").
-                        composition_changed = (
-                            sorted(member_ids or []) != sorted(cmp_member_ids or [])
-                            if dimension == "group" else False
-                        )
-
-                        delta_value = None
-                        if (result is not None and cmp_result is not None
-                                and result.value is not None and cmp_result.value is not None):
-                            delta_value = round(result.value - cmp_result.value, 6)
-                        delta_pct, delta_pct_reason = resolve_percentage(
-                            delta_value, cmp_result.value if cmp_result is not None else None)
-
-                        row["compare_member_point_ids"] = cmp_member_ids
-                        row["compare_result"] = cmp_result.to_dict() if cmp_result is not None else None
-                        row["compare_conflict_reason"] = cmp_conflict
-                        row["composition_changed"] = composition_changed
-                        row["delta_value"] = delta_value
-                        row["delta_percentage"] = delta_pct
-                        row["delta_percentage_reason"] = delta_pct_reason
-
-                    rows.append(row)
-
+                rows = reports_service.build_rows(
+                    c, db=db, dimension=dimension, scope_ids=scope_ids,
+                    ts_from=ts_from, ts_to=ts_to, timezone_name=timezone_name,
+                    composition_mode=composition_mode,
+                    compare_range=(
+                        (cmp_ts_from, cmp_ts_to) if compare is not None else None),
+                    pinned_revision=pinned_revision,
+                    binding_repo=binding_repo, aggregates_repo=aggregates_repo,
+                    source_repo=source_repo, edge_repo=edge_repo, node_repo=node_repo,
+                    group_repo=group_repo, point_repo=point_repo,
+                    tag_result=_tag_result, cache=_cache)
+            except reports_service.ReportTargetNotFound as e:
+                body, status = _err("not_found", str(e), 404, ids=e.ids)
+                return json_response(body, status)
             except ContractViolation as e:
                 log.exception("ContractViolation при reports/query: %s", e)
                 body, status = _err("internal", "внутренняя ошибка формирования результата", 500)
