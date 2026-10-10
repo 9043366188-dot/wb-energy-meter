@@ -186,45 +186,64 @@ def test_reentrant_transaction_composes_with_repo_writes():
         db.close(); os.unlink(path)
 
 
-def test_direct_write_blocked_while_read_lock_held():
-    """A43, механизм: пока держится with db.read() (та же RLock, что и
-    db.transaction()), конкурентная запись в другом потоке физически не
-    может выполниться раньше, чем читающий поток отпустит блокировку —
-    это то, на чём строится однократный снимок в v2_metrics_query."""
+def test_write_does_not_wait_for_reader_and_reader_snapshot_is_unchanged():
+    """A43, механизм (переписано в партии 11, этап 11.3 — Кир выбрал
+    «переписать под новую семантику» на вопрос §2.9; прежний тест
+    test_direct_write_blocked_while_read_lock_held проверял, что запись
+    ЖДЁТ, пока читатель держит общий RLock, — именно это поведение этап
+    11.3 убрал, «Находка 3» docs/load-test-2026-09.md).
+
+    Теперь снимок обеспечивает читающая транзакция WAL, а не блокировка
+    писателя: конкурентная запись в другом потоке завершается, НЕ дожидаясь
+    читателя, а читатель внутри своего with db.read() до самого выхода
+    видит прежнее состояние БД — писатель не может вклиниться в середину
+    чтения. Следующий read() видит новое состояние."""
     db, path = make_db()
     try:
+        with db.transaction() as c:
+            c.execute("INSERT INTO kv (key, value, updated_at) "
+                      "VALUES ('probe', 'before', 0)")
         release_reader = threading.Event()
-        reader_holds_lock = threading.Event()
+        reader_started = threading.Event()
         writer_done = threading.Event()
-        order = []
+        seen = {}
 
         def reader():
             with db.read() as c:
-                reader_holds_lock.set()
+                seen["first"] = c.execute(
+                    "SELECT value FROM kv WHERE key = 'probe'").fetchone()[0]
+                reader_started.set()
                 release_reader.wait(timeout=5)
-                order.append("reader_release")
+                seen["second"] = c.execute(
+                    "SELECT value FROM kv WHERE key = 'probe'").fetchone()[0]
 
         def writer():
-            reader_holds_lock.wait(timeout=5)
-            time.sleep(0.1)  # дать читателю гарантированно захватить лок
+            reader_started.wait(timeout=5)
             with db.transaction() as c:
-                order.append("writer_acquired")
+                c.execute("UPDATE kv SET value = 'after' WHERE key = 'probe'")
             writer_done.set()
 
         t_reader = threading.Thread(target=reader)
         t_writer = threading.Thread(target=writer)
         t_reader.start()
         t_writer.start()
-        reader_holds_lock.wait(timeout=5)
-        time.sleep(0.2)
-        assert not writer_done.is_set(), (
-            "писатель не должен был выполниться, пока читатель держит лок")
-        release_reader.set()
-        t_reader.join(timeout=5)
-        t_writer.join(timeout=5)
-        assert order == ["reader_release", "writer_acquired"], order
-        print("[OK] A43 (механизм): db.transaction() ждёт, пока db.read() отпустит "
-              "общую блокировку — писатель не может вклиниться в середину чтения")
+        try:
+            assert reader_started.wait(timeout=5)
+            # писатель завершается, пока читатель ЕЩЁ внутри read()
+            assert writer_done.wait(timeout=2), (
+                "писатель ждёт читателя: запись не должна блокироваться read()")
+            assert t_reader.is_alive(), "читатель вышел раньше записи"
+        finally:
+            release_reader.set()
+            t_reader.join(timeout=5)
+            t_writer.join(timeout=5)
+        assert seen == {"first": "before", "second": "before"}, (
+            "снимок читателя изменился посреди read(): %r" % seen)
+        with db.read() as c:
+            assert c.execute("SELECT value FROM kv WHERE key = 'probe'"
+                             ).fetchone()[0] == "after"
+        print("[OK] A43 (механизм): db.transaction() не ждёт db.read(), а "
+              "читатель до выхода из блока видит прежний снимок")
     finally:
         db.close(); os.unlink(path)
 
@@ -501,7 +520,7 @@ def test_a43_metrics_query_pins_snapshot_against_concurrent_write():
 
         def writer():
             entered_calc.wait(timeout=5)
-            time.sleep(0.1)  # дать читателю гарантированно захватить лок
+            time.sleep(0.1)  # дать читателю гарантированно открыть снимок
             r = writer_client.patch(
                 f"/api/v2/groups/{g}",
                 json={"parent_id": None, "expected_revision": rev_before})
@@ -530,12 +549,14 @@ def test_a43_metrics_query_pins_snapshot_against_concurrent_write():
         assert body["configuration_revision_ids"] == [rev_before]
         assert body["as_of"], "as_of должен быть проставлен"
 
-        assert "status" in writer_result, "писатель обязан был успеть выполниться после расчёта"
+        assert "status" in writer_result, "писатель обязан был успеть выполниться"
         assert writer_result["status"] == 200, writer_result.get("body")
         assert writer_result["body"]["configuration_revision"] == rev_before + 1
+        # С партии 11 (этап 11.3) писатель не ждёт читателя: запись проходит
+        # посреди расчёта, а ответ остаётся на ревизии снимка.
         print("[OK] A43 через HTTP: metrics/query зафиксировал ревизию "
-              f"{rev_before} в начале расчёта; конкурентная запись выполнилась "
-              "только после и получила следующую ревизию "
+              f"{rev_before} в начале расчёта; конкурентная запись прошла "
+              "посреди расчёта и получила следующую ревизию "
               f"{writer_result['body']['configuration_revision']}")
     finally:
         db.close(); os.unlink(path)
@@ -589,7 +610,7 @@ if __name__ == "__main__":
     test_with_revision_check_success_and_conflict_atomic()
     test_bump_revision_no_precondition()
     test_reentrant_transaction_composes_with_repo_writes()
-    test_direct_write_blocked_while_read_lock_held()
+    test_write_does_not_wait_for_reader_and_reader_snapshot_is_unchanged()
     test_a35_group_patch_stale_revision_rejected()
     test_a35_location_patch_stale_revision_rejected()
     test_a35_topology_node_archive_stale_revision_rejected()

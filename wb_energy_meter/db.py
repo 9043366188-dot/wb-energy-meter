@@ -16,6 +16,15 @@ log = logging.getLogger(__name__)
 
 
 DEFAULT_DB_PATH = "/mnt/data/var/lib/wb-energy-meter/state.db"
+
+# Размер пула соединений ТОЛЬКО ДЛЯ ЧТЕНИЯ (партия 11, этап 11.3). Сервер
+# Werkzeug в threaded-режиме создаёт поток на запрос, поэтому
+# threading.local() давал бы по соединению на каждый такой поток и они
+# утекали бы; ограниченный пул с ленивым созданием держит число открытых
+# дескрипторов постоянным. 4 — потолок параллельных тяжёлых расчётов на
+# контроллере (одно ядро, ~1 ГБ ОЗУ), остальные читатели ждут свободное
+# соединение, а не открывают новые.
+READ_POOL_SIZE = 4
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _MIGRATION_RE = re.compile(r"^(\d+)_([a-zA-Z0-9_]+)\.sql$")
 
@@ -75,11 +84,55 @@ def _py_casefold(s):
     return str(s).strip().casefold()
 
 
+def _is_in_memory_path(path) -> bool:
+    """":memory:" (и пустой путь — приватная временная БД) живут только в
+    одном соединении: второе соединение увидело бы свою пустую базу, поэтому
+    для них пул читателей не создаётся (см. Database.read)."""
+    p = str(path or "")
+    return p == "" or p == ":memory:" or p.startswith("file::memory:") \
+        or "mode=memory" in p
+
+
 class Database:
-    def __init__(self, path=DEFAULT_DB_PATH):
+    """Слой БД: ОДНО соединение-писатель под RLock + ограниченный пул
+    соединений только для чтения.
+
+    Зачем (docs/load-test-2026-09.md, «Находка 3»): раньше read() и
+    transaction() держали один и тот же RLock на всё время блока, и тяжёлый
+    расчёт внутри `with db.read()` (reports/query) не давал писать никому,
+    включая агрегатор — запись ждала до ~450 мс. Теперь:
+
+    - transaction() — как раньше: писатель, RLock, реентерабельность по
+      `_txn_depth`, BEGIN/COMMIT/ROLLBACK только у внешнего вызова;
+    - read() — отдельное соединение из пула (`PRAGMA query_only=ON`) и ОДНА
+      читающая транзакция на весь блок, поэтому все SELECT внутри видят
+      одно состояние БД (снимок WAL, A43), а запись параллельно не ждёт;
+    - вложенный read() в том же потоке переиспользует то же соединение и
+      тот же снимок;
+    - read() внутри открытой transaction() этого же потока отдаёт писателя,
+      иначе код не увидел бы свои же незакоммиченные строки;
+    - ":memory:" — откат на одно соединение и общий замок, как раньше.
+
+    Следствия для вызывающего кода: через соединение из read() писать
+    нельзя (sqlite3.OperationalError «readonly database») — запись только
+    через transaction(); запись, выполненная внутри read() через
+    transaction(), снимку этого read() не видна (она в другом соединении),
+    а видна следующему read()."""
+
+    def __init__(self, path=DEFAULT_DB_PATH, read_pool_size=READ_POOL_SIZE):
         self._path = path
         self._lock = threading.RLock()
         self._conn = None
+        self._txn_depth = 0
+        self._txn_owner = None   # ident потока, держащего внешнюю transaction()
+        # --- пул читателей (всё ниже защищено _pool_cond, не _lock) ---
+        self._read_pool_size = max(0, int(read_pool_size))
+        self._pool_cond = threading.Condition(threading.Lock())
+        self._pool_idle = []     # свободные соединения (LIFO)
+        self._pool_created = 0   # сколько соединений живо в текущем поколении
+        self._pool_gen = 0       # растёт при close(): старые закрываются при возврате
+        self._pool_open = False
+        self._tls = threading.local()   # .reader = (conn, gen) активного read() потока
 
     def open(self):
         with self._lock:
@@ -100,6 +153,8 @@ class Database:
             # py_casefold() — доступна миграциям и запросам для нормализации
             # имён зон с учётом кириллицы (SQLite COLLATE NOCASE её не берёт).
             self._conn.create_function("py_casefold", 1, _py_casefold)
+            with self._pool_cond:
+                self._pool_open = True
             self._apply_migrations()
             try:
                 size = os.path.getsize(self._path)
@@ -113,6 +168,76 @@ class Database:
                 try: self._conn.close()
                 except sqlite3.Error: pass
                 self._conn = None
+            self._close_read_pool()
+
+    # ------------------------------------------------------------------
+    # Пул соединений для чтения (партия 11, этап 11.3)
+    # ------------------------------------------------------------------
+
+    def _read_pool_enabled(self) -> bool:
+        return self._read_pool_size > 0 and not _is_in_memory_path(self._path)
+
+    def _connect_reader(self):
+        """Читающее соединение: те же прагмы, что у писателя в open()
+        (кроме journal_mode — режим WAL записан в самом файле БД и
+        наследуется), плюс py_casefold() (индексы и запросы миграций её
+        используют) и query_only=ON — запись через это соединение невозможна."""
+        c = sqlite3.connect(
+            self._path, check_same_thread=False,
+            isolation_level=None, timeout=10.0,
+        )
+        try:
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA foreign_keys = ON")
+            c.execute("PRAGMA temp_store = MEMORY")
+            c.execute("PRAGMA busy_timeout = 5000")
+            c.create_function("py_casefold", 1, _py_casefold)
+            c.execute("PRAGMA query_only = ON")
+        except Exception:
+            c.close()
+            raise
+        return c
+
+    def _acquire_reader(self):
+        """Свободное читающее соединение: из пула, иначе новое (пока не
+        достигнут READ_POOL_SIZE), иначе ждём возврата. Возвращает
+        (соединение, поколение пула)."""
+        with self._pool_cond:
+            while True:
+                if not self._pool_open:
+                    raise RuntimeError("Database is not opened")
+                if self._pool_idle:
+                    return self._pool_idle.pop(), self._pool_gen
+                if self._pool_created < self._read_pool_size:
+                    conn = self._connect_reader()
+                    self._pool_created += 1
+                    return conn, self._pool_gen
+                self._pool_cond.wait()
+
+    def _release_reader(self, conn, gen):
+        with self._pool_cond:
+            if self._pool_open and gen == self._pool_gen:
+                self._pool_idle.append(conn)
+                self._pool_cond.notify()
+                return
+        # пул закрыт (или переоткрыт) за время чтения — соединение чужого
+        # поколения не возвращаем, закрываем
+        try: conn.close()
+        except sqlite3.Error: pass
+
+    def _close_read_pool(self):
+        """Закрыть все свободные читающие соединения; занятые (читатель ещё
+        внутри read() в другом потоке) закроются при возврате — закрывать
+        соединение под ногами у работающего потока нельзя."""
+        with self._pool_cond:
+            idle, self._pool_idle = self._pool_idle, []
+            self._pool_open = False
+            self._pool_created = 0
+            self._pool_gen += 1
+            self._pool_cond.notify_all()
+        for conn in idle:
+            try: conn.close()
+            except sqlite3.Error: pass
 
     @property
     def path(self): return self._path
@@ -158,26 +283,72 @@ class Database:
         транзакции под блокировкой записи"), не трогая сами репозитории."""
         with self._lock:
             c = self.conn()
-            depth = getattr(self, "_txn_depth", 0)
+            depth = self._txn_depth
             if depth == 0:
                 c.execute("BEGIN")
+                self._txn_owner = threading.get_ident()
             self._txn_depth = depth + 1
             try:
                 yield c
             except Exception:
                 self._txn_depth = depth
                 if depth == 0:
+                    self._txn_owner = None
                     c.execute("ROLLBACK")
                 raise
             else:
                 self._txn_depth = depth
                 if depth == 0:
+                    self._txn_owner = None
                     c.execute("COMMIT")
 
     @contextmanager
     def read(self):
-        with self._lock:
+        """Блок чтения: все SELECT внутри видят ОДНО состояние БД (A43).
+
+        Не держит блокировку писателя: пока идёт тяжёлый расчёт, transaction()
+        других потоков (агрегатор, правки из UI) выполняется без ожидания.
+        Соединение — только для чтения; для записи используйте transaction()."""
+        # 1. Внутри открытой transaction() ЭТОГО потока — писатель: иначе код
+        #    не увидел бы собственные незакоммиченные строки.
+        if self._txn_owner == threading.get_ident():
             yield self.conn()
+            return
+        # 2. Вложенный read() в том же потоке — то же соединение и тот же снимок.
+        active = getattr(self._tls, "reader", None)
+        if active is not None:
+            yield active[0]
+            return
+        # 3. ":memory:" — одно соединение и общий замок, как раньше.
+        if not self._read_pool_enabled():
+            with self._lock:
+                yield self.conn()
+            return
+        # 4. Обычный путь: соединение из пула + одна читающая транзакция.
+        conn, gen = self._acquire_reader()
+        try:
+            conn.execute("BEGIN")
+        except BaseException:
+            self._release_reader(conn, gen)
+            raise
+        self._tls.reader = (conn, gen)
+        try:
+            yield conn
+        except BaseException:
+            self._finish_read(conn, gen, "ROLLBACK")
+            raise
+        else:
+            self._finish_read(conn, gen, "COMMIT")
+
+    def _finish_read(self, conn, gen, statement):
+        self._tls.reader = None
+        try:
+            conn.execute(statement)
+        except sqlite3.Error:
+            # соединение возвращается в пул только «чистым»
+            try: conn.execute("ROLLBACK")
+            except sqlite3.Error: pass
+        self._release_reader(conn, gen)
 
     def current_schema_version(self):
         with self._lock:
