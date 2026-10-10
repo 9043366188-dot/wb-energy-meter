@@ -88,6 +88,7 @@ from .accounting_service import (
 )
 from . import overview_service
 from . import reports_service
+from . import topology_history
 from .overview_service import BalanceAlgorithmError
 from .binding_service import BindingConflict, PointBindingRepo
 from .location_repo import LocationRepo
@@ -111,6 +112,7 @@ from .plan_repo import SitePlanRepo, PlanZoneRepo, PlanLinkRepo
 from . import migration_wizard_service
 from .repo import GroupRepo, MeterRepo, validate_device_id
 from .group_repo_v2 import GroupRepoV2
+from . import change_journal
 from .revision_service import (
     RevisionConflict as GlobalRevisionConflict, with_revision_check, bump_revision,
     current_revision_id, check_expected_revision, create_revision, revision_exists,
@@ -294,7 +296,92 @@ def register_v2_routes(app, state, json_response):
                              fields=["expected_revision"])
         return json_response(body, status)
 
-    # ------------------------------------------------------- revision (partия 2)
+    # ------------------------------------------------- журнал изменений (партия 12)
+
+    @app.before_request
+    def _change_journal_context():
+        """Контекст для записей change_log: операция, происхождение, адрес
+        клиента (аутентификации нет — «кто» не выдумываем, см.
+        change_journal.py). Сбрасывается в teardown_request."""
+        rule = request.url_rule.rule if request.url_rule is not None else request.path
+        change_journal.set_context(
+            op=f"{request.method} {rule}",
+            origin=change_journal.origin_for_path(request.path),
+            client=request.remote_addr)
+
+    @app.teardown_request
+    def _change_journal_context_clear(_exc):
+        change_journal.clear_context()
+
+    @app.route("/api/v2/change-log", methods=["GET"])
+    def v2_change_log():
+        """Журнал изменений — только чтение. Фильтры: entity_type, entity_id,
+        action, from, to (по времени записи), limit (1..500, по умолчанию
+        100), before_id (курсор: записи старше этого id), related=1 (плюс
+        записи подчинённых сущностей — история карточки). Новые сверху."""
+        args = request.args
+        known_types = sorted(set(change_journal.ENTITY_TABLE)
+                             | set(change_journal.EXPLICIT_ENTITY_TYPES))
+        entity_type = args.get("entity_type") or None
+        if entity_type is not None and entity_type not in known_types:
+            body, status = _err(
+                "bad_request",
+                f"entity_type — допустимые: {', '.join(known_types)}", 400,
+                fields=["entity_type"])
+            return json_response(body, status)
+
+        def _int_arg(name):
+            raw = args.get(name)
+            if raw in (None, ""):
+                return None
+            try:
+                return int(raw)
+            except ValueError:
+                raise ValueError(name)
+
+        try:
+            entity_id = _int_arg("entity_id")
+            before_id = _int_arg("before_id")
+            limit = _int_arg("limit")
+        except ValueError as e:
+            body, status = _err(
+                "bad_request", f"{e} должен быть целым числом", 400,
+                fields=[str(e)])
+            return json_response(body, status)
+        if limit is not None and limit < 1:
+            body, status = _err("bad_request", "limit должен быть положительным",
+                                400, fields=["limit"])
+            return json_response(body, status)
+        ts_from = ts_to = None
+
+        def _ts_arg(name):
+            raw = args.get(name)
+            if not raw:
+                return None
+            if raw.lstrip("-").isdigit():           # unix-секунды в строке запроса
+                return int(raw)
+            return _parse_ts(raw, name)
+
+        try:
+            ts_from = _ts_arg("from")
+            ts_to = _ts_arg("to")
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400, fields=["from", "to"])
+            return json_response(body, status)
+        with db.read() as c:
+            items, next_before = change_journal.query(
+                c, entity_type=entity_type, entity_id=entity_id,
+                action=args.get("action") or None, ts_from=ts_from, ts_to=ts_to,
+                limit=limit or change_journal.DEFAULT_LIMIT, before_id=before_id,
+                related=args.get("related") == "1")
+            started = change_journal.started_at(c)
+        return json_response({
+            "items": items, "next_before_id": next_before,
+            "limit": min(limit or change_journal.DEFAULT_LIMIT, change_journal.MAX_LIMIT),
+            "journal_started_at": started,
+        })
+
+    # ------------------------------------------------------- revision (партия 2)
 
     @app.route("/api/v2/revision", methods=["GET"])
     def v2_revision():
@@ -1362,6 +1449,9 @@ def register_v2_routes(app, state, json_response):
 
         data = request.get_json(silent=True) or {}
         timezone_name = data.get("timezone", "UTC")
+        structure_mode, err = _structure_mode_arg(data)
+        if err:
+            return err
         try:
             ts_from = _parse_ts(data.get("from"), "from")
             ts_to = _parse_ts(data.get("to"), "to")
@@ -1378,6 +1468,8 @@ def register_v2_routes(app, state, json_response):
         aggregates_repo = _aggregates_repo()
         source_repo = _source_repo()
         edge_repo = _edge_repo()
+        history = topology_history.HistoryContext(
+            db, structure_mode, edge_repo, node_repo)
         # Партия 10, этап E: один кэш measured_point() на весь запрос — см.
         # accounting_service.measured_point/overview_service.balance_node.
         _cache = {}
@@ -1403,7 +1495,11 @@ def register_v2_routes(app, state, json_response):
             try:
                 nb = overview_service.balance_node(
                     binding_repo, aggregates_repo, source_repo, edge_repo, node_repo,
-                    node_id, ts_from, ts_to, timezone_name, _cache=_cache)
+                    node_id, ts_from, ts_to, timezone_name, _cache=_cache,
+                    history=history)
+            except topology_history.HistoryTooFine as e:
+                body, status = _err("bad_request", str(e), 400)
+                return json_response(body, status)
             except BalanceAlgorithmError as e:
                 log.exception("Ошибка алгоритма баланса узла %s: %s", node_id, e)
                 body, status = _err(
@@ -1454,6 +1550,7 @@ def register_v2_routes(app, state, json_response):
             "unmetered_branches": nb.unmetered_branches,
             "boundary_coverage": nb.boundary_coverage,
             "unavailable_reason": nb.unavailable_reason,
+            **_structure_info(history, ts_from, ts_to),
         })
         return json_response(response)
 
@@ -2147,6 +2244,30 @@ def register_v2_routes(app, state, json_response):
                 point_ids.append(e.primary_point_id)
         return list(dict.fromkeys(point_ids))
 
+    def _structure_mode_arg(data):
+        """`structure_mode` из тела запроса (партия 12): "current" (по
+        умолчанию) | "as_was". Возвращает `(режим, None)` либо `(None, ответ 400)`."""
+        mode = data.get("structure_mode", topology_history.DEFAULT_STRUCTURE_MODE)
+        if mode not in topology_history.STRUCTURE_MODES:
+            body, status = _err(
+                "bad_request",
+                "structure_mode — допустимые: "
+                + "|".join(topology_history.STRUCTURE_MODES), 400,
+                fields=["structure_mode"])
+            return None, json_response(body, status)
+        return mode, None
+
+    def _structure_info(history, ts_from, ts_to):
+        """Поля ответа о режиме структуры: режим, признак assumed_legacy (A23),
+        начало истории и интервалы постоянной структуры."""
+        return {
+            "structure_mode": history.mode,
+            "assumed_legacy": history.assumed_legacy_for(ts_from),
+            "journal_started_at": history.journal_started_at(),
+            "structure_intervals": history.describe(
+                history.intervals(ts_from, ts_to)),
+        }
+
     def _overview_branch_result(member_point_ids, binding_repo, aggregates_repo,
                                  source_repo, edge_repo, ts_from, ts_to, timezone_name):
         """§8.2: "Если у выбранной группы неподтверждённый non-overlap —
@@ -2174,6 +2295,9 @@ def register_v2_routes(app, state, json_response):
         db.read() на весь расчёт, ревизия фиксируется один раз в начале)."""
         data = request.get_json(silent=True) or {}
         timezone_name = data.get("timezone", "UTC")
+        structure_mode, err = _structure_mode_arg(data)
+        if err:
+            return err
         try:
             ts_from = _parse_ts(data.get("from"), "from")
             ts_to = _parse_ts(data.get("to"), "to")
@@ -2192,6 +2316,10 @@ def register_v2_routes(app, state, json_response):
         edge_repo = _edge_repo()
         node_repo = _node_repo()
         group_repo = _group_repo_v2()
+        # Партия 12: структура по интервалам. В режиме "current" без выбывших
+        # измерителей это один интервал на живой структуре — расчёт прежний.
+        history = topology_history.HistoryContext(
+            db, structure_mode, edge_repo, node_repo)
         # Партия 10, этап E: один кэш measured_point() на весь запрос — см.
         # accounting_service.measured_point/overview_service.object_summary.
         _cache = {}
@@ -2218,7 +2346,7 @@ def register_v2_routes(app, state, json_response):
                 try:
                     summary = overview_service.object_summary(
                         binding_repo, aggregates_repo, source_repo, edge_repo, node_repo,
-                        ts_from, ts_to, timezone_name, _cache=_cache)
+                        ts_from, ts_to, timezone_name, _cache=_cache, history=history)
                 except BalanceAlgorithmError as e:
                     log.exception("Ошибка алгоритма баланса при overview/summary: %s", e)
                     body, status = _err(
@@ -2254,13 +2382,28 @@ def register_v2_routes(app, state, json_response):
 
                 branches = []
                 for g in group_repo.list_children(None):
-                    member_ids = [
-                        m["point_id"] for m in
-                        group_repo.resolve_effective_members(g.id)
-                    ]
-                    branch = _overview_branch_result(
-                        member_ids, binding_repo, aggregates_repo, source_repo, edge_repo,
-                        ts_from, ts_to, timezone_name)
+                    if structure_mode == "as_was":
+                        # состав группы по интервалам постоянной структуры (A21)
+                        res, conflict, member_ids = reports_service.as_was_group_result(
+                            db, history, group_repo, g.id, binding_repo,
+                            aggregates_repo, source_repo, ts_from, ts_to,
+                            timezone_name, cache=_cache)
+                        if conflict:
+                            branch = {"mode": "comparison", "conflict_reason": conflict,
+                                      "result": comparison(
+                                          binding_repo, aggregates_repo, source_repo,
+                                          member_ids, ts_from, ts_to, timezone_name)}
+                        else:
+                            branch = {"mode": "sum", "result": res,
+                                      "conflict_reason": None}
+                    else:
+                        member_ids = [
+                            m["point_id"] for m in
+                            group_repo.resolve_effective_members(g.id)
+                        ]
+                        branch = _overview_branch_result(
+                            member_ids, binding_repo, aggregates_repo, source_repo,
+                            edge_repo, ts_from, ts_to, timezone_name)
                     entry = {
                         "group_id": g.id, "name": g.name, "category": g.category,
                         "member_point_ids": member_ids,
@@ -2321,7 +2464,7 @@ def register_v2_routes(app, state, json_response):
             "configuration_revision_id": pinned_revision,
             "as_of": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "period": {"from": str(ts_from), "to": str(ts_to), "timezone": timezone_name},
-            "structure_mode": "current",
+            **_structure_info(history, ts_from, ts_to),
             "object_input_point_ids": input_point_ids,
             "object_total": object_total.to_dict() if object_total is not None else None,
             "object_total_unavailable_reason": object_total_unavailable_reason,
@@ -2402,6 +2545,16 @@ def register_v2_routes(app, state, json_response):
                 "bad_request", "composition_mode — допустимые: as_was|current", 400,
                 fields=["composition_mode"])
             return json_response(body, status)
+        structure_mode, err = _structure_mode_arg(data)
+        if err:
+            return err
+        if structure_mode == "as_was" and composition_mode == "current":
+            body, status = _err(
+                "bad_request",
+                "structure_mode=as_was определяет состав групп по интервалам; "
+                "composition_mode=current с ним несовместим", 400,
+                fields=["structure_mode", "composition_mode"])
+            return json_response(body, status)
 
         timezone_name = data.get("timezone", "UTC")
         try:
@@ -2449,6 +2602,8 @@ def register_v2_routes(app, state, json_response):
         node_repo = _node_repo()
         group_repo = _group_repo_v2()
         point_repo = _point_repo()
+        history = topology_history.HistoryContext(
+            db, structure_mode, edge_repo, node_repo)
 
         with db.read() as c:
             if requested_revision is not None:
@@ -2479,7 +2634,11 @@ def register_v2_routes(app, state, json_response):
                     binding_repo=binding_repo, aggregates_repo=aggregates_repo,
                     source_repo=source_repo, edge_repo=edge_repo, node_repo=node_repo,
                     group_repo=group_repo, point_repo=point_repo,
-                    tag_result=_tag_result, cache=_cache)
+                    tag_result=_tag_result, cache=_cache,
+                    structure_mode=structure_mode, history=history)
+            except topology_history.HistoryTooFine as e:
+                body, status = _err("bad_request", str(e), 400)
+                return json_response(body, status)
             except reports_service.ReportTargetNotFound as e:
                 body, status = _err("not_found", str(e), 404, ids=e.ids)
                 return json_response(body, status)
@@ -2496,6 +2655,7 @@ def register_v2_routes(app, state, json_response):
             "as_of": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "dimension": dimension,
             "composition_mode": composition_mode,
+            **_structure_info(history, ts_from, ts_to),
             "period": {"from": str(ts_from), "to": str(ts_to), "timezone": timezone_name},
             "rows": rows,
         }

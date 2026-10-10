@@ -386,6 +386,10 @@ def balance_from_point_sets(point_binding_repo, aggregates_repo, meter_source_re
             "output_point_ids": output_ids,
             "percentage": pct,
             "percentage_reason": pct_reason,
+            # партия 12: суммы входов/выходов нужны, чтобы пересчитать процент
+            # небаланса при объединении интервалов (topology_history)
+            "input_value": in_value,
+            "output_value": out_value,
         },
     )
 

@@ -10,7 +10,7 @@ import time
 import uuid
 from typing import Optional
 
-from . import __version__
+from . import __version__, change_journal
 from .config import DEFAULT_CONFIG_PATH, load_config
 from .consumption import ConsumptionService
 from .db import DEFAULT_DB_PATH, Database
@@ -768,6 +768,7 @@ def main(argv=None):
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
     parser = build_parser()
     args = parser.parse_args(argv)
+    change_journal.set_default_origin("cli")      # «откуда» в журнале изменений
     db = Database(args.db_path)
     db.open()
     try:

@@ -44,6 +44,7 @@ from .accounting_contract import (
 from .accounting_service import (
     AccountingConflict, balance_from_point_sets, measured_point, sum_points,
 )
+from .topology_history import adjust_quality, merge_results
 
 MAX_DEPTH = 32  # большое ТЗ §4.2 — защитный предел обхода дерева сети
 
@@ -83,6 +84,9 @@ class NodeBalanceResult:
     outputs: List[dict] = field(default_factory=list)
     unmetered_branches: List[dict] = field(default_factory=list)
     boundary_coverage: Optional[str] = None
+    # партия 12: режим `as_was` / период, пересекающий изменение структуры
+    structure_intervals: List[dict] = field(default_factory=list)
+    assumed_legacy: bool = False
 
 
 @dataclass
@@ -99,6 +103,9 @@ class ObjectSummary:
     imbalance_value: Optional[float]
     imbalance_percent: Optional[float]
     imbalance_percent_reason: Optional[str]
+    # партия 12: интервалы постоянной структуры и признак assumed_legacy (A23)
+    structure_intervals: List[dict] = field(default_factory=list)
+    assumed_legacy: bool = False
 
 
 # ---------------------------------------------------------------------
@@ -175,7 +182,33 @@ def _branch_name(edges_by_id: Dict[int, object], node_repo, edge_id: int,
 
 def balance_node(point_binding_repo, aggregates_repo, meter_source_repo,
                   edge_repo, node_repo, node_id, ts_from, ts_to,
-                  timezone="UTC", _cache=None) -> NodeBalanceResult:
+                  timezone="UTC", _cache=None, history=None) -> NodeBalanceResult:
+    """Баланс узла. Без `history` — по переданным репозиториям (структура
+    «сейчас», как раньше). С `history` (`topology_history.HistoryContext`,
+    партия 12) период делится на интервалы постоянной структуры, каждый
+    считается на структуре своего начала, результаты суммируются; по
+    умолчанию API передаёт `history` для A39 (сеть) и режима `as_was`."""
+    if history is not None:
+        ivs = history.intervals(ts_from, ts_to)
+        if not history.trivial(ivs):
+            if _cache is None:
+                _cache = {}
+            parts = [
+                (iv, _balance_node_single(
+                    point_binding_repo, aggregates_repo, meter_source_repo,
+                    iv.edge_repo, iv.node_repo, node_id, iv.a, iv.b, timezone,
+                    _cache=_cache))
+                for iv in ivs
+            ]
+            return _merge_node_balances(node_id, parts, ts_from, ts_to, timezone)
+    return _balance_node_single(
+        point_binding_repo, aggregates_repo, meter_source_repo, edge_repo,
+        node_repo, node_id, ts_from, ts_to, timezone, _cache=_cache)
+
+
+def _balance_node_single(point_binding_repo, aggregates_repo, meter_source_repo,
+                          edge_repo, node_repo, node_id, ts_from, ts_to,
+                          timezone="UTC", _cache=None) -> NodeBalanceResult:
     """Таблица Э2.3:
 
     - incoming(N) нет (источник/висячий узел) -> no_incoming_line;
@@ -284,7 +317,34 @@ def _resolve_source_edges(node_repo, edge_repo):
 
 def object_summary(point_binding_repo, aggregates_repo, meter_source_repo,
                     edge_repo, node_repo, ts_from, ts_to,
-                    timezone="UTC", _cache=None) -> ObjectSummary:
+                    timezone="UTC", _cache=None, history=None) -> ObjectSummary:
+    """Итог и небаланс объекта. Без `history` — по переданным репозиториям
+    (структура «сейчас», как раньше). С `history`
+    (`topology_history.HistoryContext`, партия 12) период делится на
+    интервалы постоянной структуры, каждый считается на структуре своего
+    начала (`_object_summary_single`), результаты суммируются
+    (`_merge_object_summaries`)."""
+    if history is not None:
+        ivs = history.intervals(ts_from, ts_to)
+        if not history.trivial(ivs):
+            if _cache is None:
+                _cache = {}
+            parts = [
+                (iv, _object_summary_single(
+                    point_binding_repo, aggregates_repo, meter_source_repo,
+                    iv.edge_repo, iv.node_repo, iv.a, iv.b, timezone,
+                    _cache=_cache))
+                for iv in ivs
+            ]
+            return _merge_object_summaries(parts, ts_from, ts_to, timezone)
+    return _object_summary_single(
+        point_binding_repo, aggregates_repo, meter_source_repo, edge_repo,
+        node_repo, ts_from, ts_to, timezone, _cache=_cache)
+
+
+def _object_summary_single(point_binding_repo, aggregates_repo, meter_source_repo,
+                            edge_repo, node_repo, ts_from, ts_to,
+                            timezone="UTC", _cache=None) -> ObjectSummary:
     """Э2.4: итог и небаланс объекта.
 
     `_cache` (партия 10, этап E, docs/load-test-2026-09.md) — необязательный
@@ -466,7 +526,7 @@ def object_summary(point_binding_repo, aggregates_repo, meter_source_repo,
 
 def network_branches_for_reports(point_binding_repo, aggregates_repo, meter_source_repo,
                                   edge_repo, node_repo, ts_from, ts_to, timezone="UTC",
-                                  _cache=None):
+                                  _cache=None, history=None):
     """Тонкая обёртка над object_summary() для /api/v2/reports/query
     dimension="branch" (Э2.6) — берёт те же network_branches, что и
     Обзор, чтобы числа на экране, в отчёте и в CSV совпадали по
@@ -478,5 +538,154 @@ def network_branches_for_reports(point_binding_repo, aggregates_repo, meter_sour
     самих строк отчёта (см. _reports_row_result) — без общего кэша это
     было бы третьим пересчётом тех же точек за тот же период."""
     summary = object_summary(point_binding_repo, aggregates_repo, meter_source_repo,
-                              edge_repo, node_repo, ts_from, ts_to, timezone, _cache=_cache)
+                              edge_repo, node_repo, ts_from, ts_to, timezone,
+                              _cache=_cache, history=history)
     return summary.network_branches
+
+
+# ---------------------------------------------------------------------
+# Объединение интервалов постоянной структуры (партия 12, 12.2)
+# ---------------------------------------------------------------------
+
+def _by_edge(items_per_part, key="edge_id"):
+    """Элементы разных интервалов по ключу, порядок первого появления; для
+    каждого ключа — список (интервал, элемент)."""
+    grouped: Dict[object, list] = {}
+    for iv, items in items_per_part:
+        for item in items:
+            grouped.setdefault(item[key], []).append((iv, item))
+    return grouped
+
+
+def _coverage(values) -> Optional[str]:
+    values = [v for v in values if v is not None]
+    if "has_unmetered_branches" in values:
+        return "has_unmetered_branches"
+    return "verified" if values else None
+
+
+def _merge_object_summaries(parts, ts_from, ts_to, timezone) -> ObjectSummary:
+    """Сумма `ObjectSummary` по интервалам. Интервал, где у объекта не было
+    ввода или небаланс не определён, считается неизвестной частью итога
+    (значение — `null`, известное — в `known_value`)."""
+    ivs = [iv for iv, _ in parts]
+    sums = [s for _, s in parts]
+    intervals = [iv.to_dict() for iv in ivs]
+    legacy = any(iv.assumed_legacy for iv in ivs)
+
+    input_point_ids = []
+    for s in sums:
+        for pid in s.input_point_ids:
+            if pid not in input_point_ids:
+                input_point_ids.append(pid)
+
+    total_pairs = [(iv, s.object_total) for iv, s in parts]
+    total_missing = sum(1 for _, r in total_pairs if r is None)
+    object_total = merge_results(
+        total_pairs, ts_from, ts_to, timezone, missing_parts=total_missing)
+
+    reasons = {s.object_total_unavailable_reason for s in sums} - {None}
+    if "unmetered_input" in reasons:
+        total_reason = "unmetered_input"
+    elif "no_input_assigned" in reasons:
+        total_reason = "no_input_assigned"
+    else:
+        total_reason = None
+
+    unmetered_inputs = [
+        v[-1][1] for v in _by_edge(
+            (iv, s.unmetered_inputs) for iv, s in parts).values()]
+    unmetered_branches = [
+        v[-1][1] for v in _by_edge(
+            (iv, s.unmetered_branches) for iv, s in parts).values()]
+
+    total_value = object_total.value if object_total is not None else None
+    network_branches = []
+    for edge_id, entries in _by_edge(
+            (iv, s.network_branches) for iv, s in parts).items():
+        last = entries[-1][1]
+        merged = merge_results(
+            [(iv, nb["result"]) for iv, nb in entries], ts_from, ts_to, timezone)
+        pct, pct_reason = resolve_percentage(
+            merged.value if merged is not None else None, total_value)
+        network_branches.append({
+            "edge_id": edge_id, "point_id": last["point_id"], "name": last["name"],
+            "result": merged,
+            "percentage_of_object": pct, "percentage_of_object_reason": pct_reason,
+        })
+
+    if object_total is None or object_total.value is None:
+        imbalance = None
+        imbalance_value = None
+        imbalance_percent = None
+        imbalance_percent_reason = "object_total_incomplete"
+    else:
+        imb_pairs = [(iv, s.imbalance) for iv, s in parts]
+        imbalance = merge_results(
+            imb_pairs, ts_from, ts_to, timezone,
+            missing_parts=sum(1 for _, r in imb_pairs if r is None))
+        imbalance_value = imbalance.value if imbalance is not None else None
+        expl = (imbalance.explanation or {}) if imbalance is not None else {}
+        imbalance_percent = expl.get("percentage")
+        imbalance_percent_reason = expl.get("percentage_reason", "no_data")
+
+    return ObjectSummary(
+        input_point_ids=input_point_ids, object_total=object_total,
+        object_total_unavailable_reason=total_reason,
+        unmetered_inputs=unmetered_inputs, network_branches=network_branches,
+        unmetered_branches=unmetered_branches,
+        boundary_coverage=_coverage(s.boundary_coverage for s in sums),
+        imbalance=imbalance, imbalance_value=imbalance_value,
+        imbalance_percent=imbalance_percent,
+        imbalance_percent_reason=imbalance_percent_reason,
+        structure_intervals=intervals, assumed_legacy=legacy,
+    )
+
+
+def _merge_node_balances(node_id, parts, ts_from, ts_to, timezone) -> NodeBalanceResult:
+    """Сумма `NodeBalanceResult` по интервалам. Интервал без результата
+    (нет входящей линии, ввод без счётчика, нет выходов) — неизвестная часть."""
+    ivs = [iv for iv, _ in parts]
+    nodes = [n for _, n in parts]
+    intervals = [iv.to_dict() for iv in ivs]
+    legacy = any(iv.assumed_legacy for iv in ivs)
+
+    result_pairs = [(iv, n.result) for iv, n in parts]
+    missing = sum(1 for _, r in result_pairs if r is None)
+    result = merge_results(result_pairs, ts_from, ts_to, timezone,
+                           missing_parts=missing)
+
+    reasons = [n.unavailable_reason for n in nodes]
+    if result is not None:
+        reason = None
+    else:
+        reason = next((r for r in reasons if r is not None), None)
+
+    input_entry = None
+    inputs = [(iv, n.input) for iv, n in parts if n.input is not None]
+    if inputs:
+        last = inputs[-1][1]
+        merged_in = merge_results(
+            [(iv, e["result"]) for iv, e in inputs if e["result"] is not None],
+            ts_from, ts_to, timezone)
+        input_entry = {"edge_id": last["edge_id"], "point_id": last["point_id"],
+                       "name": last["name"], "result": merged_in}
+
+    outputs = []
+    for edge_id, entries in _by_edge((iv, n.outputs) for iv, n in parts).items():
+        last = entries[-1][1]
+        merged_out = merge_results(
+            [(iv, e["result"]) for iv, e in entries], ts_from, ts_to, timezone)
+        outputs.append({"edge_id": edge_id, "point_id": last["point_id"],
+                        "to_node_id": last["to_node_id"], "name": last["name"],
+                        "result": merged_out})
+
+    unmetered = [v[-1][1] for v in _by_edge(
+        (iv, n.unmetered_branches) for iv, n in parts).values()]
+    return NodeBalanceResult(
+        node_id=node_id, input=input_entry, result=result,
+        unavailable_reason=reason, outputs=outputs,
+        unmetered_branches=unmetered,
+        boundary_coverage=_coverage(n.boundary_coverage for n in nodes),
+        structure_intervals=intervals, assumed_legacy=legacy,
+    )
