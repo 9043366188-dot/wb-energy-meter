@@ -1100,9 +1100,19 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           <input type="date" x-model="rv2To" style="display:block;margin-top:2px;background:var(--bg2);
                  border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:6px 10px;font-size:13px">
         </label>
+        <label class="muted" style="font-size:12px">
+          Структура сети
+          <select id="rv2-structure-mode" x-model="rv2StructureMode" style="display:block;margin-top:2px;background:var(--bg2);
+                  border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:6px 10px;font-size:13px">
+            <option value="current">текущая (на весь период)</option>
+            <option value="as_was">как было (по журналу изменений)</option>
+          </select>
+        </label>
         <label class="muted" style="font-size:12px" x-show="rv2Dimension==='branch'||rv2Dimension==='group'">
           Состав группы
-          <select x-model="rv2CompositionMode" style="display:block;margin-top:2px;background:var(--bg2);
+          <select x-model="rv2CompositionMode" :disabled="rv2StructureMode==='as_was'"
+                  :title="rv2StructureMode==='as_was'?'При структуре «как было» состав групп тоже берётся по интервалам':''"
+                  style="display:block;margin-top:2px;background:var(--bg2);
                   border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:6px 10px;font-size:13px">
             <option value="as_was">как было на начало периода (A21)</option>
             <option value="current">текущий (A22)</option>
@@ -1137,7 +1147,17 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         <div>
           <div class="muted" style="font-size:11px;margin-bottom:8px">
             Ревизия конфигурации: <span x-text="rv2Result.configuration_revision_id"></span> ·
-            режим состава: <span x-text="rv2Result.composition_mode==='as_was'?'как было на начало периода':'текущий'"></span>
+            режим состава: <span x-text="rv2Result.composition_mode==='as_was'?'как было на начало периода':'текущий'"></span> ·
+            структура: <span id="rv2-result-structure" x-text="rv2Result.structure_mode==='as_was'?'как было':'текущая'"></span>
+            <template x-if="rv2Result.structure_mode==='as_was' && (rv2Result.structure_intervals||[]).length>1">
+              <span x-text="' (схема сети менялась в периоде, интервалов: '+rv2Result.structure_intervals.length+')'"></span>
+            </template>
+          </div>
+          <div id="rv2-assumed-legacy" style="font-size:12px;margin-bottom:8px;color:var(--warn)"
+               x-show="rv2Result.assumed_legacy">
+            История структуры ведётся с версии 0.22.0<template x-if="rv2Result.journal_started_at"><span
+              x-text="' (с '+new Date(rv2Result.journal_started_at*1000).toLocaleDateString('ru-RU')+')'"></span></template>.
+            Для части периода до этого момента принята схема на начало журнала — это допущение, а не подтверждённая история.
           </div>
           <table class="rep-table">
             <thead><tr>
@@ -1165,7 +1185,11 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <td class="num mono" x-text="row.result&&row.result.value!=null?fmt(row.result.value,3):'—'"></td>
                   <td x-text="row.result?row.result.unit:''"></td>
                   <td x-text="row.result?row.result.availability:'—'"></td>
-                  <td class="muted" style="font-size:11px" x-text="row.conflict_reason||(row.result?(row.result.quality_flags||[]).join(', '):'нет данных')"></td>
+                  <td class="muted" style="font-size:11px">
+                    <span x-text="row.conflict_reason||(row.result?(row.result.quality_flags||[]).join(', '):'нет данных')"></span>
+                    <div x-show="row.structure_confirmed===false" style="color:var(--warn)">структура не подтверждена</div>
+                    <template x-for="(n,ni) in rv2RowNotes(row)" :key="ni"><div x-text="n"></div></template>
+                  </td>
                   <td class="muted" style="font-size:11px" x-text="(row.member_point_ids||[]).length+' точ.'"></td>
                   <template x-if="rv2Result.compare_period">
                     <td class="num mono" x-text="row.compare_result&&row.compare_result.value!=null?fmt(row.compare_result.value,3):'—'"></td>
@@ -1641,6 +1665,45 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <div class="sf-lbl">Кабель</div>
                 <div class="sf-val" x-text="structInspector.data.cable_note"></div>
               </div>
+            </div>
+          </template>
+
+          <!-- ИСТОРИЯ (партия 12, 12.3): журнал изменений открытой сущности из
+               GET /api/v2/change-log (related=1 — вместе с подчинёнными: привязки,
+               места, членство в группах, линии точки). Грузится по кнопке. -->
+          <template x-if="structInspector && !structInspectorLoading && !structInspectorError">
+            <div class="structure-field" id="struct-history" style="margin-top:16px">
+              <button class="btn btn-sm btn-secondary" id="struct-history-toggle"
+                      @click="toggleStructHistory()"
+                      x-text="structHistory.open?'Скрыть историю':'История изменений'"></button>
+              <template x-if="structHistory.open">
+                <div style="margin-top:8px">
+                  <div class="muted" style="font-size:11px"
+                       x-show="structHistory.loading && structHistory.items.length===0">загрузка…</div>
+                  <div style="color:var(--err);font-size:12px"
+                       x-show="structHistory.error" x-text="structHistory.error"></div>
+                  <div class="muted" style="font-size:11px"
+                       x-show="!structHistory.loading && !structHistory.error && structHistory.items.length===0">
+                    Записей нет. Журнал ведётся только с момента установки версии 0.22.0:
+                    более ранние правки в нём не отражены.
+                  </div>
+                  <template x-for="it in structHistory.items" :key="it.id">
+                    <div class="struct-history-item"
+                         style="border-top:1px solid var(--line);padding:6px 0">
+                      <div style="font-size:12px" x-text="structHistoryTitle(it)"></div>
+                      <div class="muted" style="font-size:11px" x-text="structHistoryWhen(it)"></div>
+                      <template x-for="(c,ci) in structHistoryChanges(it)" :key="ci">
+                        <div class="mono muted" style="font-size:11px;word-break:break-word" x-text="c"></div>
+                      </template>
+                    </div>
+                  </template>
+                  <button class="btn btn-sm btn-secondary" style="margin-top:6px"
+                          x-show="structHistory.next!=null" :disabled="structHistory.loading"
+                          @click="loadStructHistory(true)">Ещё</button>
+                  <div class="muted" style="font-size:11px;margin-top:6px" x-show="structHistory.startedAt"
+                       x-text="'Журнал ведётся с '+new Date(structHistory.startedAt*1000).toLocaleString('ru-RU')"></div>
+                </div>
+              </template>
             </div>
           </template>
         </div>

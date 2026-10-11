@@ -41,6 +41,13 @@
 
       structInspectorError:null,
 
+      // Партия 12 (12.3): «История» карточки — журнал изменений
+      // GET /api/v2/change-log для открытой в инспекторе сущности. Загружается
+      // по кнопке (не на каждый клик по дереву), состояние живёт отдельно от
+      // structInspector, чтобы перезагрузка карточки после правки его не теряла.
+      structHistory:{open:false, loading:false, error:null, items:[], next:null,
+                     startedAt:null, key:null},
+
       _structSearchSeq:0,
 
       structCreatePanel:null,
@@ -305,6 +312,7 @@
               return;
             }
             await this._loadStructureLists();
+            this._refreshStructHistoryIfOpen();   // карточку не перезагружаем, а запись в журнале уже есть
           }catch(e){ this.showToast('Ошибка сети: '+e, false); }
         },
 
@@ -347,6 +355,11 @@
         },
 
       async _loadInspectorData(kind, id){
+          // История другой карточки не показывается: сбрасываем список, но
+          // раскрытость блока оставляем — перебирая точки, пользователь видит
+          // историю каждой без повторного клика (грузится в конце загрузчика).
+          this.structHistory = {open:!!(this.structHistory&&this.structHistory.open),
+            loading:false, error:null, items:[], next:null, startedAt:null, key:null};
           this.structInspector = {kind, id, data:null};
           this.structInspectorLoading = true; this.structInspectorError = null;
           try{
@@ -363,6 +376,103 @@
         },
 
       closeInspector(){ this.structInspector=null; this.structInspectorError=null; },
+
+      _structHistoryEntity(){
+          const i=this.structInspector; if(!i) return null;
+          const t={point:'metering_point', group:'group', node:'electrical_node',
+                   edge:'electrical_edge'}[i.kind];
+          return t ? {type:t, id:i.id} : null;
+        },
+
+      toggleStructHistory(){
+          const h=this.structHistory;
+          h.open=!h.open;
+          if(h.open) return this.loadStructHistory(false);
+        },
+
+      // Открытая история перечитывается после перезагрузки карточки (правка
+      // описания, смена прибора и т.п.) — на «Структуре»; на «Плане v3» тот же
+      // инспектор без блока истории, лишних запросов нет.
+      _refreshStructHistoryIfOpen(){
+          if(this.tab==='structurev2' && this.structHistory && this.structHistory.open)
+            return this.loadStructHistory(false);
+        },
+
+      async loadStructHistory(more){
+          const ent=this._structHistoryEntity(); if(!ent) return;
+          const h=this.structHistory;
+          const key=ent.type+':'+ent.id;
+          if(!more){ h.items=[]; h.next=null; }
+          h.key=key; h.loading=true; h.error=null;
+          try{
+            let url='/api/v2/change-log?entity_type='+ent.type+'&entity_id='+ent.id+
+                    '&related=1&limit=20';
+            if(more && h.next!=null) url+='&before_id='+h.next;
+            const r=await fetch(url);
+            const d=await r.json();
+            if(!r.ok) throw new Error(d.message||('HTTP '+r.status));
+            if(h.key!==key) return;     // пока ждали, открыли другую карточку
+            h.items = more ? h.items.concat(d.items||[]) : (d.items||[]);
+            h.next = d.next_before_id==null ? null : d.next_before_id;
+            h.startedAt = d.journal_started_at==null ? null : d.journal_started_at;
+          }catch(e){
+            if(h.key===key) h.error='Не удалось загрузить историю: '+e.message;
+          }finally{
+            if(h.key===key) h.loading=false;
+          }
+        },
+
+      // Подпись записи журнала для человека: «изменено: линия», время, откуда.
+      structHistoryTitle(it){
+          const act={create:'создано', update:'изменено', delete:'удалено',
+                     archive:'архивировано', restore:'восстановлено',
+                     close:'закрыто', publish:'опубликовано'}[it.action]||it.action;
+          const ent={metering_point:'точка', point_binding:'привязка прибора',
+                     point_state:'состояние точки', meter_source:'источник данных',
+                     point_location:'место точки', point_served_location:'обслуживаемое место',
+                     location:'место', location_parent:'родитель места', group:'группа',
+                     group_parent:'родитель группы', group_member:'состав группы',
+                     electrical_node:'узел сети', electrical_edge:'линия',
+                     balance_scope:'граница баланса', balance_member:'состав баланса',
+                     plan:'план', plan_layout:'раскладка плана'}[it.entity_type]||it.entity_type;
+          return ent+' #'+it.entity_id+' — '+act;
+        },
+
+      structHistoryWhen(it){
+          const f=ts=>new Date(ts*1000).toLocaleString('ru-RU',
+            {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+          let s=f(it.recorded_at);
+          if(it.effective_from!=null && it.effective_from!==it.recorded_at)
+            s+=' · действует с '+f(it.effective_from);
+          const src={web:'интерфейс', 'legacy-api':'старый API', wizard:'мастер переноса',
+                     migration:'миграция', system:'система'}[it.origin]||it.origin;
+          return s+(src?' · '+src:'');
+        },
+
+      // Что именно поменялось: для update — «поле: было → стало» по полям, значения
+      // которых различаются (служебные updated_at не показываем); для create/delete —
+      // имя или код, если они есть в записи.
+      structHistoryChanges(it){
+          const skip={updated_at:1, created_at:1, id:1};
+          const show=v=>v==null?'—':(typeof v==='object'?JSON.stringify(v):String(v));
+          const o=it.old_value||{}, n=it.new_value||{};
+          if(it.action==='update' || it.action==='archive' || it.action==='restore'
+             || it.action==='close' || it.action==='publish'){
+            const out=[];
+            Object.keys(Object.assign({}, o, n)).forEach(k=>{
+              if(skip[k]) return;
+              if(JSON.stringify(o[k])!==JSON.stringify(n[k]))
+                out.push(k+': '+show(o[k])+' → '+show(n[k]));
+            });
+            return out.slice(0,6);
+          }
+          const src=it.action==='delete'?o:n;
+          const out=[];
+          ['name','code','kind','state','point_id','group_id'].forEach(k=>{
+            if(src[k]!=null) out.push(k+': '+show(src[k]));
+          });
+          return out;
+        },
 
       async _loadPointInspector(id){
           const period=this._ovDefaultDates();
@@ -402,6 +512,7 @@
             // (сбрасывается при переходе на другую точку само собой).
             simpleGroupPick:'',
           };
+          this._refreshStructHistoryIfOpen();
           // Расход за период — отдельным запросом, чтобы карточка сразу
           // показывала остальное, даже если metrics/query недоступен/медленный.
           try{
@@ -426,6 +537,7 @@
           const membersResp = membersR.ok ? await membersR.json() : {points:[]};
           const members = membersResp.points || [];
           this.structInspector = {kind:'group', id, data, members, sum:null};
+          this._refreshStructHistoryIfOpen();
           if(members.length>0){
             try{
               const r = await fetch('/api/v2/metrics/query', {
@@ -459,6 +571,7 @@
             nameDraft: data.name, locationTextDraft: locationText,
             kindDraft: data.kind,
             lineLive:{}, lineEnergy:{}, balance:null, balanceLoading:false, balanceError:null};
+          this._refreshStructHistoryIfOpen();
           this.planV3NodeCardError = null;
           this.planV3AddConsumerError = null; this.planV3AddConsumerName = '';
           // Э3/B7: живые P-now/E-за-период по линиям и «Баланс щита» — только
@@ -486,6 +599,7 @@
             ratedDraft: data.rated_current_a!=null ? String(data.rated_current_a) : '',
             cableDraft: data.cable_note||'',
           };
+          this._refreshStructHistoryIfOpen();
           this.planV3EdgeCardError=null;
           this.planV3AttachEdgeId=null; this.planV3AttachDeviceId=''; this.planV3AttachError=null;
         },

@@ -269,15 +269,20 @@ class BrowserPage:
         self._playwright.stop()
 
 
-def open_browser(url: str, viewport=None) -> BrowserPage:
+def open_browser(url: str, viewport=None, timezone_id=None) -> BrowserPage:
     """Открыть страницу url в Chromium (PLAYWRIGHT_BROWSERS_PATH из
     окружения — см. docs/agent-guides/browser-testing-linux.md;
-    playwright install не запускать)."""
+    playwright install не запускать). `timezone_id` (например "UTC") —
+    часовой пояс браузера: отчёты берут его из Intl, и сценарий с границами
+    суток не должен зависеть от пояса песочницы."""
     from playwright.sync_api import sync_playwright
 
     pw = sync_playwright().start()
     browser = pw.chromium.launch()
-    page = browser.new_page(viewport=viewport or {"width": 1400, "height": 1000})
+    kwargs = {"viewport": viewport or {"width": 1400, "height": 1000}}
+    if timezone_id:
+        kwargs["timezone_id"] = timezone_id
+    page = browser.new_page(**kwargs)
     bp = BrowserPage(pw, browser, page)
     page.goto(url)
     return bp
