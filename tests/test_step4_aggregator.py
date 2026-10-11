@@ -123,9 +123,11 @@ def test_compute_reset():
     agg = compute_hourly_aggregate(
         meter_id=1, hour_start=hour_start, points_with_context=points,
     )
-    # delta = 0.5 - 500.0 = -499.5 → reset
+    # delta = 0.5 - 500.0 = -499.5 → reset. Партия 12 (A13): в агрегат пишется
+    # сумма возрастающих участков (0 -> 0.5), а не None — это известная часть
+    # расхода часа; сам расход часа неизвестен (учёт читает флаг reset).
     assert agg.quality_flag == "reset"
-    assert agg.ap_energy_delta is None
+    assert agg.ap_energy_delta == 0.5, agg.ap_energy_delta
     print("[OK] reset")
 
 

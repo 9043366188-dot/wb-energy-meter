@@ -232,6 +232,38 @@ def _fmt_ts(ts: int) -> str:
     return _time.strftime("%d.%m.%Y %H:%M", _time.localtime(ts))
 
 
+def _sparse_notes(rows):
+    """A14 (партия 12): для рядов подряд идущих часов `sparse` — пояснение
+    «расход за ЧЧ:ММ–ЧЧ:ММ известен только целиком» (местное время
+    контроллера, как и границы часов в `period_aggregates`)."""
+    notes = []
+    run = []
+    for r in list(rows) + [None]:
+        if r is not None and r.quality_flag == "sparse" and (
+                not run or r.period_start == run[-1].period_end):
+            run.append(r)
+            continue
+        if run:
+            a, b = run[0].period_start, run[-1].period_end
+            total = None
+            if all(x.ap_energy_start is not None and x.ap_energy_end is not None
+                   for x in run):
+                total = round(sum(x.ap_energy_end - x.ap_energy_start for x in run), 6)
+            t0 = _time_fmt(a)
+            t1 = _time_fmt(b)
+            notes.append({
+                "kind": "sparse", "from": a, "to": b, "known_kwh": total,
+                "text": f"расход за {t0}–{t1} известен только целиком",
+            })
+        run = [r] if (r is not None and r.quality_flag == "sparse") else []
+    return notes
+
+
+def _time_fmt(ts):
+    import time as _time
+    return _time.strftime("%H:%M", _time.localtime(ts))
+
+
 def _load_static(filename):
     import os
     static_dir = os.path.join(
@@ -491,6 +523,8 @@ def create_app(state):
             "period": period.to_dict(),
             "hours_count": len(rows),
             "items": [r.to_dict() for r in rows],
+            # A14: ряды часов, расход которых известен только целиком
+            "notes": _sparse_notes(rows),
         })
 
     @app.route("/api/summary/consumption")

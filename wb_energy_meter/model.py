@@ -44,6 +44,10 @@ class MeterStatus(str, Enum):
     WARNING = "warning"
     DEVICE_ERROR = "device_error"
     UNKNOWN = "unknown"
+    # A16 (партия 12): значения есть, но только из retained-сообщений брокера,
+    # живого сообщения от прибора после (пере)запуска ещё не было. Добавлено
+    # новым значением, прежние не менялись.
+    UNCONFIRMED = "unconfirmed"
 
     @property
     def priority(self) -> int:
@@ -53,11 +57,12 @@ class MeterStatus(str, Enum):
 _STATUS_PRIORITY = {
     MeterStatus.UNKNOWN: 0,
     MeterStatus.OK: 1,
-    MeterStatus.WARNING: 2,
-    MeterStatus.INCOMPLETE_MEASUREMENT: 3,
-    MeterStatus.NO_MEASUREMENT: 4,
-    MeterStatus.NO_CONNECTION: 5,
-    MeterStatus.DEVICE_ERROR: 6,
+    MeterStatus.UNCONFIRMED: 2,
+    MeterStatus.WARNING: 3,
+    MeterStatus.INCOMPLETE_MEASUREMENT: 4,
+    MeterStatus.NO_MEASUREMENT: 5,
+    MeterStatus.NO_CONNECTION: 6,
+    MeterStatus.DEVICE_ERROR: 7,
 }
 
 
@@ -109,6 +114,12 @@ class MeterState:
     # Обновляется только когда приходит U/I/P/F > порога.
     # 0.0 означает «ни разу не было ненулевых измерений».
     last_measurement_ts: float = 0.0
+    # A16: значения пришли только из retained-сообщений, живых (не retained)
+    # сообщений прибора после запуска ещё не было. `last_any_ts` и
+    # `last_measurement_ts` в этом состоянии не трогаются: retained — это
+    # «последнее, что брокер помнит», а не признак того, что прибор жив.
+    awaiting_live: bool = False
+    last_retained_ts: float = 0.0
     status: MeterStatus = MeterStatus.UNKNOWN
     status_reason: str = ""
 

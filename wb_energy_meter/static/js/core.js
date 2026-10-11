@@ -188,13 +188,15 @@ function fmtHour(ts){
       statusColor(st){ return {
           ok:'var(--ok)',warning:'var(--warn)',no_measurement:'var(--idle)',
           incomplete:'var(--warn)',no_connection:'var(--err)',
-          device_error:'var(--err)',unknown:'var(--txt3)',never_seen:'var(--txt3)'}[st]||'var(--txt3)';
+          device_error:'var(--err)',unknown:'var(--txt3)',never_seen:'var(--txt3)',
+          unconfirmed:'var(--info)'}[st]||'var(--txt3)';
         },
 
       statusLabel(st){ return {
           ok:'OK',warning:'Внимание',no_measurement:'Нет нагрузки',
           incomplete:'Нет фазы',no_connection:'Нет связи',
-          device_error:'Ошибка',unknown:'—',never_seen:'Не подключалось'}[st]||st;
+          device_error:'Ошибка',unknown:'—',never_seen:'Не подключалось',
+          unconfirmed:'Не подтверждено'}[st]||st;
         },
 
       badgeStyle(st){
@@ -203,11 +205,11 @@ function fmtHour(ts){
         },
 
       qualityLabel(q){ return {ok:'OK',edge_approx:'~прибл.',gap:'разрыв',
-          reset:'сброс',no_data:'нет данных',stale:'нет обновл.'}[q]||q; },
+          reset:'сброс',no_data:'нет данных',stale:'нет обновл.',sparse:'только целиком'}[q]||q; },
 
       qualityStyle(q){
           const c={ok:'var(--ok)',edge_approx:'var(--info)',gap:'var(--warn)',
-            reset:'var(--err)',no_data:'var(--idle)',stale:'var(--idle)'}[q]||'var(--txt3)';
+            reset:'var(--err)',no_data:'var(--idle)',stale:'var(--idle)',sparse:'var(--info)'}[q]||'var(--txt3)';
           return `background:${c}22;color:${c}`;
         },
 

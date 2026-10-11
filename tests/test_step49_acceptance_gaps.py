@@ -21,8 +21,9 @@
        конфликта). Итог по объединению = sum_points(a,b,c) = 35, а не
        30+25=55
   A14  Накопитель 100.0 в начале часа 0 и 160.0 в середине часа 4, между
-       ними записей нет. Часы 0..4: дельты 0,0,0,0,60; ни один не «ok»
-       (все edge_approx); сумма = 60 = 160−100; равномерных долей 12 нет
+       ними записей нет. Решение Кира (партия 12): часы 0..4 — «нет
+       данных» (расход null, причина sparse), а не 0,0,0,0,60; сумма за
+       период 0..5 ч = 60 = 160−100 (edge_approx); равномерных долей 12 нет
   A15  Энергия не менялась 2 ч, но сообщения (Uptime) идут: статус OK.
        Тишина 700 с (> no_connection_timeout_s=600): NO_CONNECTION;
        тишина 300 с (между stale_warning=120 и 600): WARNING, не OK
@@ -395,9 +396,12 @@ def test_a14_no_intermediate_samples_total_known_hourly_shares_not_invented():
     aggs = [compute_hourly_aggregate(1, h0 + k * HOUR, points) for k in range(5)]
     deltas = [a.ap_energy_delta for a in aggs]
     flags = [a.quality_flag for a in aggs]
-    assert deltas == [0.0, 0.0, 0.0, 0.0, 60.0], deltas
-    assert all(f == "edge_approx" for f in flags), flags  # ни один час не «ok»
-    assert approx(sum(deltas), 160.0 - 100.0)
+    # решение Кира: часы внутри интервала — «нет данных» (null с причиной), а не
+    # нули и не всё приращение в последнем часе
+    assert deltas == [None] * 5, deltas
+    assert flags == ["sparse"] * 5, flags
+    assert [(a.ap_energy_start, a.ap_energy_end) for a in aggs] == \
+        [(100.0, 100.0)] * 4 + [(100.0, 160.0)]
     assert 12.0 not in deltas, "расход размазан поровну по часам — доли выдуманы"
 
     # через учёт: расход за весь период известен и помечен edge_approx
@@ -418,8 +422,15 @@ def test_a14_no_intermediate_samples_total_known_hourly_shares_not_invented():
                              h0, h0 + 5 * HOUR)
         assert approx(res.value, 60.0), res.to_dict()
         assert "edge_approx" in res.quality_flags, res.quality_flags
-        print("[OK] A14: часы 0..4 = [0,0,0,0,60], все edge_approx, сумма 60 = 160−100, "
-              "равномерных долей нет; учёт видит 60 с флагом edge_approx")
+        notes = res.explanation["notes"]
+        assert len(notes) == 1 and "известен только целиком" in notes[0], notes
+        # период, режущий интервал, — расход неизвестен, а не часть от 60
+        part = measured_point(rig.bindings, rig.aggregates, rig.sources, pt.id,
+                              h0, h0 + 3 * HOUR)
+        assert part.value is None and part.known_value is None, part.to_dict()
+        assert "sparse" in part.quality_flags and part.availability == "missing"
+        print("[OK] A14: часы 0..4 — null/sparse, сумма за период 60 (edge_approx) с "
+              "пояснением «известен только целиком»; период, режущий интервал, неизвестен")
     finally:
         db.close(); os.unlink(db_path)
 

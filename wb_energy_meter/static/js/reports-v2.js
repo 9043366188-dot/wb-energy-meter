@@ -17,6 +17,11 @@
 
       rv2CompositionMode:'as_was',
 
+      // Партия 12 (12.3): структура сети в расчёте. 'current' — по умолчанию, как
+      // раньше (текущая схема на весь период); 'as_was' — схема, действовавшая в
+      // каждый момент периода (по журналу изменений, с версии 0.22.0).
+      rv2StructureMode:'current',
+
       rv2CompareEnabled:false,
 
       rv2CompareFrom:null,
@@ -78,7 +83,10 @@
             const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
             const body={
               dimension:this.rv2Dimension, from:this.rv2From, to:this.rv2To, timezone:tz,
-              composition_mode:this.rv2CompositionMode,
+              // as_was структуры сам определяет состав групп по интервалам;
+              // composition_mode=current с ним сервер отклоняет (400)
+              composition_mode:this.rv2StructureMode==='as_was' ? 'as_was' : this.rv2CompositionMode,
+              structure_mode:this.rv2StructureMode,
             };
             if(this.rv2Dimension!=='branch') body.scope_ids=this.rv2ScopeIds.map(Number);
             if(this.rv2CompareEnabled && this.rv2CompareFrom && this.rv2CompareTo){
@@ -97,6 +105,17 @@
           }
         },
 
+      // Пояснения к строке (A14: «расход за 03:00–07:00 известен только целиком»
+      // и т.п.) — из explanation.notes результата строки и результата сравнения.
+      rv2RowNotes(row){
+          const out=[];
+          [row.result, row.compare_result].forEach(r=>{
+            const n=r && r.explanation && r.explanation.notes;
+            (n||[]).forEach(x=>{ if(out.indexOf(x)<0) out.push(x); });
+          });
+          return out;
+        },
+
       downloadRv2Csv(){
           // A45: csvCell() уже нейтрализует префиксы формул (=+-@) — те же
           // правила, что и в существующих выгрузках v1. Числа НЕ идут через
@@ -111,7 +130,10 @@
             'С','По','Часовой пояс','Ревизия конфигурации','Режим состава','Конфликт'];
           if(hasCmp) head.push('Сравнение: с','Сравнение: по','Значение сравнения','Изменение',
             'Изменение %','Состав изменился','Конфликт сравнения');
-          const lines=['﻿', `wb-energy-meter — Отчёт v2 (${d.dimension}, состав: ${d.composition_mode})`,
+          head.push('Режим структуры','Структура подтверждена','Структура до начала журнала (допущение)',
+            'Пояснения');
+          const structTitle = d.structure_mode==='as_was' ? 'как было' : 'текущая';
+          const lines=['﻿', `wb-energy-meter — Отчёт v2 (${d.dimension}, состав: ${d.composition_mode}, структура: ${structTitle})`,
             '', head.join(';')];
           (d.rows||[]).forEach(row=>{
             const res=row.result;
@@ -135,6 +157,12 @@
                 this.csvCell(row.compare_conflict_reason||''),
               );
             }
+            cells.push(
+              this.csvCell(d.structure_mode||'current'),
+              row.structure_confirmed===false?'нет':'да',
+              d.assumed_legacy?'да':'нет',
+              this.csvCell(this.rv2RowNotes(row).join(' | ')),
+            );
             lines.push(cells.join(';'));
           });
           const blob=new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8'});

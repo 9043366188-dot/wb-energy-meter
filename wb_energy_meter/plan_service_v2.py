@@ -40,7 +40,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from . import domain_generation, plan_geo_v2
+from . import change_journal, domain_generation, plan_geo_v2
 from .image_meta import parse_image_size, ImageFormatError
 from .plan_repo import (
     MAX_UPLOAD_BYTES, PlanError,
@@ -374,6 +374,16 @@ class PlanItem:
         }
 
 
+def _journal_plan_change(c, plan_id: int, kind: str, op: str) -> None:
+    """Журнал изменений (партия 12): одиночная правка элемента или связи на
+    плане — запись `plan_layout` (покоординатно раскладка не журналируется).
+    `kind` — "items" | "edge_views", `op` — "added" | "updated" | "removed"."""
+    counts = {"items": {"added": 0, "updated": 0, "removed": 0},
+              "edge_views": {"added": 0, "updated": 0, "removed": 0}}
+    counts[kind][op] = 1
+    change_journal.record(c, "plan_layout", plan_id, "update", new=counts)
+
+
 def _plan_dims_for_geometry(c, plan_id):
     row = c.execute(
         "SELECT image_width, image_height, canvas_width, canvas_height, "
@@ -435,6 +445,7 @@ class PlanItemRepo:
             except sqlite3.IntegrityError as e:
                 raise PlanError(f"Не удалось создать элемент плана: {e}") from None
             item_id = cur.lastrowid
+            _journal_plan_change(c, plan_id, "items", "added")
 
             # docs/migration-plan-v2.md §7 п.2: первая предметная запись
             # через доменную модель v2 отмечается В ТОЙ ЖЕ транзакции —
@@ -458,6 +469,7 @@ class PlanItemRepo:
                 "UPDATE plan_items SET geometry = ?, coord_space = ?, "
                 "updated_at = ? WHERE id = ?",
                 (json.dumps(geometry), cs, now, item_id))
+            _journal_plan_change(c, existing.plan_id, "items", "updated")
         return self.get_by_id(item_id)
 
     def remove_from_plan(self, item_id: int) -> bool:
@@ -467,7 +479,11 @@ class PlanItemRepo:
         удаляются целиком — вызывающий код (API) обязан явно показать
         их список перед удалением узла-представления."""
         with self._db.transaction() as c:
+            row = c.execute("SELECT plan_id FROM plan_items WHERE id = ?",
+                            (item_id,)).fetchone()
             cur = c.execute("DELETE FROM plan_items WHERE id = ?", (item_id,))
+            if row is not None and cur.rowcount > 0:
+                _journal_plan_change(c, row["plan_id"], "items", "removed")
             return cur.rowcount > 0
 
 
@@ -578,6 +594,7 @@ class PlanEdgeViewRepo:
                  json.dumps(waypoints) if waypoints is not None else None,
                  view_kind, confirmed_at, now, now))
             view_id = cur.lastrowid
+            _journal_plan_change(c, plan_id, "edge_views", "added")
 
             # docs/migration-plan-v2.md §7 п.2: первая предметная запись
             # через доменную модель v2 отмечается В ТОЙ ЖЕ транзакции —
@@ -588,13 +605,30 @@ class PlanEdgeViewRepo:
 
     def remove(self, view_id: int) -> bool:
         with self._db.transaction() as c:
+            row = c.execute("SELECT plan_id FROM plan_edge_views WHERE id = ?",
+                            (view_id,)).fetchone()
             cur = c.execute("DELETE FROM plan_edge_views WHERE id = ?", (view_id,))
+            if row is not None and cur.rowcount > 0:
+                _journal_plan_change(c, row["plan_id"], "edge_views", "removed")
             return cur.rowcount > 0
 
 
 # ---------------------------------------------------------------------
 # Атомарное сохранение layout с проверкой ревизии (§7.3 ТЗ, A35)
 # ---------------------------------------------------------------------
+
+def _layout_counts(ops: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Счётчики пакета раскладки для журнала: добавлено / изменено / удалено."""
+    out = {"added": 0, "updated": 0, "removed": 0}
+    for op in ops:
+        if op.get("op") == "remove":
+            out["removed"] += 1
+        elif op.get("id"):
+            out["updated"] += 1
+        else:
+            out["added"] += 1
+    return out
+
 
 def save_plan_layout(db, plan_id: int, expected_revision: int, *,
                       item_ops: Optional[List[Dict[str, Any]]] = None,
@@ -718,6 +752,14 @@ def save_plan_layout(db, plan_id: int, expected_revision: int, *,
         new_revision = actual + 1
         c.execute("UPDATE site_plans SET canvas_revision = ?, updated_at = ? "
                   "WHERE id = ?", (new_revision, now, plan_id))
+        # Журнал изменений (партия 12): раскладка покоординатно не пишется,
+        # одна запись на сохранение — что и сколько изменено.
+        change_journal.record(
+            c, "plan_layout", plan_id, "update",
+            old={"canvas_revision": actual},
+            new={"canvas_revision": new_revision,
+                 "items": _layout_counts(item_ops),
+                 "edge_views": _layout_counts(edge_view_ops)})
 
     with db.read() as c:
         row = c.execute("SELECT * FROM site_plans WHERE id = ?", (plan_id,)).fetchone()

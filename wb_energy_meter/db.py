@@ -12,6 +12,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
+from . import change_journal
+
 log = logging.getLogger(__name__)
 
 
@@ -125,6 +127,8 @@ class Database:
         self._conn = None
         self._txn_depth = 0
         self._txn_owner = None   # ident потока, держащего внешнюю transaction()
+        # перехват изменений для change_log (change_journal.py); ставится в open()
+        self._capture = None
         # --- пул читателей (всё ниже защищено _pool_cond, не _lock) ---
         self._read_pool_size = max(0, int(read_pool_size))
         self._pool_cond = threading.Condition(threading.Lock())
@@ -156,6 +160,14 @@ class Database:
             with self._pool_cond:
                 self._pool_open = True
             self._apply_migrations()
+            # Журнал изменений (партия 12): временные триггеры на писателе,
+            # ПОСЛЕ миграций (таблицы уже есть). Без журнала БД работает, но
+            # история не пишется — поэтому сбой установки громко логируется.
+            try:
+                self._capture = change_journal.install(self._conn)
+            except sqlite3.Error:
+                log.exception("Не удалось включить журнал изменений change_log")
+                self._capture = None
             try:
                 size = os.path.getsize(self._path)
                 log.info("БД готова, размер: %.1f КБ, версия схемы: %d",
@@ -164,6 +176,7 @@ class Database:
 
     def close(self):
         with self._lock:
+            self._capture = None
             if self._conn is not None:
                 try: self._conn.close()
                 except sqlite3.Error: pass
@@ -300,6 +313,14 @@ class Database:
                 self._txn_depth = depth
                 if depth == 0:
                     self._txn_owner = None
+                    if self._capture is not None:
+                        # журнал изменений — в ТОЙ ЖЕ транзакции, до COMMIT;
+                        # сбой журнала откатывает и саму правку
+                        try:
+                            self._capture.drain(c)
+                        except BaseException:
+                            c.execute("ROLLBACK")
+                            raise
                     c.execute("COMMIT")
 
     @contextmanager
