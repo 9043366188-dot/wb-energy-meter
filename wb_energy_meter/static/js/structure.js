@@ -445,7 +445,7 @@
           if(it.effective_from!=null && it.effective_from!==it.recorded_at)
             s+=' · действует с '+f(it.effective_from);
           const src={web:'интерфейс', 'legacy-api':'старый API', wizard:'мастер переноса',
-                     migration:'миграция', system:'система'}[it.origin]||it.origin;
+                     migration:'миграция', cli:'командная строка', system:'система'}[it.origin]||it.origin;
           return s+(src?' · '+src:'');
         },
 

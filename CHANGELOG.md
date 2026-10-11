@@ -43,7 +43,7 @@ wb-energy-meter-cli aggregates recompute <device_id> --from 2026-09-01 --to 2026
   транзакции, откат правки откатывает и журнал. Ни один путь записи (мастер
   переноса, `migrate-legacy`, старые `/api/registry/*`, CLI) журнал не обходит.
   В записи: сущность, действие, было/стало, операция, происхождение
-  (`web`/`legacy-api`/`wizard`/`migration`/`system`), адрес клиента, ревизия,
+  (`web`/`legacy-api`/`wizard`/`migration`/`cli`/`system`), адрес клиента, ревизия,
   момент вступления в силу. Аутентификации нет, поэтому «кто» не выдумывается.
   Метка начала журнала — `kv.change_log_started_at`.
 - **`GET /api/v2/change-log`** — только чтение. Фильтры: `entity_type`,
