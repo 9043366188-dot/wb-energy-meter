@@ -59,18 +59,31 @@ class HourlyAggregate:
         )
 
     def to_dict(self) -> dict:
-        return {
+        # A13 (партия 12): у часа со сбросом `ap_energy_delta` — только сумма
+        # возрастающих участков (нижняя оценка), а не расход часа. Расходом
+        # (`consumption_kwh`) её выдавать нельзя, она идёт отдельным полем
+        # `known_kwh`; при `sparse` (A14) расход часа неизвестен (NULL).
+        is_reset = self.quality_flag == "reset"
+        d = {
             "period_start": self.period_start,
             "period_end": self.period_end,
             "ap_energy_start": self.ap_energy_start,
             "ap_energy_end": self.ap_energy_end,
-            "consumption_kwh": self.ap_energy_delta,
+            "consumption_kwh": None if is_reset else self.ap_energy_delta,
             "p_avg": self.p_avg,
             "p_max": self.p_max,
             "samples_count": self.samples_count,
             "quality": self.quality_flag,
             "computed_at": self.computed_at,
         }
+        if is_reset:
+            d["known_kwh"] = self.ap_energy_delta
+            d["reason"] = ("сброс счётчика внутри часа: расход часа неизвестен, "
+                           "известна только сумма возрастающих участков")
+        elif self.quality_flag == "sparse":
+            d["reason"] = ("показания редкие: расход по часам внутри интервала "
+                           "неизвестен, известен только за интервал целиком")
+        return d
 
 
 class AggregateRepo:

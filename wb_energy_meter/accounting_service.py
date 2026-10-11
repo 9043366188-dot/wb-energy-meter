@@ -33,7 +33,7 @@ from .accounting_contract import (
     AVAILABILITY_COMPLETE, AVAILABILITY_PARTIAL, AVAILABILITY_MISSING,
     STRUCTURE_VERIFIED, STRUCTURE_UNVERIFIED,
     SOURCE_MEASURED, SOURCE_CALCULATED,
-    QF_GAP, QF_EDGE_APPROX, QF_RESET,
+    QF_GAP, QF_EDGE_APPROX, QF_RESET, QF_SPARSE,
 )
 from .binding_service import resolve_primary_segments
 from .topology_service import build_children_map, is_descendant
@@ -64,6 +64,82 @@ def _hour_periods(ts_from, ts_to):
         periods.append((h, h + HOUR))
         h += HOUR
     return periods
+
+
+def _clock(ts, timezone_name):
+    """ЧЧ:ММ момента `ts` в часовом поясе отчёта (UTC, если пояс неизвестен)."""
+    from datetime import datetime, timezone as _utc
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(timezone_name)
+    except Exception:  # noqa: BLE001 — нет базы поясов / неверное имя
+        tz = _utc.utc
+    return datetime.fromtimestamp(int(ts), tz).strftime("%H:%M")
+
+
+class _SparseRuns:
+    """A14 (партия 12): ряды подряд идущих часов `sparse` одного прибора.
+
+    Расход внутри интервала редких показаний известен только целиком (часы
+    хранятся как `ap_energy_delta=NULL`, но с `start`/`end` накопителя).
+    Ряд даёт известную сумму `sum(end - start)` по часам ряда, если он
+    ЦЕЛИКОМ лежит в запрошенном периоде и внутри одного сегмента привязки;
+    иначе часы ряда внутри периода неизвестны. Такая же осторожность, если ряд
+    не замкнут (следующий час — сброс) или сумма отрицательна."""
+
+    def __init__(self, aggregates_repo, meter_id, requested_hours):
+        self._repo = aggregates_repo
+        self._meter_id = meter_id
+        self._requested = requested_hours       # set(period_start) запрошенных часов
+        self._ext = {}                          # докачанные соседние строки
+        self.runs = {}                          # period_start -> run dict
+
+    def _row(self, loaded, h):
+        if h in loaded:
+            return loaded[h]
+        if h not in self._ext:
+            self._ext[h] = self._repo.get(self._meter_id, h)
+        return self._ext[h]
+
+    def resolve(self, h, loaded, seg):
+        if h in self.runs:
+            return self.runs[h]
+        first = h
+        while True:
+            prev = self._row(loaded, first - HOUR)
+            if prev is not None and prev.quality_flag == QF_SPARSE:
+                first -= HOUR
+            else:
+                break
+        last = h
+        while True:
+            nxt = self._row(loaded, last + HOUR)
+            if nxt is not None and nxt.quality_flag == QF_SPARSE:
+                last += HOUR
+            else:
+                break
+        hours = list(range(first, last + HOUR, HOUR))
+        rows = [self._row(loaded, x) for x in hours]
+        inside = all(
+            x in self._requested and x >= seg.ts_from and x + HOUR <= seg.ts_to
+            for x in hours)
+        total = 0.0
+        known = True
+        for r in rows:
+            if r.ap_energy_start is None or r.ap_energy_end is None:
+                known = False
+                break
+            total += r.ap_energy_end - r.ap_energy_start
+        after = self._row(loaded, last + HOUR)
+        closed = not (after is not None and after.quality_flag == QF_RESET)
+        run = {
+            "first": first, "last_end": last + HOUR, "hours": hours,
+            "valid": bool(inside and known and closed and total >= 0),
+            "total": round(total, 6) if known else None,
+        }
+        for x in hours:
+            self.runs[x] = run
+        return run
 
 
 # ---------------------------------------------------------------------
@@ -124,6 +200,14 @@ def measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
         rows = aggregates_repo.list_range(src.meter_id, seg.ts_from, seg.ts_to)
         seg_data[id(seg)] = (src.meter_id, {a.period_start: a for a in rows})
 
+    requested_hours = set(h for h, _ in hours)
+    sparse_by_seg = {}          # id(segment) -> _SparseRuns
+    reset_known = 0.0           # A13: известные части часов со сбросом
+    reset_known_seen = False
+    whole_only = []             # A14: интервалы, известные только целиком
+    sparse_unknown = []         # A14: ряды `sparse`, не вошедшие в период целиком
+    seen_runs = set()
+
     for h_start, h_end in hours:
         hour_id = str(h_start)
         covering = [s for s in segments if h_start >= s.ts_from and h_end <= s.ts_to]
@@ -144,12 +228,43 @@ def measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
             continue
 
         agg = agg_by_hour.get(h_start)
+
+        # A14: час внутри интервала редких показаний
+        if agg is not None and agg.quality_flag == QF_SPARSE:
+            runs = sparse_by_seg.get(id(seg))
+            if runs is None:
+                runs = _SparseRuns(aggregates_repo, meter_id, requested_hours)
+                sparse_by_seg[id(seg)] = runs
+            run = runs.resolve(h_start, agg_by_hour, seg)
+            if run["valid"]:
+                flags.add(QF_EDGE_APPROX)
+                if h_start == run["first"]:
+                    parts.append(run["total"])
+                    whole_only.append(run)
+                else:
+                    parts.append(0.0)
+                valid_ids.append(hour_id)
+            else:
+                flags.add(QF_SPARSE)
+                parts.append(None)
+                if run["first"] not in seen_runs:
+                    seen_runs.add(run["first"])
+                    sparse_unknown.append(run)
+            continue
+
+        # A13: сброс внутри часа — расход часа неизвестен, известная часть
+        # (сумма возрастающих участков) учитывается отдельно
+        if agg is not None and agg.quality_flag == QF_RESET:
+            parts.append(None)
+            flags.add(QF_RESET)
+            if agg.ap_energy_delta is not None:
+                reset_known += agg.ap_energy_delta
+                reset_known_seen = True
+            continue
+
         if agg is None or agg.ap_energy_delta is None:
             parts.append(None)
-            if agg is not None and agg.quality_flag == "reset":
-                flags.add(QF_RESET)
-            else:
-                flags.add(QF_GAP)
+            flags.add(QF_GAP)
             continue
 
         if agg.quality_flag and agg.quality_flag not in ("ok",):
@@ -161,6 +276,38 @@ def measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
     value, known_value, expected_count, valid_count, missing_ids = known_sum(
         parts, expected_ids, valid_ids
     )
+
+    explanation = {"point_id": point_id}
+
+    # A13: известные части часов со сбросом входят в known_value, пока есть хоть
+    # один полностью известный час (инвариант §5.3: без валидных частей
+    # known_value обязан быть null) — иначе они остаются только в пояснении.
+    if reset_known_seen:
+        explanation["reset_known_kwh"] = round(reset_known, 6)
+        if value is None and valid_count > 0:
+            known_value = round((known_value or 0.0) + reset_known, 6)
+
+    # A14: что известно только целиком — для подписи «расход за ЧЧ:ММ–ЧЧ:ММ
+    # известен только целиком»
+    if whole_only or sparse_unknown:
+        notes = []
+        if whole_only:
+            explanation["whole_only_intervals"] = [
+                {"from": r["first"], "to": r["last_end"], "value": r["total"]}
+                for r in whole_only]
+            for r in whole_only:
+                notes.append(
+                    f"расход за {_clock(r['first'], timezone)}–"
+                    f"{_clock(r['last_end'], timezone)} известен только целиком")
+        if sparse_unknown:
+            explanation["sparse_unknown_intervals"] = [
+                {"from": r["first"], "to": r["last_end"]} for r in sparse_unknown]
+            for r in sparse_unknown:
+                notes.append(
+                    f"расход за {_clock(r['first'], timezone)}–"
+                    f"{_clock(r['last_end'], timezone)} известен только целиком, "
+                    f"а период охватывает его частично — по часам он неизвестен")
+        explanation["notes"] = notes
 
     if expected_count == 0 or valid_count == 0:
         availability = AVAILABILITY_MISSING
@@ -177,7 +324,7 @@ def measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
         expected_count=expected_count, valid_count=valid_count,
         missing_ids=missing_ids,
         period=ResultPeriod(ts_from=str(ts_from), ts_to=str(ts_to), timezone=timezone),
-        explanation={"point_id": point_id},
+        explanation=explanation,
     )
     if _cache is not None:
         _cache[cache_key] = result

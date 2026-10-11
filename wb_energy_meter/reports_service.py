@@ -42,7 +42,7 @@ from __future__ import annotations
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import overview_service
-from .accounting_contract import resolve_percentage
+from .accounting_contract import STRUCTURE_UNVERIFIED, resolve_percentage
 from .accounting_service import (
     AccountingConflict, balance, measured_point, sum_points,
 )
@@ -254,6 +254,12 @@ def build_rows(c, *, db, dimension: str, scope_ids: Optional[Sequence[int]],
             "member_point_ids": member_ids,
             "result": result.to_dict() if result is not None else None,
             "conflict_reason": conflict_reason,
+            # A07: структура строки подтверждена? false — состав известен, а
+            # место точек в сети нет; итог такой строки подтверждённым не
+            # считается (в Обзоре для него не считается и доля в итоге объекта)
+            "structure_confirmed": not (
+                result is not None
+                and result.structure_quality == STRUCTURE_UNVERIFIED),
         }
 
         if compare_range is not None:

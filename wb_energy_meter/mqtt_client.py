@@ -126,12 +126,19 @@ class MqttService:
     def _on_message(self, client, userdata, msg):
         self._msg_count += 1
         try:
-            self._handle_message(msg.topic, msg.payload)
+            self._handle_message(msg.topic, msg.payload,
+                                 retain=bool(getattr(msg, "retain", False)))
         except Exception as e:
             self._error_count += 1
             log.debug("MQTT handle error (topic=%s): %s", msg.topic, e)
 
-    def _handle_message(self, topic, payload):
+    def _handle_message(self, topic, payload, retain=False):
+        """`retain=True` — сообщение из хранилища брокера (приходит сразу после
+        подписки/переподключения), а не живое от прибора. A16: значения мы
+        принимаем и показываем, но «свежим» прибор они не делают — не двигают
+        `last_any_ts`, `last_measurement_ts` и возраст канала; пока живого
+        сообщения не было, прибор в состоянии `awaiting_live`
+        (статус «не подтверждено»). Колбэк остаётся быстрым: одна проверка флага."""
         m = TOPIC_RE.match(topic)
         if not m: return
         device_id, section, rest = m.group(1), m.group(2), m.group(3)
@@ -143,7 +150,14 @@ class MqttService:
             text = ""
         meter = self._registry.get_or_create(device_id)
         now = time.time()
-        meter.last_any_ts = now
+        if retain:
+            if meter.last_any_ts <= 0:
+                # живых сообщений ещё не было: ждём первое
+                meter.awaiting_live = True
+                meter.last_retained_ts = now
+        else:
+            meter.last_any_ts = now
+            meter.awaiting_live = False
         if meter.first_seen_ts == 0.0:
             meter.first_seen_ts = now
         if section == "meta":
@@ -158,7 +172,8 @@ class MqttService:
             ctrl = ControlState(name=control_name, first_seen_ts=now)
             meter.controls[control_name] = ctrl
         if len(parts) == 1:
-            self._handle_control_value(meter, ctrl, control_name, text, now)
+            self._handle_control_value(meter, ctrl, control_name, text, now,
+                                       retain=retain)
             return
         if parts[1] == "meta":
             if len(parts) == 2:
@@ -183,12 +198,17 @@ class MqttService:
         elif rest == "driver":
             meter.driver = text.strip() or meter.driver
 
-    def _handle_control_value(self, meter, ctrl, control_name, text, now):
+    def _handle_control_value(self, meter, ctrl, control_name, text, now,
+                              retain=False):
         ctrl.raw_value = text
         if ctrl.name == "Serial" or ctrl.meta.get("type") == "text":
             ctrl.value = text.strip()
         else:
             ctrl.value = _parse_float_safe(text)
+        if retain:
+            # A16: значение показываем, но возраст канала и «последнее
+            # измерение» не обновляем — это не живое сообщение прибора
+            return
         ctrl.last_update_ts = now
         ctrl.update_count += 1
 

@@ -94,7 +94,7 @@ class StatusEngine:
         now = time.time()
 
         # Нет данных вообще — совсем новое устройство или никогда не видели
-        if meter.last_any_ts <= 0 or not meter.controls:
+        if (meter.last_any_ts <= 0 and not meter.awaiting_live) or not meter.controls:
             return MeterStatus.UNKNOWN, "Нет данных от устройства"
 
         # Ошибки каналов (device_error)
@@ -103,6 +103,21 @@ class StatusEngine:
             preview = ", ".join(err_channels[:3])
             suffix = f" и ещё {len(err_channels) - 3}" if len(err_channels) > 3 else ""
             return MeterStatus.DEVICE_ERROR, f"Ошибки каналов: {preview}{suffix}"
+
+        # --- A16: только retained-значения, живого сообщения ещё не было ---
+        # Брокер хранит последние значения и отдаёт их при подписке, поэтому
+        # после перезапуска демона прибор «выглядит» живым, даже если давно
+        # выключен. Пока нет ни одного живого сообщения — «не подтверждено»;
+        # если оно не пришло за обычный таймаут связи — «нет связи», как и раньше.
+        if meter.awaiting_live:
+            age_retained = now - meter.last_retained_ts
+            if age_retained > self._cfg.no_connection_timeout_s:
+                return (MeterStatus.NO_CONNECTION,
+                        f"Живых сообщений от устройства нет {_fmt_age(age_retained)} "
+                        f"(есть только значения из retained-сообщений)")
+            return (MeterStatus.UNCONFIRMED,
+                    "Значения получены из retained-сообщений брокера; живого "
+                    "сообщения от прибора ещё не было")
 
         # --- ПЕРВЫЙ ТАЙМАУТ: no_connection ---
         # Нет НИКАКИХ сообщений (ни Serial, ни meta, ни U/I/P).

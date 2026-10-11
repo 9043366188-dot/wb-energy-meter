@@ -39,7 +39,7 @@ from typing import Dict, List, Optional, Sequence
 from .accounting_contract import (
     MetricResult, ResultPeriod, resolve_percentage,
     MODE_SUM, AVAILABILITY_MISSING, AVAILABILITY_PARTIAL,
-    STRUCTURE_VERIFIED, SOURCE_CALCULATED,
+    STRUCTURE_VERIFIED, STRUCTURE_UNVERIFIED, SOURCE_CALCULATED,
 )
 from .accounting_service import (
     AccountingConflict, balance_from_point_sets, measured_point, sum_points,
@@ -47,6 +47,27 @@ from .accounting_service import (
 from .topology_history import adjust_quality, merge_results
 
 MAX_DEPTH = 32  # большое ТЗ §4.2 — защитный предел обхода дерева сети
+
+
+def percent_of_object(result, object_total):
+    """Доля результата в итоге объекта.
+
+    A07 (партия 12): если структура части или итога НЕ подтверждена
+    (`structure_quality=unverified` — состав известен, а место точки в сети
+    нет), процентное распределение не показываем: такая «доля» выглядела бы
+    подтверждённой, хотя знаменатель и числитель могут пересекаться. Причина —
+    `structure_unverified`, а не молчаливое число. Причины отсутствия данных
+    (`no_data`, нулевая база) остаются прежними (A11): скрывается только число,
+    которое иначе было бы показано."""
+    pct, reason = resolve_percentage(
+        result.value if result is not None else None,
+        object_total.value if object_total is not None else None)
+    if pct is not None and (
+            (result is not None and result.structure_quality == STRUCTURE_UNVERIFIED)
+            or (object_total is not None
+                and object_total.structure_quality == STRUCTURE_UNVERIFIED)):
+        return None, "structure_unverified"
+    return pct, reason
 
 
 class BalanceAlgorithmError(RuntimeError):
@@ -458,8 +479,7 @@ def _object_summary_single(point_binding_repo, aggregates_repo, meter_source_rep
     for b in boundaries:
         r = measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
                             b.point_id, ts_from, ts_to, timezone, _cache=_cache)
-        pct, pct_reason = resolve_percentage(
-            r.value, object_total.value if object_total is not None else None)
+        pct, pct_reason = percent_of_object(r, object_total)
         network_branches.append({
             "edge_id": b.edge_id, "point_id": b.point_id,
             "name": _branch_name(edges_by_id, node_repo, b.edge_id, b.to_node_id),
@@ -606,8 +626,7 @@ def _merge_object_summaries(parts, ts_from, ts_to, timezone) -> ObjectSummary:
         last = entries[-1][1]
         merged = merge_results(
             [(iv, nb["result"]) for iv, nb in entries], ts_from, ts_to, timezone)
-        pct, pct_reason = resolve_percentage(
-            merged.value if merged is not None else None, total_value)
+        pct, pct_reason = percent_of_object(merged, object_total)
         network_branches.append({
             "edge_id": edge_id, "point_id": last["point_id"], "name": last["name"],
             "result": merged,

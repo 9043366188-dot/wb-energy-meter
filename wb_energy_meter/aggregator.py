@@ -101,6 +101,56 @@ class AggregatorConfig:
 # Чистый алгоритм: посчитать один час из набора точек
 # ---------------------------------------------------------------------------
 
+# Показания реже, чем раз в SPARSE_GAP_S, считаем «редкими» (A14): между двумя
+# соседними записями накопителя лежит не меньше двух часов, и расход внутри
+# интервала по часам не известен — известен только за интервал целиком.
+SPARSE_GAP_S = 2 * 3600
+
+QUALITY_SPARSE = "sparse"
+QUALITY_RESET = "reset"
+
+
+def _rising_parts(series: list[HistoryPoint]) -> tuple[bool, Optional[float]]:
+    """A13: (был_ли_спад, сумма_возрастающих_участков).
+
+    Идём по соседним показаниям накопителя: шаг вниз — сброс (счётчик
+    обнулился или заменён), шаг вверх или на месте — известный расход. Если
+    возрастающих участков нет вовсе, известной части нет — `None`, а не 0."""
+    had_drop = False
+    rising = 0.0
+    has_rising = False
+    for prev, cur in zip(series, series[1:]):
+        step = cur.value - prev.value
+        if step < 0:
+            had_drop = True
+        else:
+            rising += step
+            has_rising = True
+    return had_drop, (rising if has_rising else None)
+
+
+def sparse_interval(points: list[HistoryPoint], hour_start: int):
+    """A14: если начало часа лежит внутри интервала редких показаний —
+    вернуть `(a, b)`: ближайшие соседние показания `a.ts <= hour_start < b.ts`,
+    между которыми не меньше SPARSE_GAP_S и накопитель вырос. Иначе `None`.
+
+    Одинаковые показания по краям (расход 0) редкими не считаются: накопитель
+    не убывает, значит внутри интервала был ровно 0 — час известен."""
+    a = None
+    b = None
+    for p in points:
+        if p.timestamp <= hour_start:
+            if a is None or p.timestamp >= a.timestamp:
+                a = p
+        elif b is None or p.timestamp < b.timestamp:
+            b = p
+    if a is None or b is None:
+        return None
+    if b.timestamp - a.timestamp >= SPARSE_GAP_S and b.value > a.value:
+        return a, b
+    return None
+
+
 def compute_hourly_aggregate(
     meter_id: int,
     hour_start: int,
@@ -115,8 +165,25 @@ def compute_hourly_aggregate(
     quality будет `no_data`.
 
     `points_power` — опциональные точки `Total P` за тот же час для p_avg/p_max.
+
+    Два особых случая (решения Кира от 10.10.2026, партия 12):
+
+    - **A13, сброс внутри часа.** Падение показаний между любыми соседними
+      точками часа (`100 -> 0 -> 150`), а не только между его границами —
+      `quality_flag='reset'`. В `ap_energy_delta` пишется сумма возрастающих
+      участков (известная часть, здесь 150), а не `end - start` (там было бы
+      50 — число, которое расходом не является). Учёт трактует такой час как
+      неполный: расход часа неизвестен, известная часть идёт отдельно.
+    - **A14, редкие показания.** Начало часа лежит внутри интервала между
+      двумя соседними записями, разнесёнными не меньше чем на 2 часа, и
+      накопитель вырос — `quality_flag='sparse'`, `ap_energy_delta=NULL`.
+      Расход по часам внутри интервала не известен, известен только за
+      интервал целиком; `ap_energy_start`/`ap_energy_end` остаются, и учёт
+      (`accounting_service.measured_point`) складывает их по всему ряду
+      подряд идущих таких часов.
     """
     hour_end = hour_start + 3600
+    points_with_context = sorted(points_with_context, key=lambda p: p.timestamp)
 
     # Найти граничные точки
     pt_start = None
@@ -154,11 +221,24 @@ def compute_hourly_aggregate(
             computed_at=now_ts,
         )
 
-    delta = pt_end.value - pt_start.value
+    # A13: падение между соседними показаниями часа (включая граничные)
+    series = [p for p in points_with_context
+              if pt_start.timestamp <= p.timestamp <= pt_end.timestamp]
+    had_drop, rising = _rising_parts(series)
+    if had_drop:
+        return HourlyAggregate(
+            meter_id=meter_id,
+            period_start=hour_start, period_end=hour_end,
+            ap_energy_start=pt_start.value, ap_energy_end=pt_end.value,
+            ap_energy_delta=rising,
+            p_avg=p_avg, p_max=p_max,
+            samples_count=len(in_hour),
+            quality_flag=QUALITY_RESET,
+            computed_at=now_ts,
+        )
 
-    quality = "ok"
-    if delta < 0:
-        # Счётчик обнулился внутри часа
+    # A14: час целиком внутри интервала редких показаний
+    if sparse_interval(points_with_context, hour_start) is not None:
         return HourlyAggregate(
             meter_id=meter_id,
             period_start=hour_start, period_end=hour_end,
@@ -166,11 +246,14 @@ def compute_hourly_aggregate(
             ap_energy_delta=None,
             p_avg=p_avg, p_max=p_max,
             samples_count=len(in_hour),
-            quality_flag="reset",
+            quality_flag=QUALITY_SPARSE,
             computed_at=now_ts,
         )
 
+    delta = pt_end.value - pt_start.value
+
     # Качество граничных точек
+    quality = "ok"
     start_dist = abs(pt_start.timestamp - hour_start)
     end_dist = abs(pt_end.timestamp - hour_end)
     if start_dist > 600 or end_dist > 600:  # > 10 минут
@@ -377,7 +460,43 @@ class Aggregator:
             points_power=points_power,
         )
         self._aggregates.upsert(agg)
+        if agg.quality_flag == QUALITY_SPARSE:
+            self._mark_earlier_sparse_hours(meter_id, hour_start, points_energy)
         return agg
+
+    def _mark_earlier_sparse_hours(
+        self, meter_id: int, hour_start: int, points: list[HistoryPoint]
+    ) -> None:
+        """A14: почасовой воркер считает каждый час «по состоянию на сейчас» и
+        не мог знать, что следующее показание придёт через несколько часов —
+        предыдущие часы интервала записаны как обычные «0, edge_approx».
+        Когда редкое показание наконец пришло, помечаем эти часы `sparse`
+        (расход по часам не известен), чтобы раскладка по часам не показывала
+        выдуманные нули, а сумма за период осталась верной."""
+        interval = sparse_interval(points, hour_start)
+        if interval is None:
+            return
+        a, _b = interval
+        h = align_hour_down(a.timestamp)
+        if h < a.timestamp:
+            h += 3600          # час, где лежит `a`, посчитан по другим показаниям
+        now_ts = int(time.time())
+        marked = []
+        while h < hour_start:
+            old = self._aggregates.get(meter_id, h)
+            if old is None or old.quality_flag in ("edge_approx", "no_data",
+                                                    QUALITY_SPARSE):
+                marked.append(HourlyAggregate(
+                    meter_id=meter_id, period_start=h, period_end=h + 3600,
+                    ap_energy_start=a.value, ap_energy_end=a.value,
+                    ap_energy_delta=None, p_avg=old.p_avg if old else None,
+                    p_max=old.p_max if old else None,
+                    samples_count=0, quality_flag=QUALITY_SPARSE,
+                    computed_at=now_ts,
+                ))
+            h += 3600
+        if marked:
+            self._aggregates.upsert_many(marked)
 
     def _carry_forward_anchor(self, meter_id: int, before_ts: int):
         """Последнее достоверное значение до before_ts, с учётом

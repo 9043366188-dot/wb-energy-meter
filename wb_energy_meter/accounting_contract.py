@@ -52,6 +52,9 @@ QF_CHANNEL_ERROR = "channel_error"
 QF_UNSYNCHRONISED = "unsynchronised"
 QF_MISSING_SOURCE = "missing_source"
 QF_HELD = "held"
+# A14 (партия 12): расход часа внутри интервала редких показаний не известен,
+# известен только за интервал целиком.
+QF_SPARSE = "sparse"
 
 
 class ContractViolation(ValueError):

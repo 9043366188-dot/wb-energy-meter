@@ -99,15 +99,32 @@ def calculate_from_points(points, period, device_id=""):
 
     delta = end_pt.value - start_pt.value
 
-    if delta < 0:
+    # A13 (партия 12): падение между ЛЮБЫМИ соседними показаниями периода —
+    # сброс, а не только end < start. Раньше 100 -> 0 -> 150 давало 50 с
+    # quality='ok': число, которое расходом не является.
+    inner = sorted((p for p in points
+                    if start_pt.timestamp <= p.timestamp <= end_pt.timestamp),
+                   key=lambda p: p.timestamp)
+    drops = [(a.value, b.value) for a, b in zip(inner, inner[1:])
+             if b.value < a.value]
+    if delta < 0 or drops:
+        rising = sum(b.value - a.value for a, b in zip(inner, inner[1:])
+                     if b.value >= a.value)
+        if delta < 0:
+            msg = (f"Накопительная энергия уменьшилась: {start_pt.value} -> "
+                   f"{end_pt.value}. Возможен сброс или замена.")
+        else:
+            msg = (f"Накопительная энергия уменьшилась внутри периода: "
+                   f"{drops[0][0]} -> {drops[0][1]}. Возможен сброс или "
+                   f"замена; расход за период неизвестен целиком.")
+        if rising > 0:
+            msg += f" Известная часть расхода (по возрастающим участкам): {rising:g} кВт·ч."
         return ConsumptionResult(
             device_id=device_id, period=period, consumption_kwh=None,
             ap_energy_start=start_pt.value, ap_energy_end=end_pt.value,
             ts_start_actual=start_pt.timestamp, ts_end_actual=end_pt.timestamp,
             samples_in_period=samples_in_period, quality="reset",
-            warnings=warnings + [
-                f"Накопительная энергия уменьшилась: {start_pt.value} -> "
-                f"{end_pt.value}. Возможен сброс или замена."])
+            warnings=warnings + [msg])
 
     if (samples_in_period == 0 and start_pt is end_pt
             and start_pt.timestamp < period.ts_from):
@@ -222,10 +239,22 @@ class ConsumptionService:
         any_no_data = 0
         any_reset = False
         for a in full_aggs:
-            if a.ap_energy_delta is None:
+            if a.quality_flag == "sparse":
+                # A14: расход по часам внутри интервала редких показаний не
+                # известен — известен только за интервал целиком. Честнее
+                # посчитать период по граничным показаниям (RPC), чем
+                # складывать часы-пустышки.
+                return None
+            if a.quality_flag == "reset":
+                # A13: час со сбросом — известна только сумма возрастающих
+                # участков (нижняя оценка), полный расход часа неизвестен.
+                any_reset = True
+                if a.ap_energy_delta is None:
+                    any_no_data += 1
+                else:
+                    sum_kwh += a.ap_energy_delta
+            elif a.ap_energy_delta is None:
                 any_no_data += 1
-                if a.quality_flag == "reset":
-                    any_reset = True
             else:
                 sum_kwh += a.ap_energy_delta
 

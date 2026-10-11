@@ -114,25 +114,26 @@ def test_double_counting_a04_reproducible():
         fx.cleanup()
 
 
-def test_internal_reset_not_detected_a13():
-    """A13: накопитель 100 -> 0 -> 150. Проверка только по границам
-    периода (`consumption.py::calculate_from_points`, дельта = end-start,
-    consumption.py:96-105) не видит внутренний сброс между известными
-    точками и выдаёт заниженный расход с quality='ok'."""
+def test_internal_reset_detected_a13():
+    """A13: накопитель 100 -> 0 -> 150. Раньше (v0.11.1) проверка шла только
+    по границам периода (`end - start`) и выдавала заниженный расход 50 с
+    quality='ok'. Решение Кира (партия 12, 12.4): падение между соседними
+    показаниями — сброс; число 50 расходом не выдаётся, период помечен
+    `reset`, а известная часть (сумма возрастающих участков = 150) названа в
+    пояснении отдельно."""
     points = reset_history_points()
     period = Period(ts_from=points[0].timestamp, ts_to=points[-1].timestamp,
                      label="test", description="A13")
     result = calculate_from_points(points, period, device_id="test/reset")
 
-    assert result.quality == "ok", (
-        "если это упало — поведение уже изменилось, обновите тест")
-    assert result.consumption_kwh == 50.0
-    print(f"[REPRODUCED] A13: consumption_kwh={result.consumption_kwh}, "
-          f"quality={result.quality!r} — внутренний сброс 100->0->150 не "
-          f"обнаружен, т.к. сравниваются только граничные точки периода. "
-          f"Исправляется этапом B (§5.4 ТЗ: «Проверять падения между "
-          f"соседними точками накопительной энергии, а не только "
-          f"end-start»)")
+    assert result.quality == "reset", result.quality
+    assert result.consumption_kwh is None, (
+        f"число {result.consumption_kwh} выдано расходом при сбросе внутри периода")
+    text = " ".join(result.warnings)
+    assert "внутри периода" in text and "150" in text, result.warnings
+    assert "50 " not in text.replace("150", ""), "число 50 не должно попасть в пояснение"
+    print("[OK] A13: 100->0->150 — quality='reset', расход не выдан (раньше 50 с 'ok'), "
+          "известная часть 150 названа отдельно")
 
 
 def test_hybrid_gap_swallowed_as_zero_a12():
@@ -289,9 +290,9 @@ def test_atomic_migration_wrapper_rolls_back_cleanly():
 
 if __name__ == "__main__":
     test_double_counting_a04_reproducible()
-    test_internal_reset_not_detected_a13()
+    test_internal_reset_detected_a13()
     test_hybrid_gap_swallowed_as_zero_a12()
     test_migration_apply_is_not_atomic()
     test_atomic_migration_wrapper_rolls_back_cleanly()
-    print("\nВсе воспроизводимые сценарии этапа A подтверждены на "
-          "текущем коде v0.11.1.")
+    print("\nВсе воспроизводимые сценарии этапа A подтверждены "
+          "(A13 исправлен в партии 12).")

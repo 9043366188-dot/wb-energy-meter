@@ -2415,9 +2415,8 @@ def register_v2_routes(app, state, json_response):
                         if result is not None:
                             _tag_result(result, pinned_revision)
                             entry["result"] = result.to_dict()
-                            pct, pct_reason = resolve_percentage(
-                                result.value,
-                                object_total.value if object_total is not None else None)
+                            pct, pct_reason = overview_service.percent_of_object(
+                                result, object_total)
                             entry["percentage_of_object"] = pct
                             entry["percentage_of_object_reason"] = pct_reason
                         else:
