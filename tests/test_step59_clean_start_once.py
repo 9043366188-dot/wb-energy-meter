@@ -1,10 +1,13 @@
-"""Шаг 59: разовый чистый старт через обновление (решение R9 от
-11.10.2026, docs/TZ-finish-plan.md §10, scripts/clean-start-once.sh).
+"""Шаг 59: разовый чистый старт через обновление (решения R9 от
+11.10.2026 и R12 от 12.10.2026, docs/TZ-finish-plan.md §10,
+scripts/clean-start-once.sh).
 
 Всё, что заведено на контроллере до пилота, — тестовые данные. Кир выбрал
 очистку обычной кнопкой «Обновить»: install.sh разово переносит state.db,
 state.db-wal, state.db-shm и plans в $DATA_DIR/test-data-<дата>/ и пишет
-метку .clean-start-r9-done (первая строка — момент чистого старта).
+метку .clean-start-r12-done (первая строка — момент чистого старта). Метка
+прошлого чистого старта R9 (.clean-start-r9-done) на новое решение не
+влияет.
 
 Что проверяется (скрипт запускается по-настоящему, на temp-каталоге):
 
@@ -27,6 +30,9 @@ state.db-wal, state.db-shm и plans в $DATA_DIR/test-data-<дата>/ и пиш
 10. install.sh: вызов идёт после остановки сервиса и резервной копии, до
     копирования кода; сбой → понятное сообщение и exit 6; bash -n обоих
     скриптов.
+11. R12 после R9: есть метка R9, метки R12 нет — база откладывается; метка
+    R9 «0» (отключали R9) R12 не отключает; метка R9 рядом с R12 остаётся
+    нетронутой, а свежая база после R12 не трогается.
 
 Самостоятельный скрипт (не pytest):
     python tests/test_step59_clean_start_once.py
@@ -46,7 +52,8 @@ import time
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(REPO_ROOT, "scripts", "clean-start-once.sh")
 INSTALL_SH = os.path.join(REPO_ROOT, "scripts", "install.sh")
-MARK_NAME = ".clean-start-r9-done"
+MARK_NAME = ".clean-start-r12-done"
+OLD_MARK_NAME = ".clean-start-r9-done"  # выпуск 0.22.1 (R9)
 DAY = 86400
 
 
@@ -348,6 +355,101 @@ def test_bash_n_scripts():
     print("[OK] bash -n clean-start-once.sh и install.sh — синтаксис чист")
 
 
+# ---------------------------------------------------------------------
+# 11. R12 после R9: метка прошлого решения ничего не решает
+# ---------------------------------------------------------------------
+
+def test_r12_runs_even_though_r9_mark_exists():
+    """Контроллер, уже прошедший R9 (0.22.1): в базе за это время завели
+    данные, метка R9 лежит на диске. Обновление до R12 откладывает базу."""
+    with tempfile.TemporaryDirectory() as tmp:
+        data = os.path.join(tmp, "data")
+        os.makedirs(data)
+        r9_ts = int(time.time()) - 3 * DAY
+        _write(os.path.join(data, OLD_MARK_NAME), f"{r9_ts}\n".encode())
+        _fill_old_data(data, time.time() - 2 * DAY)  # база после R9
+        assert not os.path.exists(os.path.join(data, MARK_NAME))
+
+        r = _run(data)
+        assert r.returncode == 0, r.stdout + r.stderr
+
+        dirs = _test_dirs(data)
+        assert len(dirs) == 1, dirs
+        assert _marker(os.path.join(dirs[0], "state.db")) == "тестовые данные"
+        assert _read(os.path.join(dirs[0], "plans", "7", "plan.png")) == b"\x89PNG-test"
+        for name in ("state.db", "state.db-wal", "state.db-shm", "plans"):
+            assert not os.path.exists(os.path.join(data, name)), name
+        assert _mark_ts(data).isdigit()
+        assert "R12" in r.stdout or "R12" in _read(os.path.join(dirs[0], "README.txt")).decode()
+        # Метка R9 не тронута и не переписана.
+        assert _read(os.path.join(data, OLD_MARK_NAME)) == f"{r9_ts}\n".encode()
+    print("[OK] R12 после R9: метка R9 есть, R12 нет — база отложена, метка R9 цела")
+
+
+def test_r9_disabled_mark_does_not_disable_r12():
+    with tempfile.TemporaryDirectory() as tmp:
+        data = os.path.join(tmp, "data")
+        os.makedirs(data)
+        _write(os.path.join(data, OLD_MARK_NAME), b"0\n")  # R9 когда-то отключили
+        _make_db(os.path.join(data, "state.db"), time.time() - 400 * DAY)
+
+        r = _run(data)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert len(_test_dirs(data)) == 1, _test_dirs(data)
+        assert not os.path.exists(os.path.join(data, "state.db"))
+        assert _read(os.path.join(data, OLD_MARK_NAME)) == b"0\n"
+        assert _mark_ts(data).isdigit() and _mark_ts(data) != "0"
+    print("[OK] «0» в метке R9 не отключает R12: база отложена")
+
+
+def test_fresh_db_after_r12_is_kept_even_with_r9_mark_present():
+    with tempfile.TemporaryDirectory() as tmp:
+        data = os.path.join(tmp, "data")
+        os.makedirs(data)
+        _write(os.path.join(data, OLD_MARK_NAME), f"{int(time.time()) - 5 * DAY}\n".encode())
+        _fill_old_data(data, time.time() - 2 * DAY)
+        assert _run(data).returncode == 0
+        mark_before = _mark_ts(data)
+
+        # Сервис стартовал после R12 и завёл новую базу — теперь уже боевую.
+        _make_db(os.path.join(data, "state.db"), time.time() + 5)
+        r = _run(data)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert len(_test_dirs(data)) == 1, _test_dirs(data)
+        assert _marker(os.path.join(data, "state.db")) == "тестовые данные"
+        assert _mark_ts(data) == mark_before
+        assert "не трогаю" in r.stdout, r.stdout
+    print("[OK] после R12 свежая база не тронута (метка R9 рядом ничего не меняет)")
+
+
+def test_disable_r12_by_zero_mark():
+    """Отключение R12: `echo 0 > .clean-start-r12-done` до обновления."""
+    with tempfile.TemporaryDirectory() as tmp:
+        data = os.path.join(tmp, "data")
+        os.makedirs(data)
+        _write(os.path.join(data, OLD_MARK_NAME), f"{int(time.time()) - 5 * DAY}\n".encode())
+        _write(os.path.join(data, MARK_NAME), b"0\n")
+        _fill_old_data(data, time.time() - 2 * DAY)
+
+        r = _run(data)
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert _marker(os.path.join(data, "state.db")) == "тестовые данные"
+        assert _test_dirs(data) == []
+    print("[OK] «0» в метке R12 отключает перенос, база на месте")
+
+
+def test_script_uses_only_r12_mark():
+    with open(SCRIPT, encoding="utf-8") as f:
+        text = f.read()
+    assert 'MARK_NAME=".clean-start-r12-done"' in text
+    assert 'MARK="$DATA_DIR/$MARK_NAME"' in text
+    # Имя прошлой метки встречается только в пояснениях (комментарии).
+    for line in text.splitlines():
+        if ".clean-start-r9-done" in line:
+            assert line.lstrip().startswith("#"), line
+    print("[OK] скрипт использует метку R12; R9 упомянута только в комментариях")
+
+
 if __name__ == "__main__":
     test_first_run_moves_everything_and_writes_mark()
     test_second_run_keeps_fresh_db()
@@ -360,4 +462,9 @@ if __name__ == "__main__":
     test_bad_invocation()
     test_install_sh_calls_after_stop_and_backup_before_copy()
     test_bash_n_scripts()
-    print("\nВсе тесты Шага 59 (разовый чистый старт R9) пройдены.")
+    test_r12_runs_even_though_r9_mark_exists()
+    test_r9_disabled_mark_does_not_disable_r12()
+    test_fresh_db_after_r12_is_kept_even_with_r9_mark_present()
+    test_disable_r12_by_zero_mark()
+    test_script_uses_only_r12_mark()
+    print("\nВсе тесты Шага 59 (разовый чистый старт R9/R12) пройдены.")
