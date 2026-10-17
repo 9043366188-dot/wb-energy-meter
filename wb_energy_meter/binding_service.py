@@ -43,7 +43,16 @@ VALID_ROLES = ("primary", "check")
 
 class BindingConflict(ValueError):
     """Отказ из-за пересечения по §4.1/§6.1 (не из-за неверных входных
-    данных) — API-слой должен транслировать это в HTTP 409, а не 400."""
+    данных) — API-слой должен транслировать это в HTTP 409, а не 400.
+
+    `conflicts` — список (причина, словарь строки point_bindings)
+    конфликтующих привязок (партия 13, П4: API-слой строит из них
+    человеческий текст без служебных полей; `str(e)` остаётся прежним —
+    технический, для журнала и тестов сервисного слоя)."""
+
+    def __init__(self, message="", conflicts=None):
+        super().__init__(message)
+        self.conflicts = [(reason, dict(row)) for reason, row in (conflicts or [])]
 
 
 def profiles_overlap(a, b):
@@ -239,7 +248,7 @@ class PointBindingRepo:
                 c, point_id, meter_source_id, channel_profile, role, vf, None
             )
             if conflicts:
-                raise BindingConflict(self._format_conflicts(conflicts))
+                raise BindingConflict(self._format_conflicts(conflicts), conflicts)
 
             cur = c.execute(
                 "INSERT INTO point_bindings "
@@ -255,6 +264,25 @@ class PointBindingRepo:
             point_id, meter_source_id, channel_profile, role, binding_id
         )
         return self.get_by_id(binding_id)
+
+    def close_open_for_point(self, point_id, at=None):
+        """Закрыть ВСЕ открытые привязки точки (любой роли) — партия 13,
+        П1: «Убрать счётчик» архивирует точку, и прибор должен освободиться,
+        иначе его нельзя поставить заново (физический scope считается
+        занятым, пока привязка открыта). valid_to = MAX(valid_from, at):
+        привязка, открытая в ту же секунду, закрывается пустым интервалом,
+        а не интервалом valid_to < valid_from (как и у членства группы при
+        архивации точки). Своей ревизии не создаёт — вызывается внутри
+        with_revision_check. Возвращает число закрытых привязок."""
+        now = at if at is not None else int(time.time())
+        with self._db.transaction() as c:
+            cur = c.execute(
+                "UPDATE point_bindings SET valid_to = MAX(valid_from, ?) "
+                "WHERE point_id = ? AND valid_to IS NULL", (now, point_id))
+            closed = cur.rowcount
+        if closed:
+            log.info("Закрыты открытые привязки точки %d: %d", point_id, closed)
+        return closed
 
     def close_binding(self, binding_id, at=None):
         """Закрыть привязку, проставив valid_to."""
@@ -309,7 +337,7 @@ class PointBindingRepo:
                 exclude_id=current["id"],
             )
             if conflicts:
-                raise BindingConflict(self._format_conflicts(conflicts))
+                raise BindingConflict(self._format_conflicts(conflicts), conflicts)
 
             c.execute(
                 "UPDATE point_bindings SET valid_to = ? WHERE id = ?",

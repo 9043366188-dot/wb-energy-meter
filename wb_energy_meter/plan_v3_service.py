@@ -40,6 +40,28 @@ class PlanV3Conflict(ValueError):
     сохраняется, буквально, а не только «не публикуется»."""
 
 
+class LineAlreadyMetered(PlanV3Conflict):
+    """Линия уже измеряется другой действующей точкой (партия 13, П5):
+    осознанная замена счётчика — отдельное действие, «+ Счётчик» её молча
+    не делает. API-слой отдаёт 409 `already_metered`."""
+
+    def __init__(self, message: str, edge_id: int, point_id: int):
+        super().__init__(message)
+        self.edge_id = edge_id
+        self.point_id = point_id
+
+
+# Что может измерять счётчик в узле каждого типа (партия 13, П5, R10).
+# «input» — входящую линию узла, «outgoing» — одну из отходящих. Счётчик
+# ставится на ЛИНИЮ (точка измеряет edge, не node — модель расчёта не
+# меняется), узел только определяет, какие линии у него бывают.
+METER_MEASURES_BY_KIND = {
+    "source": ("outgoing",),
+    "panel": ("input", "outgoing"),
+    "junction": ("input", "outgoing"),
+    "load": ("input",),
+}
+
 def _node_label(node_repo, node_id: int, cache: Dict[int, str]) -> str:
     if node_id in cache:
         return cache[node_id]
@@ -191,6 +213,100 @@ def add_consumer_line(node_repo, edge_repo, from_node_id: int, load_name: str, *
     return new_node, edge
 
 
+def resolve_meter_line(node_repo, edge_repo, node_id: int, measures: str, *,
+                       line_id: Optional[int] = None,
+                       to_node_id: Optional[int] = None,
+                       new_load_name: Optional[str] = None,
+                       fed_from_node_id: Optional[int] = None):
+    """Какую линию измеряет новый счётчик узла `node_id` (партия 13, П5,
+    «+ Счётчик»). Возвращает (edge, created_edge, new_node): линию,
+    признак «линия создана этим же действием» и новый узел-нагрузку (или
+    None). Недостающую линию (и нагрузку) создаёт ЗДЕСЬ тем же кодом, что
+    «соединить линией» (`connect_nodes`) и «добавить отходящую линию»
+    (`add_consumer_line`); сам счётчик (точка, привязка, «измеряет линию»)
+    ставит вызывающий код api_v2.py — ВСЁ внутри одного
+    with_revision_check, поэтому при любом отказе не остаётся ничего, в
+    том числе созданной линии и нагрузки.
+
+    measures:
+      "input"    — входящая линия узла. Если её нет — нужен
+                   `fed_from_node_id` («Откуда щит питается?»), линия
+                   создаётся от этого узла;
+      "outgoing" — одна из отходящих: уже существующая (`line_id`), либо
+                   к существующему узлу (`to_node_id`; линия создаётся,
+                   если её не было), либо к НОВОЙ нагрузке
+                   (`new_load_name`).
+    ValueError — неверные входные данные (400); PlanV3Conflict — правила
+    леса (409)."""
+    node = node_repo.get_by_id(node_id)
+    if node is None:
+        raise ValueError(f"Узел {node_id} не найден")
+    if node.archived_at is not None:
+        raise ValueError(f"«{node.name}» в архиве — счётчик в него не добавить")
+    allowed = METER_MEASURES_BY_KIND.get(node.kind, ())
+    if measures not in ("input", "outgoing"):
+        raise ValueError(
+            "укажите, что измеряет счётчик: measures=\"input\" (входящую "
+            "линию) или \"outgoing\" (отходящую)")
+    if measures not in allowed:
+        if node.kind == "source":
+            raise ValueError(
+                f"«{node.name}» — ввод: в него не входит линия, счётчик "
+                f"ставится на отходящую")
+        if node.kind == "load":
+            raise ValueError(
+                f"«{node.name}» — нагрузка: от неё не отходят линии, "
+                f"счётчик ставится на входящую")
+        raise ValueError(f"в узле «{node.name}» нельзя поставить такой счётчик")
+
+    published = edge_repo.list_active_published()
+
+    if measures == "input":
+        incoming = next((e for e in published if e.to_node_id == node_id), None)
+        if line_id is not None and (incoming is None or incoming.id != line_id):
+            raise ValueError(f"линия {line_id} не входит в «{node.name}»")
+        if incoming is not None:
+            return incoming, False, None
+        if fed_from_node_id is None:
+            raise ValueError(
+                f"«{node.name}» пока ни от чего не питается — укажите, "
+                f"откуда (fed_from_node_id): линия создастся вместе со счётчиком")
+        if fed_from_node_id == node_id:
+            raise ValueError(f"«{node.name}» нельзя питать от самого себя")
+        feeder = node_repo.get_by_id(fed_from_node_id)
+        if feeder is None or feeder.archived_at is not None:
+            raise ValueError(f"Узел {fed_from_node_id} не найден")
+        edge = connect_nodes(node_repo, edge_repo, fed_from_node_id, node_id)
+        return edge, True, None
+
+    # outgoing
+    outs = [e for e in published if e.from_node_id == node_id]
+    if line_id is not None:
+        edge = next((e for e in outs if e.id == line_id), None)
+        if edge is None:
+            raise ValueError(f"линия {line_id} не отходит от «{node.name}»")
+        return edge, False, None
+    if to_node_id is not None:
+        target = node_repo.get_by_id(to_node_id)
+        if target is None or target.archived_at is not None:
+            raise ValueError(f"Узел {to_node_id} не найден")
+        if to_node_id == node_id:
+            raise ValueError(f"«{node.name}» нельзя соединить линией с самим собой")
+        existing = next((e for e in outs if e.to_node_id == to_node_id), None)
+        if existing is not None:
+            return existing, False, None
+        edge = connect_nodes(node_repo, edge_repo, node_id, to_node_id)
+        return edge, True, None
+    if new_load_name is not None and str(new_load_name).strip():
+        new_node, edge = add_consumer_line(
+            node_repo, edge_repo, node_id, str(new_load_name))
+        return edge, True, new_node
+    raise ValueError(
+        "укажите, какую отходящую линию измеряет счётчик: существующую "
+        "(line_id), к другому узлу (to_node_id) или к новой нагрузке "
+        "(new_load_name)")
+
+
 def describe_node_lines(node_repo, edge_repo, point_repo, node_id: int) -> List[dict]:
     """Список линий узла для карточки (§1 задания: «в карточке узла
     показывать список линий этого узла») — одна входящая (максимум,
@@ -215,11 +331,15 @@ def describe_node_lines(node_repo, edge_repo, point_repo, node_id: int) -> List[
         else:
             continue
         point = point_repo.get_by_id(e.primary_point_id) if e.primary_point_id else None
+        if point is not None and point.archived_at is not None:
+            # Партия 13, П1: архивная точка линию больше не измеряет
+            # (устойчивость к базам, где ссылка на неё осталась).
+            point = None
         out.append({
             "edge_id": e.id, "direction": direction,
             "other_node_id": other_id, "other_node_name": other_node_name(other_id),
             "code": e.code, "name": e.name,
-            "primary_point_id": e.primary_point_id,
+            "primary_point_id": point.id if point else None,
             "primary_point_code": point.code if point else None,
             "primary_point_name": point.name if point else None,
             "phase_count": e.phase_count, "rated_current_a": e.rated_current_a,

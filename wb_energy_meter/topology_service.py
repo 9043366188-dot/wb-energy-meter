@@ -605,6 +605,33 @@ class ElectricalEdgeRepo:
                 raise
         return self.get_by_id(edge_id)
 
+    def clear_point_references(self, point_id, at=None):
+        """Снять точку с линий, которые она измеряет СЕЙЧАС (партия 13, П1:
+        «Убрать счётчик» архивирует точку — линия остаётся, но без
+        счётчика). Трогает только действующие опубликованные связи и
+        черновики; выведенные из работы (valid_to задан) хранят точку как
+        историю измерения. Возвращает id затронутых связей."""
+        now = at if at is not None else int(time.time())
+        with self._db.transaction() as c:
+            rows = c.execute(
+                "SELECT id FROM electrical_edges WHERE primary_point_id = ? "
+                "AND valid_to IS NULL AND archived_at IS NULL", (point_id,)
+            ).fetchall()
+            ids = [r["id"] for r in rows]
+            if ids:
+                c.execute(
+                    "UPDATE electrical_edges SET primary_point_id = NULL, "
+                    "updated_at = ? WHERE primary_point_id = ? "
+                    "AND valid_to IS NULL AND archived_at IS NULL",
+                    (now, point_id))
+        return ids
+
+    def list_active_touching(self, node_id):
+        """Действующие опубликованные связи, входящие в узел или выходящие
+        из него — для сообщения «какие линии мешают архивировать узел»."""
+        return [e for e in self.list_active_published()
+                if e.from_node_id == node_id or e.to_node_id == node_id]
+
     def retire_edge(self, edge_id, at=None):
         """Закрыть опубликованную связь без замены (узел временно теряет
         питание/измерение, не входит в достижимость дальше)."""
