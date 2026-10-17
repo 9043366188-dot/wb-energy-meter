@@ -233,12 +233,19 @@ def test_rows_per_operation():
         assert rows[0]["new_value"]["primary_point_id"] == p2["id"]
         assert rows[0]["old_value"]["state"] == "published"
 
-        # архивирование точки: archive + закрытие состояния + новое состояние
+        # архивирование точки: archive + закрытие состояния + новое состояние;
+        # с партии 13 (П1) архивная точка освобождает прибор — её открытая
+        # привязка закрывается в той же ревизии (запись point_binding/close)
         patch(client, f"/api/v2/points/{p1['id']}", archived=True)
         rows = j.new()
+        binding_rows = [r for r in rows if r["entity_type"] == "point_binding"]
+        assert len(binding_rows) == 1, rows
         assert sorted(j.shape(rows)) == sorted([
             ("metering_point", p1["id"], "archive"),
-            ("point_state", 1, "close"), ("point_state", 3, "create")]), rows
+            ("point_state", 1, "close"), ("point_state", 3, "create"),
+            ("point_binding", binding_rows[0]["entity_id"], "close")]), rows
+        assert binding_rows[0]["old_value"] == {"valid_to": None}
+        assert binding_rows[0]["new_value"]["valid_to"] is not None
         arch = [r for r in rows if r["entity_type"] == "metering_point"][0]
         assert arch["old_value"] == {"archived_at": None, "enabled": 1}
         assert arch["new_value"]["enabled"] == 0

@@ -472,15 +472,37 @@ class PlanItemRepo:
             _journal_plan_change(c, existing.plan_id, "items", "updated")
         return self.get_by_id(item_id)
 
-    def remove_from_plan(self, item_id: int) -> bool:
+    def list_for_node(self, node_id: int) -> List[PlanItem]:
+        """Значки узла на всех планах (партия 13, П1: архивация узла убирает
+        их со всех планов — это представление, не предметная сущность)."""
+        with self._db.read() as c:
+            rows = c.execute(
+                "SELECT * FROM plan_items WHERE node_id = ? ORDER BY id",
+                (node_id,)).fetchall()
+            return [PlanItem.from_row(r) for r in rows]
+
+    def remove_from_plan(self, item_id: int, with_edge_views: bool = False) -> bool:
         """§7.3 «Убрать с плана» — удаляет только представление, не
         предметную сущность. Зависимые plan_edge_views на этом же
         плане теряют ссылку (ON DELETE SET NULL в схеме), а не
         удаляются целиком — вызывающий код (API) обязан явно показать
-        их список перед удалением узла-представления."""
+        их список перед удалением узла-представления.
+
+        with_edge_views=True (партия 13, П1) — вместе со значком убрать с
+        этого плана и нарисованные к нему линии (только их изображение на
+        плане; сами линии в схеме остаются). Иначе линия с оборванным
+        концом никогда не нарисуется снова, даже если узел разместят
+        заново. Одной транзакцией."""
         with self._db.transaction() as c:
             row = c.execute("SELECT plan_id FROM plan_items WHERE id = ?",
                             (item_id,)).fetchone()
+            if row is not None and with_edge_views:
+                vcur = c.execute(
+                    "DELETE FROM plan_edge_views WHERE plan_id = ? AND "
+                    "(from_item_id = ? OR to_item_id = ?)",
+                    (row["plan_id"], item_id, item_id))
+                if vcur.rowcount > 0:
+                    _journal_plan_change(c, row["plan_id"], "edge_views", "removed")
             cur = c.execute("DELETE FROM plan_items WHERE id = ?", (item_id,))
             if row is not None and cur.rowcount > 0:
                 _journal_plan_change(c, row["plan_id"], "items", "removed")
@@ -602,6 +624,21 @@ class PlanEdgeViewRepo:
             # маркер на повторных вызовах).
             domain_generation.mark_v2_domain_write(c)
         return self.get_by_id(view_id)
+
+    def remove_for_edge(self, edge_id: int) -> int:
+        """Убрать изображение линии со ВСЕХ планов (партия 13, П1: линию
+        вывели из работы — на планах она больше не рисуется; сама связь и
+        её история остаются). Возвращает число убранных изображений."""
+        removed = 0
+        with self._db.transaction() as c:
+            rows = c.execute(
+                "SELECT id, plan_id FROM plan_edge_views WHERE edge_id = ?",
+                (edge_id,)).fetchall()
+            for r in rows:
+                c.execute("DELETE FROM plan_edge_views WHERE id = ?", (r["id"],))
+                _journal_plan_change(c, r["plan_id"], "edge_views", "removed")
+                removed += 1
+        return removed
 
     def remove(self, view_id: int) -> bool:
         with self._db.transaction() as c:

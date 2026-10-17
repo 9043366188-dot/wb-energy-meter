@@ -4,7 +4,7 @@
 review-2026-09-23.md п.2 и docs/TZ-batch7-review-fixes.md, «Этап 1»,
 «Готово, когда»):
     1. холст пустого плана открывается в масштабе −4 (minZoom);
-    2. клик по карте с инструментом «+ Узел» не создаёт узел
+    2. клик по карте с инструментом «+ Элемент схемы» не создаёт узел
        («Точка вне границ плана»);
     3. масштаб/центр карты сбрасываются после действия.
 Чинит эти три пункта этап 3 (задачи B1/B2) — после него все проверки
@@ -52,11 +52,11 @@ def main() -> int:
         check(zoom > -4, f"холст пустого плана виден в нормальном масштабе (zoom={zoom})")
         bp.screenshot("b02_after_create")
 
-        # Клик в левую верхнюю четверть карты с инструментом «+ Узел».
+        # Клик в левую верхнюю четверть карты с инструментом «+ Элемент схемы».
         box = page.locator(".leaflet-container:visible").first.bounding_box()
-        page.click("text=+ Узел")
+        page.click("button:has-text('+ Элемент схемы')")
         page.wait_for_timeout(300)
-        page.fill("input[placeholder='Название узла']", "Ввод")
+        page.fill("input[placeholder='Название']", "Ввод")
         page.mouse.click(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * 0.3)
         page.wait_for_timeout(1500)
         n_nodes = len(page.evaluate("fetch('/api/v2/topology/nodes').then(r=>r.json())"))
@@ -66,8 +66,8 @@ def main() -> int:
         page.evaluate("_planV3Map.setView([600, 1000], 0)")
         page.wait_for_timeout(400)
         z_before = page.evaluate("_planV3Map.getZoom()")
-        page.click("text=+ Узел")
-        page.fill("input[placeholder='Название узла']", "ЩР-1")
+        page.click("button:has-text('+ Элемент схемы')")
+        page.fill("input[placeholder='Название']", "ЩР-1")
         page.mouse.click(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5)
         page.wait_for_timeout(1500)
         z_after = page.evaluate("_planV3Map.getZoom()")

@@ -6,10 +6,33 @@
 // самом app() (жизненный цикл, тема, статус, общие форматтеры).
 // ---- общие модульные переменные/хелперы (несколько экранов) ----
 const DEFAULT_UI_SET = 'classic';
+// Партия 13, П3 (решение R5): вкладка «План v2» в наборе v2 скрыта — карта
+// узлов сети теперь «План v3». Код вкладки остаётся (классический набор и
+// прямые переходы _planV2GoToItem его не используют, но и не удалены).
 const UI_SET_TABS = {
   classic: ['dash', 'plan', 'consumption', 'settings', 'reports'],
-  v2: ['overviewv2', 'planv2', 'reportsv2', 'structurev2', 'planv3'],
+  v2: ['overviewv2', 'reportsv2', 'structurev2', 'planv3'],
 };
+
+// Партия 13, П2: ЕДИНЫЙ словарь типов элементов схемы. Одно слово — одно
+// значение везде («Плана v3», «Структуры», «Обзора», отчётов); три копии подписей
+// в разметке разошлись («Узел разветвления» / «Промежуточный узел» / «Узел»).
+// Слово «узел» названием типа не служит. Менять подписи — только здесь.
+const NODE_KINDS = [
+  {value:'source', label:'Ввод',
+   hint:'Откуда приходит питание (граница объекта).'},
+  {value:'panel', label:'Щит',
+   hint:'Распределяет питание: от него отходят линии.'},
+  {value:'junction', label:'Ответвление',
+   hint:'Точка разветвления без щита.'},
+  {value:'load', label:'Нагрузка',
+   hint:'Конечный потребитель.'},
+];
+const NODE_METER_NOTE =
+  'Счётчик ставится на линию, а не на сам элемент: «+ Счётчик» спросит, какую линию он измеряет.';
+const SCHEME_EMPTY_HINT =
+  'Схема — это вводы, щиты и нагрузки, соединённые линиями. '+
+  'Счётчик ставится на линию: тогда видно, сколько прошло по ней.';
 function _planCssVar(name){
   try{
     const v=getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -39,6 +62,23 @@ function fmtHour(ts){
       tab: (lsGet('wbem.uiSet', DEFAULT_UI_SET)=='v2') ? 'overviewv2' : 'dash',
 
       uiSet: lsGet('wbem.uiSet', DEFAULT_UI_SET),
+
+      // П2: словарь типов — один на все списки (см. NODE_KINDS выше).
+      nodeKinds: NODE_KINDS,
+
+      nodeMeterNote: NODE_METER_NOTE,
+
+      schemeEmptyHint: SCHEME_EMPTY_HINT,
+
+      nodeKindLabel(kind){
+          const k=NODE_KINDS.find(x=>x.value===kind);
+          return k ? k.label : (kind||'');
+        },
+
+      nodeKindHint(kind){
+          const k=NODE_KINDS.find(x=>x.value===kind);
+          return k ? k.hint : '';
+        },
 
       theme:lsGet('theme','dark'),
 
@@ -80,6 +120,13 @@ function fmtHour(ts){
             // линиям открытой карточки узла/тока-загрузки открытой карточки
             // линии на «Плане v3» обновляются тем же тиком.
             if(this.tab=='planv3') this._planV3PollLiveCard();
+            // Партия 13, П6: «Структура» — дерево схемы с текущей мощностью
+            // из того же снимка, что и «Обзор»; тот же тик (5с), карточка
+            // узла обновляет P-now линий так же, как на «Плане v3».
+            if(this.tab=='structurev2'){
+              this._loadStructureSnapshot();
+              this._planV3PollLiveCard();
+            }
           },5000);
           // Партия 6, баг из браузера (§5: "рисование линии/контура никогда не
           // завершается" — режим рисования оставался включённым). Escape —

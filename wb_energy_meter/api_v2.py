@@ -90,7 +90,7 @@ from . import overview_service
 from . import reports_service
 from . import topology_history
 from .overview_service import BalanceAlgorithmError
-from .binding_service import BindingConflict, PointBindingRepo
+from .binding_service import BindingConflict, PointBindingRepo, VALID_CHANNEL_PROFILES
 from .location_repo import LocationRepo
 from .model import PHASES
 from .point_repo import MeteringPointRepo, MeterSourceRepo
@@ -267,6 +267,47 @@ def register_v2_routes(app, state, json_response):
             # эквивалентно open_source).
             source = sources.reassign_source(meter.id, controller_key, device_id, at=at)
         return source.id
+
+    def _binding_conflict_text(e, device_id=None):
+        """Партия 13, П4: отказ привязки — человеческим текстом. Без
+        `scope`, `channel_profile`, `valid_from` и номеров записей (они
+        остаются в `str(e)` для журнала сервиса и тестов слоя ниже). Кто
+        занял прибор — по имени точки."""
+        parts = []
+        holders = []
+        for reason, row in (getattr(e, "conflicts", None) or []):
+            if reason == "cross_point_scope":
+                holder = _point_repo().get_by_id(row["point_id"])
+                if holder is not None:
+                    label = "«" + (holder.name or holder.code) + "»"
+                    if holder.archived_at is not None:
+                        label += " (в архиве)"
+                    if label not in holders:
+                        holders.append(label)
+            elif reason == "role_interval_overlap":
+                msg = ("У этой точки учёта уже стоит счётчик. Чтобы поставить "
+                       "другой, замените прибор у точки.")
+                if msg not in parts:
+                    parts.append(msg)
+            elif reason == "self_check_not_independent":
+                msg = ("Контрольный счётчик должен быть другим прибором: этот "
+                       "уже измеряет ту же точку.")
+                if msg not in parts:
+                    parts.append(msg)
+        if holders:
+            who = "Прибор «%s»" % device_id if device_id else "Этот прибор"
+            parts.insert(0, "%s уже занят точкой учёта %s. Сначала уберите у неё "
+                            "счётчик, затем ставьте прибор заново." % (
+                                who, ", ".join(holders)))
+        if not parts:
+            parts.append("Этот прибор уже занят — поставить его нельзя.")
+        return " ".join(parts)
+
+    def _device_of_source(meter_source_id):
+        if meter_source_id is None:
+            return None
+        src = MeterSourceRepo(db).get_by_id(meter_source_id)
+        return src.device_id if src is not None else None
 
     def _group_to_dict(g):
         return {
@@ -469,12 +510,23 @@ def register_v2_routes(app, state, json_response):
                 400, ids=[point_id])
             return json_response(body, status)
 
+        released = {"closed_bindings": 0, "edge_ids": []}
+
         def _mutate():
             result = p
             if "enabled" in data:
                 result = repo.set_enabled(point_id, bool(data["enabled"]))
             if "archived" in data and data["archived"]:
                 result = repo.archive(point_id)
+                # Партия 13, П1 («Убрать счётчик»): архивная точка
+                # освобождает прибор (закрываются открытые привязки — иначе
+                # физический scope остаётся занятым и прибор нельзя поставить
+                # заново) и перестаёт измерять линии (линия остаётся, но без
+                # счётчика). История точки — её закрытые привязки, группы
+                # «как было» и записи журнала — сохраняется. Всё в той же
+                # ревизии, что и сама архивация.
+                released["closed_bindings"] = _binding_repo().close_open_for_point(point_id)
+                released["edge_ids"] = _edge_repo().clear_point_references(point_id)
             if any(k in data for k in ("name", "description", "installation_note")):
                 result = repo.update_fields(
                     point_id, name=data.get("name"),
@@ -499,6 +551,8 @@ def register_v2_routes(app, state, json_response):
             return json_response(body, status)
         out = _point_to_dict(repo.get_by_id(point_id), power_supply=_point_power_supply(point_id))
         out["configuration_revision"] = new_rev
+        if "archived" in data and data["archived"]:
+            out["released"] = released
         return json_response(out)
 
     @app.route("/api/v2/points/<int:point_id>/bindings", methods=["GET", "POST"])
@@ -564,8 +618,11 @@ def register_v2_routes(app, state, json_response):
             return _revision_conflict(
                 e, ids=[i for i in (point_id, meter_source_id) if i is not None])
         except BindingConflict as e:
+            log.info("Отказ привязки точки %s: %s", point_id, e)
+            device = _device_of_source(meter_source_id) or (
+                new_meter.get("device_id") if isinstance(new_meter, dict) else None)
             body, status = _err(
-                "double_counting", str(e), 409,
+                "double_counting", _binding_conflict_text(e, device), 409,
                 ids=[i for i in (point_id, meter_source_id) if i is not None])
             return json_response(body, status)
         except ValueError as e:
@@ -639,8 +696,11 @@ def register_v2_routes(app, state, json_response):
             return _revision_conflict(
                 e, ids=[i for i in (point_id, meter_source_id) if i is not None])
         except BindingConflict as e:
+            log.info("Отказ замены прибора точки %s: %s", point_id, e)
+            device = _device_of_source(meter_source_id) or (
+                new_meter.get("device_id") if isinstance(new_meter, dict) else None)
             body, status = _err(
-                "double_counting", str(e), 409,
+                "double_counting", _binding_conflict_text(e, device), 409,
                 ids=[i for i in (point_id, meter_source_id) if i is not None])
             return json_response(body, status)
         except ValueError as e:
@@ -953,6 +1013,23 @@ def register_v2_routes(app, state, json_response):
 
     # --------------------------------------------------------- topology
 
+    def _describe_lines(edges):
+        """Линии для текста отказа/подтверждения: id, подпись «A → B» (или
+        своё имя линии), концы."""
+        names = {}
+
+        def nm(node_id):
+            if node_id not in names:
+                nd = _node_repo().get_by_id(node_id)
+                names[node_id] = nd.name if nd is not None else "узел %s" % node_id
+            return names[node_id]
+        return [{
+            "edge_id": e.id,
+            "label": plan_v3_service._edge_display_label(
+                e, nm(e.from_node_id), nm(e.to_node_id)),
+            "from_node_id": e.from_node_id, "to_node_id": e.to_node_id,
+        } for e in edges]
+
     @app.route("/api/v2/topology/nodes", methods=["GET", "POST"])
     def v2_topology_nodes():
         repo = _node_repo()
@@ -989,11 +1066,44 @@ def register_v2_routes(app, state, json_response):
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
         if data.get("archived"):
+            # Партия 13, П1: «Архивировать узел». Действующие линии узла
+            # мешают — отказ называет их по именам (в `path` — по одной
+            # записи на линию) и подсказывает флаг `retire_edges`: вывести
+            # линии из работы и архивировать узел ОДНОЙ ревизией (решение
+            # партии: иначе владельцу щита с пятью линиями пришлось бы
+            # открывать пять карточек; последствия — в тексте
+            # подтверждения интерфейса). Значки узла со всех планов и
+            # изображения выводимых линий убираются тут же — это
+            # представление, оно не должно висеть на плане.
+            retire = bool(data.get("retire_edges"))
+            touching = _edge_repo().list_active_touching(node_id)
+            if touching and not retire:
+                lines = _describe_lines(touching)
+                body, status = _err(
+                    "conflict",
+                    "Нельзя архивировать «%s»: у узла есть действующие линии — %s. "
+                    "Сначала выведите их из работы или архивируйте узел вместе с "
+                    "линиями." % (n.name, "; ".join(l["label"] for l in lines)),
+                    409, ids=[node_id] + [l["edge_id"] for l in lines],
+                    fields=["retire_edges"], path=lines)
+                return json_response(body, status)
+
+            def _archive_node():
+                erepo = _edge_repo()
+                if retire:
+                    for e in touching:
+                        erepo.retire_edge(e.id)
+                        _plan_edge_view_repo().remove_for_edge(e.id)
+                result = repo.archive(node_id)
+                items_repo = _plan_item_repo()
+                for it in items_repo.list_for_node(node_id):
+                    items_repo.remove_from_plan(it.id, with_edge_views=True)
+                return result
             try:
                 _, new_rev = with_revision_check(
-                    db, data.get("expected_revision"),
-                    lambda: repo.archive(node_id),
-                    touched=[("electrical_node", node_id)])
+                    db, data.get("expected_revision"), _archive_node,
+                    touched=[("electrical_node", node_id)]
+                    + [("electrical_edge", e.id) for e in (touching if retire else [])])
             except GlobalRevisionConflict as e:
                 return _revision_conflict(e, ids=[node_id])
             except ValueError as e:
@@ -1001,6 +1111,8 @@ def register_v2_routes(app, state, json_response):
                 return json_response(body, status)
             out = _node_to_dict(repo.get_by_id(node_id))
             out["configuration_revision"] = new_rev
+            if retire:
+                out["retired_edge_ids"] = [e.id for e in touching]
             return json_response(out)
 
         # «План v3», §2: карточка узла редактируется на месте — имя и
@@ -1130,9 +1242,15 @@ def register_v2_routes(app, state, json_response):
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
         if data.get("retire"):
             try:
+                def _retire():
+                    result = repo.retire_edge(edge_id, at=data.get("at"))
+                    # Партия 13, П1: выведенная из работы линия на планах
+                    # больше не рисуется (изображение убирается, сама связь
+                    # и её история остаются).
+                    _plan_edge_view_repo().remove_for_edge(edge_id)
+                    return result
                 _, new_rev = with_revision_check(
-                    db, data.get("expected_revision"),
-                    lambda: repo.retire_edge(edge_id, at=data.get("at")),
+                    db, data.get("expected_revision"), _retire,
                     touched=[("electrical_edge", edge_id)])
             except GlobalRevisionConflict as e2:
                 return _revision_conflict(e2, ids=[edge_id])
@@ -1276,7 +1394,10 @@ def register_v2_routes(app, state, json_response):
         except GlobalRevisionConflict as e:
             return _revision_conflict(e, ids=[edge_id])
         except BindingConflict as e:
-            body, status = _err("double_counting", str(e), 409, ids=[edge_id])
+            log.info("Отказ «точка из прибора» на линии %s: %s", edge_id, e)
+            body, status = _err(
+                "double_counting", _binding_conflict_text(e, device_id), 409,
+                ids=[edge_id])
             return json_response(body, status)
         except ValueError as e:
             body, status = _err("bad_request", str(e), 400, ids=[edge_id])
@@ -1416,6 +1537,160 @@ def register_v2_routes(app, state, json_response):
             body, status = _err("bad_request", str(e), 400, ids=[node_id], fields=["name"])
             return json_response(body, status)
         out = {"node": _node_to_dict(new_node), "edge": _edge_to_dict(edge),
+               "configuration_revision": new_rev}
+        return json_response(out, 201)
+
+    class _AlreadyAttached(Exception):
+        """Служебный выход из транзакции «+ Счётчик»: тот же прибор уже
+        стоит на этой линии — ничего не пишем (откат без ревизии)."""
+
+        def __init__(self, edge, point, source_id):
+            super().__init__("already")
+            self.edge, self.point, self.source_id = edge, point, source_id
+
+    def _optional_int(data, field):
+        v = data.get(field)
+        if v is None or v == "":
+            return None
+        if isinstance(v, bool) or not isinstance(v, int):
+            try:
+                if isinstance(v, bool):
+                    raise ValueError
+                return int(str(v).strip())
+            except (TypeError, ValueError):
+                raise ValueError("поле %s должно быть числом" % field) from None
+        return v
+
+    @app.route("/api/v2/topology/nodes/<int:node_id>/meters", methods=["POST"])
+    def v2_topology_node_add_meter(node_id):
+        """Партия 13, П5 (решение R10), «+ Счётчик» в карточке узла: живой
+        прибор из списка свободных → точка учёта → привязка → «измеряет эту
+        линию», ОДНОЙ ревизией. Модель расчёта не меняется — точка по-прежнему
+        измеряет ЛИНИЮ; операция лишь собирает путь «узел → линия → карточка
+        линии → новая точка из прибора» в одно действие (поверх тех же
+        сервисов, что `edges/connect`, `add-consumer` и `edges/<id>/attach-
+        new-point`).
+
+        Тело: {device_id, measures, name?, channel_profile?="total_3p",
+        line_id?, to_node_id?, new_load_name?, fed_from_node_id?, at?,
+        expected_revision}.
+        measures="input" — входящая линия узла (если её нет — линия
+          создаётся от `fed_from_node_id`: «Откуда щит питается?»);
+        measures="outgoing" — отходящая: `line_id` (уже есть), `to_node_id`
+          (к существующему узлу; линия создаётся, если её не было) или
+          `new_load_name` (линия и НОВАЯ нагрузка создаются тут же).
+        Какие measures допустимы — по типу узла (ввод: только outgoing,
+        нагрузка: только input, щит/ответвление: оба).
+
+        Ответ 201: {point, edge, node (новая нагрузка или null),
+        created_edge, created_node, meter_source_id, measures,
+        configuration_revision}. 200 с `attached: "already"` — тот же прибор
+        уже стоит на этой линии (ничего не записано).
+        Отказы (ничего не создано — ни линии, ни нагрузки, ни точки, ни
+        привязки, ни ревизии): 400 bad_request (неверные данные), 404
+        not_found (узел), 409 revision_conflict (устаревшая ревизия), 409
+        double_counting (прибор уже занят другой точкой), 409
+        already_metered (линия уже измеряется другой точкой), 409
+        topology_conflict (правила леса: цикл, второй источник питания)."""
+        node_repo = _node_repo()
+        node = node_repo.get_by_id(node_id)
+        if node is None:
+            body, status = _err("not_found", f"Узел {node_id} не найден", 404, ids=[node_id])
+            return json_response(body, status)
+
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        if not data.get("device_id"):
+            body, status = _err(
+                "bad_request", "Выберите прибор", 400, fields=["device_id"], ids=[node_id])
+            return json_response(body, status)
+        try:
+            device_id = validate_device_id(data.get("device_id"))
+            line_id = _optional_int(data, "line_id")
+            to_node_id = _optional_int(data, "to_node_id")
+            fed_from_node_id = _optional_int(data, "fed_from_node_id")
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400, ids=[node_id])
+            return json_response(body, status)
+        measures = data.get("measures")
+        channel_profile = data.get("channel_profile") or "total_3p"
+        if channel_profile not in VALID_CHANNEL_PROFILES:
+            body, status = _err(
+                "bad_request", "неизвестный профиль канала: %r (допустимые: %s)" % (
+                    channel_profile, ", ".join(VALID_CHANNEL_PROFILES)),
+                400, fields=["channel_profile"], ids=[node_id])
+            return json_response(body, status)
+
+        known_meter = MeterRepo(db, GroupRepo(db)).get_by_device_id(device_id)
+        point_name = (str(data.get("name") or "").strip()
+                      or (known_meter.display_name if known_meter else None)
+                      or device_id)
+        point_repo = _point_repo()
+        edge_repo = _edge_repo()
+
+        def _mutate():
+            edge, created_edge, new_node = plan_v3_service.resolve_meter_line(
+                node_repo, edge_repo, node_id, measures,
+                line_id=line_id, to_node_id=to_node_id,
+                new_load_name=data.get("new_load_name"),
+                fed_from_node_id=fed_from_node_id)
+            if edge.primary_point_id is not None:
+                holder = point_repo.get_by_id(edge.primary_point_id)
+                if holder is not None and holder.archived_at is None:
+                    binding = _binding_repo().get_open_primary(holder.id)
+                    src = (MeterSourceRepo(db).get_by_id(binding.meter_source_id)
+                           if binding is not None else None)
+                    if src is not None and src.device_id == device_id:
+                        raise _AlreadyAttached(edge, holder, src.id)
+                    raise plan_v3_service.LineAlreadyMetered(
+                        "Эта линия уже измеряется точкой «%s». Сначала уберите её "
+                        "счётчик (кнопка «Убрать счётчик»), затем ставьте новый." % (
+                            holder.name or holder.code), edge.id, holder.id)
+            point = point_repo.add(
+                code="pv3-m-%d-%d" % (node_id, time.time_ns() // 1000),
+                name=point_name)
+            source_id = _resolve_or_provision_meter_source(
+                None, {"device_id": device_id}, at=data.get("at"))
+            _binding_repo().open_binding(
+                point.id, source_id, channel_profile, role="primary",
+                valid_from=data.get("at"))
+            updated_edge = edge_repo.update_fields(edge.id, {"primary_point_id": point.id})
+            return point, source_id, updated_edge, created_edge, new_node
+
+        try:
+            (point, source_id, edge, created_edge, new_node), new_rev = with_revision_check(
+                db, data.get("expected_revision"), _mutate,
+                touched=[("electrical_node", node_id), ("metering_point", "new"),
+                         ("electrical_edge", "new")])
+        except _AlreadyAttached as a:
+            out = {"point": _point_to_dict(a.point), "edge": _edge_to_dict(a.edge),
+                   "node": None, "created_edge": False, "created_node": False,
+                   "meter_source_id": a.source_id, "measures": measures,
+                   "attached": "already"}
+            with db.read() as c:
+                out["configuration_revision"] = current_revision_id(c)
+            return json_response(out)
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e, ids=[node_id])
+        except plan_v3_service.LineAlreadyMetered as e:
+            body, status = _err("already_metered", str(e), 409, ids=[e.edge_id, e.point_id])
+            return json_response(body, status)
+        except plan_v3_service.PlanV3Conflict as e:
+            body, status = _err("topology_conflict", str(e), 409, ids=[node_id])
+            return json_response(body, status)
+        except BindingConflict as e:
+            log.info("Отказ «+ Счётчик» в узле %s: %s", node_id, e)
+            body, status = _err(
+                "double_counting", _binding_conflict_text(e, device_id), 409,
+                ids=[node_id])
+            return json_response(body, status)
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400, ids=[node_id])
+            return json_response(body, status)
+
+        out = {"point": _point_to_dict(point), "edge": _edge_to_dict(edge),
+               "node": _node_to_dict(new_node) if new_node is not None else None,
+               "created_edge": bool(created_edge), "created_node": new_node is not None,
+               "meter_source_id": source_id, "measures": measures,
                "configuration_revision": new_rev}
         return json_response(out, 201)
 
@@ -2054,7 +2329,35 @@ def register_v2_routes(app, state, json_response):
                 "measured_edge_label": power_supply.get("measured_edge_label"),
             })
 
-        return json_response({"points": items})
+        # Партия 13, П4: какие приборы заняты (открытая привязка любой роли,
+        # в том числе у архивной точки из старых баз) — список выбора
+        # прибора показывает только свободные, занятые — серым с именем
+        # точки. Раньше «свободные» считались по первичным привязкам
+        # активных точек, и прибор, занятый контрольной привязкой, считался
+        # свободным до отказа сервера.
+        with db.read() as c:
+            occ_rows = c.execute(
+                "SELECT b.point_id AS point_id, s.device_id AS device_id, "
+                "s.controller_key AS controller_key FROM point_bindings b "
+                "JOIN meter_sources s ON s.id = b.meter_source_id "
+                "WHERE b.valid_to IS NULL ORDER BY b.id").fetchall()
+        holders_by_id = {p.id: p for p in point_repo.list_all(include_archived=True)}
+        occupied_devices = []
+        seen_occ = set()
+        for r in occ_rows:
+            key = (r["controller_key"], r["device_id"])
+            if key in seen_occ:
+                continue
+            seen_occ.add(key)
+            holder = holders_by_id.get(r["point_id"])
+            occupied_devices.append({
+                "device_id": r["device_id"], "controller_key": r["controller_key"],
+                "point_id": r["point_id"],
+                "point_name": (holder.name or holder.code) if holder else None,
+                "archived": bool(holder is not None and holder.archived_at is not None),
+            })
+
+        return json_response({"points": items, "occupied_devices": occupied_devices})
 
     # ---------------------------------------- validation (партия 3, задача 4)
     # ТЗ §8.2/§13, docs/TZ-batch3 задача 4: "на ста точках без него
@@ -2876,7 +3179,11 @@ def register_v2_routes(app, state, json_response):
             return json_response(body, status)
 
         if request.method == "DELETE":
-            repo.remove_from_plan(item_id)
+            # Партия 13, П1 («Убрать с плана»): ?edge_views=remove — вместе со
+            # значком убрать с ЭТОГО плана и нарисованные к нему линии (только
+            # изображение; сами линии в схеме остаются).
+            repo.remove_from_plan(
+                item_id, with_edge_views=request.args.get("edge_views") == "remove")
             return json_response({"ok": True, "id": item_id})
 
         data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
