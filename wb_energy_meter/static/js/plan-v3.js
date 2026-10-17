@@ -78,11 +78,11 @@ let _planV3NeedsFit=null;
           return (this.structEdges||[]).some(e=>e.primary_point_id===pointId);
         },
 
+      // П4: свободные приборы — по списку занятых, который отдаёт сервер
+      // (structure/points.occupied_devices: открытая привязка ЛЮБОЙ роли у
+      // любой точки), а не по первичным привязкам активных точек.
       planV3DevicesWithoutPoint(){
-          const bound=new Set((this.structPoints||[])
-            .filter(p=>p.bound && p.meter_device_id)
-            .map(p=>p.meter_device_id));
-          return (this.structKnownDevices||[]).filter(d=>!bound.has(d.device_id));
+          return this.structFreeDevices();
         },
 
       async planV3SaveEdgeCard(){
@@ -116,7 +116,7 @@ let _planV3NeedsFit=null;
 
       async planV3AttachNewPointSubmit(edgeId){
           const deviceId=(this.planV3AttachDeviceId||'').trim();
-          if(!deviceId){ this.planV3AttachError='Укажите device_id прибора'; return; }
+          if(!deviceId){ this.planV3AttachError='Выберите прибор из списка свободных'; return; }
           this.planV3AttachError=null;
           try{
             const rev=await this._structCurrentRev();
@@ -375,7 +375,7 @@ let _planV3NeedsFit=null;
           if(!this.planV3Current) return;
           if(this.planV3Tool==='node'){
             const name=(this.planV3PendingNodeForm.name||'').trim();
-            if(!name){ this.showToast('Укажите название узла', false); return; }
+            if(!name){ this.showToast('Укажите название', false); return; }
             const [W,H]=this._planV3EffectiveDims(this.planV3Current);
             const [x,y]=this._planV3LatLngToXy(e.latlng, H);
             if(x<0||x>W||y<0||y>H){ this.showToast('Точка вне границ плана', false); return; }
@@ -383,7 +383,7 @@ let _planV3NeedsFit=null;
             return;
           }
           // Э3/B4: «Разместить на карте» у уже заведённого, но ещё не
-          // нанесённого узла — тот же клик по карте, что и «+ Узел», только
+          // нанесённого элемента — тот же клик по карте, что и «+ Элемент схемы», только
           // без создания нового узла (id уже есть, см. planV3StartPlaceExistingNode).
           if(this.planV3Tool==='node-existing' && this.planV3PlacingExistingNodeId!=null){
             const [W,H]=this._planV3EffectiveDims(this.planV3Current);
@@ -397,7 +397,7 @@ let _planV3NeedsFit=null;
           this.planV3CancelTool();
           this.planV3Tool='node-existing';
           this.planV3PlacingExistingNodeId=nodeId;
-          this.showToast('Кликните на карте, чтобы разместить узел', true);
+          this.showToast('Кликните на карте, чтобы разместить элемент схемы', true);
         },
 
       async planV3PlaceExistingNode(x,y){
@@ -412,7 +412,7 @@ let _planV3NeedsFit=null;
                 coord_space:this._planV3CoordSpace(), label:node?node.name:''})});
             const id_=await ir.json();
             if(!ir.ok){ this.showToast(this._apiErrorMessage(id_, ir.status), false); return; }
-            this.showToast('Узел «'+(node?node.name:nodeId)+'» размещён на плане', true);
+            this.showToast('«'+(node?node.name:nodeId)+'» размещён на плане', true);
             this.planV3PlacingExistingNodeId=null; this.planV3Tool=null;
             await this._loadStructureLists();
             await this.reloadPlanV3Items();
@@ -436,7 +436,7 @@ let _planV3NeedsFit=null;
                 coord_space:this._planV3CoordSpace(), label:name})});
             const id_=await ir.json();
             if(!ir.ok){ this.showToast(this._apiErrorMessage(id_, ir.status), false); return; }
-            this.showToast('Узел «'+name+'» размещён', true);
+            this.showToast('«'+name+'» размещён на плане', true);
             this.planV3PendingNodeForm={kind:form.kind, name:''};
             await this._loadStructureLists();
             await this.reloadPlanV3Items();
@@ -463,7 +463,7 @@ let _planV3NeedsFit=null;
               const fromItem=this.planV3EdgeFirstItem;
               this.planV3EdgeFirstItem=null;
               if(fromItem.node_id===item.node_id){
-                this.showToast('Нельзя соединить узел с самим собой', false); return;
+                this.showToast('Нельзя соединить элемент с самим собой', false); return;
               }
               this.planV3ConnectNodes(fromItem, item);
             }
@@ -560,7 +560,7 @@ let _planV3NeedsFit=null;
               })});
             const d=await r.json();
             if(!r.ok){ this.planV3NodeCardError=this._apiErrorMessage(d, r.status); return; }
-            this.showToast('Узел обновлён', true);
+            this.showToast('Сохранено', true);
             const id=this.structInspector.id;
             await this._loadStructureLists();
             // reloadPlanV3Items() сама перечитывает открытую карточку того же
@@ -659,8 +659,12 @@ let _planV3NeedsFit=null;
           // на плане с десятком узлов не разобрать, где что, не кликая по
           // каждому. Leaflet вставляет текст как HTML — _planEscapeHtml (A45).
           if(node){
-            layer.bindTooltip(_planEscapeHtml(node.name||node.code||''),
-              {permanent:true, direction:'right', className:'planv3-node-tip'});
+            // П5: значок показывает, что в элементе есть счётчик (число).
+            const mc=this.structNodeMeterCount(node.id);
+            const meterTag = mc===0 ? '' : (mc===1 ? ' · счётчик' : (' · счётчиков: '+mc));
+            layer.bindTooltip(_planEscapeHtml((node.name||node.code||'')+meterTag),
+              {permanent:true, direction:'right',
+               className:'planv3-node-tip'+(mc>0?' planv3-has-meter':'')});
           }
           layer.on('click', (e)=>{
             if(e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
@@ -717,6 +721,16 @@ let _planV3NeedsFit=null;
             line.addTo(_planV3Map);
             _planV3EdgeLayers.set(String(v.id), line);
           });
+        },
+
+      // П1: после «Удалить план» карта не должна держать значки удалённого.
+      _planV3ClearLayers(){
+          if(!_planV3Map) return;
+          _planV3ItemLayers.forEach(l=>{ try{_planV3Map.removeLayer(l);}catch(e){} });
+          _planV3ItemLayers.clear();
+          _planV3EdgeLayers.forEach(l=>{ try{_planV3Map.removeLayer(l);}catch(e){} });
+          _planV3EdgeLayers.clear();
+          if(_planV3ImageLayer){ try{_planV3Map.removeLayer(_planV3ImageLayer);}catch(e){} _planV3ImageLayer=null; }
         },
 
       _planV3RenderBase(){

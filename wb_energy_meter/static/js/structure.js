@@ -31,10 +31,6 @@
 
       structEdges:[],
 
-      structSelectedLocationId:null,
-
-      locEditForm:null,
-
       structInspector:null,
 
       structInspectorLoading:false,
@@ -50,6 +46,8 @@
 
       _structSearchSeq:0,
 
+      _structSearchResults:null,
+
       structCreatePanel:null,
 
       structCreateSaving:false,
@@ -57,13 +55,6 @@
       structCreateError:null,
 
       structCreateOk:null,
-
-      locForm:{name:'', kind:'room', parent_id:null},
-
-      pointForm:{code:'', name:'', installation_location_id:null, bind:true,
-                   device_id:'', display_name:'', channel_profile:'total_3p'},
-
-      nodeForm:{code:'', name:'', kind:'panel', location_id:null},
 
       edgeForm:{from_node_id:null, to_node_id:null, primary_point_id:null,
                   rated_current_a:'', cable_note:'', name:''},
@@ -80,10 +71,11 @@
 
       replaceMeterForm:null,
 
-      editMembershipForm:null,
-
       async openStructureTab(){
-          if(this.structInited) return;
+          // Приборы для «+ Счётчик» и «Приборы без точки учёта» — нужны сразу.
+          if(!this.structKnownDevicesLoaded) this._loadKnownDevices();
+          // Повторный вход перечитывает схему: пока вы были на «Плане v3»,
+          // она могла измениться.
           this.structInited=true;
           await this._loadStructureLists();
         },
@@ -106,12 +98,18 @@
             // function» — карточка не открывалась вообще. Найдено пользователем
             // в браузере 18.09.2026; ниже, в _loadStructureSnapshot, то же поле
             // заполнялось правильно, поэтому расхождение и не бросалось в глаза.
-            this.structPoints = (await pr.json()).points || [];
+            const spd = await pr.json();
+            this.structPoints = spd.points || [];
+            // П4: какие приборы заняты и чьей точкой — список выбора прибора
+            // показывает только свободные, занятые — серым.
+            this.structOccupiedDevices = spd.occupied_devices || [];
             this.structLocations = lr.ok ? await lr.json() : [];
             this.structGroups = gr.ok ? await gr.json() : [];
             this.structNodes = nr.ok ? await nr.json() : [];
             this.structEdges = er.ok ? await er.json() : [];
             await this._loadStructureSnapshot();
+            if(this.structShowArchived) await this._loadArchivedPoints();
+            if(this.tab==='structurev2') this._loadStructureTreeEnergy();
           }catch(e){
             this.structError = 'Не удалось загрузить структуру: '+e.message;
           }finally{
@@ -156,122 +154,17 @@
           }catch(e){ /* поиск best-effort, не валим экран */ }
         },
 
-      openLocationEdit(locId){
-          const loc = (this.structLocations||[]).find(l=>l.id===locId);
-          if(!loc) return;
-          this.locEditForm = {id: locId, name: loc.name, code: loc.code||'', saving:false, error:null};
-        },
-
-      async saveLocationEdit(){
-          const f = this.locEditForm;
-          if(!f) return;
-          f.saving = true; f.error = null;
-          try{
-            const rev = await this._structCurrentRev();
-            const r = await fetch('/api/v2/locations/'+f.id, {
-              method:'PATCH', headers:{'Content-Type':'application/json'},
-              body: JSON.stringify({name: f.name, code: f.code||null, expected_revision: rev})});
-            const d = await r.json();
-            if(!r.ok){ f.error = this._apiErrorMessage(d, r.status); return; }
-            this.showToast('Место обновлено', true);
-            await this._loadStructureLists();
-          }catch(e){ f.error = e.message; }
-          finally{ f.saving = false; }
-        },
-
-      async archiveSelectedLocation(){
-          const f = this.locEditForm;
-          if(!f) return;
-          f.saving = true; f.error = null;
-          try{
-            const rev = await this._structCurrentRev();
-            const r = await fetch('/api/v2/locations/'+f.id, {
-              method:'PATCH', headers:{'Content-Type':'application/json'},
-              body: JSON.stringify({archived:true, expected_revision: rev})});
-            const d = await r.json();
-            if(!r.ok){ f.error = this._apiErrorMessage(d, r.status); return; }
-            this.showToast('Место архивировано', true);
-            this.structSelectedLocationId = null;
-            this.locEditForm = null;
-            await this._loadStructureLists();
-          }catch(e){ f.error = e.message; }
-          finally{ if(this.locEditForm) this.locEditForm.saving = false; }
-        },
-
-      structLocationRows(){
-          // Плоский отсортированный список мест с отступом по глубине —
-          // визуально дерево, без рекурсивных Alpine-компонентов (тот же приём,
-          // что и остальной интерфейс — минимум магии в разметке).
-          const byParent = {};
-          (this.structLocations||[]).filter(l=>!l.archived_at).forEach(l=>{
-            const key = l.parent_id==null ? 'root' : String(l.parent_id);
-            (byParent[key] = byParent[key]||[]).push(l);
-          });
-          const countsByLoc = this._structPointCountsByLocation();
-          const rows = [];
-          const walk = (parentKey, depth) => {
-            const children = (byParent[parentKey]||[]).slice()
-              .sort((a,b)=>(a.sort_order-b.sort_order)||String(a.name).localeCompare(String(b.name)));
-            children.forEach(l=>{
-              rows.push({id:l.id, name:l.name, depth, pointCount: countsByLoc[l.id]||0});
-              walk(String(l.id), depth+1);
-            });
-          };
-          walk('root', 0);
-          return rows;
-        },
-
-      _structPointCountsByLocation(){
-          const counts = {};
-          (this.structPoints||[]).forEach(p=>{
-            if(p.location_id!=null) counts[p.location_id]=(counts[p.location_id]||0)+1;
-          });
-          return counts;
-        },
-
-      structUnplacedPoints(){
-          // §8.3: "непривязанные/неразмещённые точки — в отдельной доступной
-          // коллекции, никогда не пропадают молча" — этот бакет и есть та
-          // коллекция для мест (по прибору — badge "не привязана" в списке).
-          return (this.structPoints||[]).filter(p=>p.location_id==null);
-        },
-
-      structCenterTitle(){
-          if(this.structQuery.trim()!=='') return `Результаты поиска «${this.structQuery.trim()}»`;
-          if(this.structSelectedLocationId==='unplaced') return 'Точки без места установки';
-          if(this.structSelectedLocationId==null) return 'Выберите место слева';
-          const loc = (this.structLocations||[]).find(l=>l.id===this.structSelectedLocationId);
-          return loc ? ('Место: '+loc.name) : '';
-        },
-
-      structCenterPoints(){
-          if(this.structQuery.trim()!=='') return this._structSearchResults || [];
-          if(this.structSelectedLocationId==='unplaced') return this.structUnplacedPoints();
-          if(this.structSelectedLocationId==null) return [];
-          return (this.structPoints||[]).filter(p=>p.location_id===this.structSelectedLocationId);
-        },
-
       structPeriodLabel(){
           const d=this._ovDefaultDates();
           return `Период: ${d.from} — ${d.to} (текущий месяц, как на Обзоре)`;
         },
 
-      structNodeKindLabel(kind){
-          return {source:'Ввод', panel:'Щит', junction:'Узел', load:'Нагрузка'}[kind]||kind;
-        },
+      // П2: подписи типов — из общего словаря core.js (NODE_KINDS).
+      structNodeKindLabel(kind){ return this.nodeKindLabel(kind); },
 
       structNodeName(nodeId){
           const n=(this.structNodes||[]).find(x=>x.id===nodeId);
           return n ? (n.name||n.code||('#'+nodeId)) : ('#'+nodeId);
-        },
-
-      structMissingInfo(p){
-          const missing=[];
-          if(!p.bound) missing.push('нет прибора');
-          if(!p.location_id) missing.push('нет места');
-          if(p.measured_edge_id==null) missing.push('не стоит на линии');
-          if(!p.placed_on_plan) missing.push('не на плане');
-          return missing;
         },
 
       structPointName(pointId){
@@ -343,7 +236,11 @@
 
       async openInspector(kind, id){
           if(id==null) return;
-          if(this.tab!=='structurev2'){ this.tab='structurev2'; }
+          if(this.tab!=='structurev2'){
+            this.tab='structurev2';
+            this._loadStructureTreeEnergy();
+          }
+          if(!this.structKnownDevicesLoaded) this._loadKnownDevices();
           if(!this.structInited){ this.structInited=true; await this._loadStructureLists(); }
           await this._loadInspectorData(kind, id);
         },
@@ -432,7 +329,7 @@
                      point_location:'место точки', point_served_location:'обслуживаемое место',
                      location:'место', location_parent:'родитель места', group:'группа',
                      group_parent:'родитель группы', group_member:'состав группы',
-                     electrical_node:'узел сети', electrical_edge:'линия',
+                     electrical_node:'элемент схемы', electrical_edge:'линия',
                      balance_scope:'граница баланса', balance_member:'состав баланса',
                      plan:'план', plan_layout:'раскладка плана'}[it.entity_type]||it.entity_type;
           return ent+' #'+it.entity_id+' — '+act;
@@ -551,7 +448,7 @@
 
       async _loadNodeInspector(id){
           const r = await fetch('/api/v2/topology/nodes/'+id);
-          if(!r.ok) throw new Error('узел не найден (HTTP '+r.status+')');
+          if(!r.ok) throw new Error('элемент схемы не найден (HTTP '+r.status+')');
           const data = await r.json();
           // «План v3», §1/§2: список линий узла (входящая+отходящие, каждая со
           // своей измеряющей точкой) и текстовое "где стоит" — берём имя места
@@ -574,10 +471,11 @@
           this._refreshStructHistoryIfOpen();
           this.planV3NodeCardError = null;
           this.planV3AddConsumerError = null; this.planV3AddConsumerName = '';
-          // Э3/B7: живые P-now/E-за-период по линиям и «Баланс щита» — только
-          // на «Плане v3» (та же карточка на «Структуре» — read-only снимок
-          // конфигурации, без живых запросов на каждый клик по дереву).
-          if(this.tab==='planv3'){
+          this.nodeMeterOpen = false;
+          // Э3/B7: живые P-now/E-за-период по линиям и «Баланс щита». С партии 13
+          // (П6) карточка элемента на «Структуре» — та же, что на «Плане v3»,
+          // поэтому живые числа считаются и там.
+          if(this.tab==='planv3' || this.tab==='structurev2'){
             this._planV3RefreshNodeLiveNow();
             this._planV3LoadNodeLineEnergy();
             this._planV3LoadNodeBalance(id);
@@ -608,7 +506,6 @@
           this.structCreatePanel = kind;
           this.structCreateError = null;
           this.structCreateOk = null;
-          if(kind==='point' && !this.structKnownDevicesLoaded) this._loadKnownDevices();
           if(kind==='publish') this._loadDraftEdges();
         },
 
@@ -638,12 +535,14 @@
             (rd.items||[]).forEach(m=>{
               if(seen.has(m.device_id)) return;
               seen.add(m.device_id);
-              list.push({device_id:m.device_id, label:(m.display_name||m.device_id)+' — уже в реестре'});
+              const name=m.display_name||m.device_id;
+              list.push({device_id:m.device_id, name, label:name});
             });
             (ud.items||[]).forEach(m=>{
               if(seen.has(m.device_id)) return;
               seen.add(m.device_id);
-              list.push({device_id:m.device_id, label:(m.mqtt_name||m.device_id)+' — виден в MQTT, не в реестре'});
+              const name=m.mqtt_name||m.device_id;
+              list.push({device_id:m.device_id, name, label:name+' — виден в MQTT'});
             });
             this.structKnownDevices = list;
           }catch(e){ this.structKnownDevices = []; }
@@ -657,104 +556,6 @@
             this.publishSelected = this.structDraftEdges.map(e=>e.id);
             this.publishValidation = null;
           }catch(e){ this.structDraftEdges = []; }
-        },
-
-      async structSubmitLocation(){
-          if(!this.locForm.name.trim()){ this.structCreateError='Введите название места'; return; }
-          this.structCreateSaving=true; this.structCreateError=null; this.structCreateOk=null;
-          try{
-            const rev = await this._structCurrentRev();
-            const r = await fetch('/api/v2/locations', {
-              method:'POST', headers:{'Content-Type':'application/json'},
-              body: JSON.stringify({
-                name:this.locForm.name.trim(), kind:this.locForm.kind,
-                parent_id:this.locForm.parent_id||null, expected_revision:rev,
-              })});
-            const d = await r.json();
-            if(!r.ok) throw new Error(this._apiErrorMessage(d, r.status));
-            this.structCreateOk = 'Место «'+d.name+'» создано.';
-            this.locForm = {name:'', kind:'room', parent_id:null};
-            await this._loadStructureLists();
-          }catch(e){ this.structCreateError = e.message; }
-          finally{ this.structCreateSaving=false; }
-        },
-
-      async structSubmitPoint(){
-          if(!this.pointForm.code.trim() || !this.pointForm.name.trim()){
-            this.structCreateError = 'Код и имя точки обязательны'; return;
-          }
-          if(this.pointForm.bind && !this.pointForm.device_id){
-            this.structCreateError = 'Выберите прибор из списка либо снимите галку привязки';
-            return;
-          }
-          this.structCreateSaving=true; this.structCreateError=null; this.structCreateOk=null;
-          try{
-            let rev = await this._structCurrentRev();
-            let r = await fetch('/api/v2/points', {
-              method:'POST', headers:{'Content-Type':'application/json'},
-              body: JSON.stringify({
-                code:this.pointForm.code.trim(), name:this.pointForm.name.trim(),
-                installation_location_id:this.pointForm.installation_location_id||null,
-                expected_revision:rev,
-              })});
-            let d = await r.json();
-            if(!r.ok) throw new Error(this._apiErrorMessage(d, r.status));
-            const pointName = d.name;
-            let bound = false;
-            if(this.pointForm.bind && this.pointForm.device_id){
-              rev = await this._structCurrentRev();
-              const br = await fetch('/api/v2/points/'+d.id+'/bindings', {
-                method:'POST', headers:{'Content-Type':'application/json'},
-                body: JSON.stringify({
-                  new_meter:{device_id:this.pointForm.device_id,
-                             display_name:this.pointForm.display_name||null},
-                  channel_profile:this.pointForm.channel_profile,
-                  expected_revision:rev,
-                })});
-              const bd = await br.json();
-              if(!br.ok){
-                // Точка уже создана — сообщаем честно, что осталось привязать
-                // отдельно (через «заменить прибор» в карточке), а не теряем
-                // это молча.
-                this.structCreateOk = 'Точка «'+pointName+'» создана, но привязка к '+
-                  'прибору не удалась: '+this._apiErrorMessage(bd, br.status)+
-                  ' Повторите привязку из карточки точки.';
-                await this._loadStructureLists();
-                this.pointForm = {code:'', name:'', installation_location_id:null,
-                                   bind:true, device_id:'', display_name:'', channel_profile:'total_3p'};
-                return;
-              }
-              bound = true;
-            }
-            this.structCreateOk = 'Точка «'+pointName+'» создана'+(bound?' и привязана к прибору.':'.');
-            this.pointForm = {code:'', name:'', installation_location_id:null,
-                               bind:true, device_id:'', display_name:'', channel_profile:'total_3p'};
-            await this._loadStructureLists();
-          }catch(e){ this.structCreateError = e.message; }
-          finally{ this.structCreateSaving=false; }
-        },
-
-      async structSubmitNode(){
-          if(!this.nodeForm.code.trim() || !this.nodeForm.name.trim()){
-            this.structCreateError = 'Код и имя узла обязательны'; return;
-          }
-          this.structCreateSaving=true; this.structCreateError=null; this.structCreateOk=null;
-          try{
-            const rev = await this._structCurrentRev();
-            const r = await fetch('/api/v2/topology/nodes', {
-              method:'POST', headers:{'Content-Type':'application/json'},
-              body: JSON.stringify({
-                code:this.nodeForm.code.trim(), name:this.nodeForm.name.trim(),
-                kind:this.nodeForm.kind, location_id:this.nodeForm.location_id||null,
-                expected_revision:rev,
-              })});
-            const d = await r.json();
-            if(!r.ok) throw new Error(this._apiErrorMessage(d, r.status));
-            this.structCreateOk = 'Узел «'+d.name+'» ('+this.structNodeKindLabel(d.kind)+') создан.';
-            this.nodeForm = {code:'', name:'', kind:'panel', location_id:null};
-            await this._loadStructureLists();
-          }catch(e){ this.structCreateError = e.message; }
-          finally{ this.structCreateSaving=false; }
         },
 
       async structSubmitEdge(){
@@ -825,35 +626,14 @@
           finally{ this.structCreateSaving=false; }
         },
 
-      async showPointOnPlan(pointId){
-          this.structCreateError = null; this.planPickerChoices = null;
-          try{
-            const pr = await fetch('/api/v2/plans');
-            const plans = pr.ok ? await pr.json() : [];
-            const matches = [];
-            for(const p of (Array.isArray(plans)?plans:[])){
-              const ir = await fetch('/api/v2/plans/'+p.id+'/items');
-              if(!ir.ok) continue;
-              const items = await ir.json();
-              (Array.isArray(items)?items:[]).forEach(it=>{
-                if(it.kind==='point' && it.point_id===pointId) matches.push({plan:p, item:it});
-              });
-            }
-            if(matches.length===0){
-              this.showToast('Точка не размещена ни на одном плане', false);
-              return;
-            }
-            if(matches.length===1){
-              await this._planV2GoToItem(matches[0].plan.id, matches[0].item.id);
-              return;
-            }
-            this.planPickerChoices = matches;
-          }catch(e){ this.showToast('Ошибка: '+e.message, false); }
-        },
-
-      async goToPlanPickerChoice(choice){
-          this.planPickerChoices = null;
-          await this._planV2GoToItem(choice.plan.id, choice.item.id);
+      // «Показать на схеме»: открыть на «Плане v3» линию, которую измеряет
+      // точка (карточка линии с живыми числами).
+      async showPointOnScheme(pointId){
+          const e=(this.structEdges||[]).find(x=>x.primary_point_id===pointId);
+          if(!e){ this.showToast('Точка не стоит ни на одной линии схемы', false); return; }
+          this.tab='planv3';
+          await this.openPlanV3Tab();
+          await this.openInspectorInPlace('edge', e.id);
         },
 
       openReplaceMeterForm(){
@@ -863,7 +643,6 @@
             channel_profile: (this.structInspector.snapshot && this.structInspector.snapshot.channel_profile) || 'total_3p',
             replacement_note:'', saving:false, error:null,
           };
-          this.editMembershipForm = null;
         },
 
       closeReplaceMeterForm(){ this.replaceMeterForm = null; },
@@ -888,67 +667,6 @@
             this.showToast('Прибор заменён. Старая привязка закрыта в момент замены — история сохранена.');
             await this._loadPointInspector(this.structInspector.id);
             await this._loadStructureLists();
-          }catch(e){ f.error = e.message; }
-          finally{ f.saving = false; }
-        },
-
-      openEditMembershipForm(){
-          const cur = this.structInspector.data;
-          this.editMembershipForm = {
-            installation_location_id: cur.installation_location_id,
-            add_group_id: '', saving:false, error:null,
-          };
-          this.replaceMeterForm = null;
-        },
-
-      closeEditMembershipForm(){ this.editMembershipForm = null; },
-
-      async submitEditLocation(){
-          const f = this.editMembershipForm;
-          f.saving = true; f.error = null;
-          try{
-            const rev = await this._structCurrentRev();
-            const r = await fetch('/api/v2/points/'+this.structInspector.id, {
-              method:'PATCH', headers:{'Content-Type':'application/json'},
-              body: JSON.stringify({
-                installation_location_id: f.installation_location_id||null,
-                expected_revision: rev,
-              })});
-            const d = await r.json();
-            if(!r.ok){ f.error = this._apiErrorMessage(d, r.status); return; }
-            this.showToast('Место установки обновлено');
-            await this._loadPointInspector(this.structInspector.id);
-            await this._loadStructureLists();
-          }catch(e){ f.error = e.message; }
-          finally{ f.saving = false; }
-        },
-
-      async addPointToGroup(){
-          const f = this.editMembershipForm;
-          if(!f.add_group_id){ f.error = 'Выберите группу'; return; }
-          f.saving = true; f.error = null;
-          try{
-            const rev = await this._structCurrentRev();
-            const r = await fetch('/api/v2/groups/'+f.add_group_id+'/members', {
-              method:'POST', headers:{'Content-Type':'application/json'},
-              body: JSON.stringify({point_id:this.structInspector.id, expected_revision:rev})});
-            const d = await r.json();
-            if(!r.ok){ f.error = this._apiErrorMessage(d, r.status); return; }
-            f.add_group_id = '';
-            await this._loadPointInspector(this.structInspector.id);
-          }catch(e){ f.error = e.message; }
-          finally{ f.saving = false; }
-        },
-
-      async removePointFromGroup(groupId){
-          const f = this.editMembershipForm;
-          f.saving = true; f.error = null;
-          try{
-            const rev = await this._structCurrentRev();
-            const r = await fetch('/api/v2/groups/'+groupId+'/members/'+this.structInspector.id+
-              '?expected_revision='+rev, {method:'DELETE'});
-            if(!r.ok){ const d = await r.json(); f.error = this._apiErrorMessage(d, r.status); return; }
-            await this._loadPointInspector(this.structInspector.id);
           }catch(e){ f.error = e.message; }
           finally{ f.saving = false; }
         },

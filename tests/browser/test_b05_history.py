@@ -203,12 +203,9 @@ def main() -> int:
             # ===== 4. «Структура»: история карточки =====
             page.locator("nav button:visible", has_text="Структура").click()
             page.wait_for_timeout(1000)
-            # точка без места установки — в строке «Без места» дерева (поиск здесь не
-            # используем: первый поиск после загрузки страницы не рисует результаты —
-            # `_structSearchResults` не объявлено в состоянии, к партии 12 не относится)
-            page.locator(".structure-tree-row", has_text="Без места").click()
-            page.wait_for_timeout(300)
-            page.locator("tr.structure-list-row", has_text="P1-HIST").first.click()
+            # точка без линии — в разделе «Не на схеме» (партия 13, П6: дерево мест
+            # убрано, «Структура» строится по схеме)
+            page.locator("[data-testid=off-scheme-point]", has_text="dev-hist-1").click()
             page.wait_for_selector("#struct-history-toggle", timeout=8000)
             check(page.locator(".struct-history-item").count() == 0,
                   "история не грузится, пока блок не раскрыт")

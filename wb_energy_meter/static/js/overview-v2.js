@@ -53,6 +53,10 @@
             if(!this.structInited){ this.structInited=true; loads.push(this._loadStructureLists()); }
             if(!this.structKnownDevicesLoaded) loads.push(this._loadKnownDevices());
             await Promise.all(loads);
+          }else{
+            // Партия 13 (П5): после «+ Счётчик» на другой вкладке «Обзор» должен
+            // сразу показать новую точку, а не ждать следующего тика таймера.
+            await Promise.all([this.loadOverviewV2Snapshot(), this.loadValidation()]);
           }
         },
 
@@ -65,7 +69,13 @@
           try{
             const r=await fetch('/api/v2/validation');
             if(!r.ok) throw new Error(`HTTP ${r.status}`);
-            this.validationResult=await r.json();
+            const v=await r.json();
+            // Партия 13, П6 (решение R11): места в наборе v2 нигде не показываются —
+            // проверка «нет места» из сводки убрана (сервер её по-прежнему
+            // считает для классического набора и API).
+            v.issues=(v.issues||[]).filter(i=>i.kind!=='no_location');
+            v.total_issues=v.issues.length;
+            this.validationResult=v;
           }catch(e){
             this.validationError='Не удалось получить сводку конфигурации: '+e.message;
           }finally{
@@ -75,9 +85,9 @@
 
       validationIssueLabel(kind){
           return {
-            no_meter:'нет прибора', no_location:'нет места', no_group:'нет группы',
-            no_plan:'не размещена на плане', node_without_edges:'узел изолирован',
-            edge_without_measurement:'связь без измерения',
+            no_meter:'нет прибора', no_group:'нет группы',
+            no_plan:'не на плане', node_without_edges:'элемент не подключён к линиям',
+            edge_without_measurement:'линия без счётчика',
           }[kind] || kind;
         },
 

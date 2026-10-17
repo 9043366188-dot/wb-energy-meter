@@ -801,7 +801,7 @@ function _planV2KindColor(kind){
 
       planV2ItemKindLabel(kind){
           const labels={point:'Точка учёта', location:'Место', group:'Группа',
-                        node:'Узел сети', port:'Переход на другой план', annotation:'Подпись'};
+                        node:'Элемент схемы', port:'Переход на другой план', annotation:'Подпись'};
           return labels[kind]||kind;
         },
 

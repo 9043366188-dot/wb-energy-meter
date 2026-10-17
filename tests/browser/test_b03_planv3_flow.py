@@ -15,7 +15,7 @@ harness (make_node/connect/add_consumer, как и в test_step39/test_step40) �
     "неразмещены"), и списки «Линии»/«Приборы без точки учёта» в правой
     панели, когда ничего не выбрано;
   - B5/B8: карточка линии и инлайн-форма «+ новая точка из прибора» —
-    реальный клик по кнопке, реальный ввод device_id, реальный POST
+    реальный клик по кнопке, реальный выбор свободного прибора из списка, реальный POST
     /attach-new-point из браузера (не HTTP-хелпер);
   - B7: «Баланс щита» в карточке узла, посчитанный ручкой Э2.5, и что он
     остаётся согласован с /api/v2/overview/summary для того же периода
@@ -122,7 +122,7 @@ def main() -> int:
         page.locator("text=Ввод → ЩР-1").first.click()
         page.wait_for_timeout(500)
         page.click("text=＋ новая точка из прибора…")
-        page.fill("input[placeholder='device_id прибора']", "dev-vvod")
+        page.select_option("[data-testid=edge-attach-device]", "dev-vvod")
         page.click("text=Подключить")
         page.wait_for_timeout(800)
         edge_in_after = page.evaluate(f"fetch('/api/v2/topology/edges/{edge_in['id']}').then(r=>r.json())")
@@ -139,7 +139,7 @@ def main() -> int:
         page.locator("text=ЩР-1 → Станок").first.click()
         page.wait_for_timeout(500)
         page.click("text=＋ новая точка из прибора…")
-        page.fill("input[placeholder='device_id прибора']", "dev-stanok")
+        page.select_option("[data-testid=edge-attach-device]", "dev-stanok")
         page.click("text=Подключить")
         page.wait_for_timeout(800)
         edge_stanok_after = page.evaluate(
@@ -231,7 +231,7 @@ def main() -> int:
         # обёртывающем <div> строки — клик по внешнему div не долетает до
         # него (playwright кликает в центр bbox, который у div шире, чем
         # реально кликабельный span) — найдено при отладке этого теста.
-        page.locator(".plan-side:visible span.sf-val", has_text="ЩР-1 (Щит)").click()
+        page.locator(".plan-side:visible [data-testid=planv3-node-row]", has_text="ЩР-1 (Щит)").click()
         page.wait_for_timeout(1500)
 
         api_balance = page.evaluate(
