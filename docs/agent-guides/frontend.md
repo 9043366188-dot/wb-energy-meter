@@ -87,6 +87,12 @@
   «Cannot read properties of null». `uiConfirm` и `nodeMeterForm` — всегда
   объекты, открытость — `uiConfirmOpen` / `nodeMeterOpen`; чтения
   `structInspector` в карточках — через `((structInspector||{}).data||{})`.
+  Так же результат отчёта: внутри `x-if="!rv2Loading && rv2Result"` читайте
+  `rv2R()` (`rv2Result || {}`), а не `rv2Result.` — эффекты внутри `x-if`
+  вычисляются и после того, как `rv2Result` стал `null` (при смене среза или
+  повторном запуске), и консоль заполняется ошибками. Проверяет
+  tests/browser/test_b11_flaky_regressions.py (раздел 4) и консольный контроль
+  репетиции пилота (tests/pilot/rehearsal.py).
 - **`<select>` с `x-for`-вариантами** — `:selected` на `<option>`, иначе
   `x-model` до появления вариантов показывает первый из них.
 - **Leaflet и вкладки на &lt;template x-if&gt;.** Вкладка карты использует x-show,

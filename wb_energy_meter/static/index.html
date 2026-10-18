@@ -682,7 +682,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                  для разных причин, как того требует ТЗ. -->
             <template x-if="(ovSummary||{}).object_total && (ovSummary||{}).object_total.value!=null">
               <div style="margin-bottom:12px">
-                <div class="val mono" style="font-size:28px">
+                <div class="val mono" style="font-size:28px" data-testid="ov-object-total">
                   <span x-text="fmt(((ovSummary||{}).object_total||{}).value,1)"></span>
                   <small x-text="((ovSummary||{}).object_total||{}).unit"></small>
                 </div>
@@ -761,7 +761,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                  из первого измерения на каждом отходе от вводов, участвуют
                  в небалансе. Неизмеренные ветви — отдельными строками без
                  чисел (нельзя выдумывать значение). -->
-            <table class="rep-table" x-show="((ovSummary||{}).network_branches||[]).length>0 || ((ovSummary||{}).unmetered_branches||[]).length>0">
+            <table class="rep-table" data-testid="ov-branches" x-show="((ovSummary||{}).network_branches||[]).length>0 || ((ovSummary||{}).unmetered_branches||[]).length>0">
               <thead><tr>
                 <th>Ветвь сети</th><th class="num">кВт·ч</th><th class="num">% объекта</th>
               </tr></thead>
@@ -786,7 +786,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px;padding:8px 0;
                         border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
               <span class="muted" style="font-size:12px">Небаланс:</span>
-              <span class="mono" :style="(ovSummary||{}).imbalance_value==null?'':((ovSummary||{}).imbalance_value<0?'color:var(--err)':'color:var(--ok)')"
+              <span class="mono" data-testid="ov-imbalance" :style="(ovSummary||{}).imbalance_value==null?'':((ovSummary||{}).imbalance_value<0?'color:var(--err)':'color:var(--ok)')"
                     x-text="(ovSummary||{}).imbalance_value!=null?((ovSummary||{}).imbalance_value>0?'+':'')+fmt((ovSummary||{}).imbalance_value,1)+' кВт·ч':'не определён ('+((ovSummary||{}).imbalance_percent_reason==='object_total_incomplete'?'не все вводы измерены':'не все ветви известны')+')'"></span>
               <!-- A08: критерий требует «Небаланс −10, −10%» — процент часть
                    результата, а не украшение. Значение приходит с сервера
@@ -1144,33 +1144,36 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
       <template x-if="rv2Error">
         <div class="empty" style="color:var(--err)" x-text="rv2Error"></div>
       </template>
+      <!-- rv2R() — результат или пустой объект: при смене среза результат обнуляется, и Alpine
+           успевает вычислить выражения внутри уже убираемого блока (в консоль сыпалось «Cannot
+           read properties of null»). Через rv2R() обращение к null невозможно. -->
       <template x-if="!rv2Loading && rv2Result">
         <div>
           <div class="muted" style="font-size:11px;margin-bottom:8px">
-            Ревизия конфигурации: <span x-text="rv2Result.configuration_revision_id"></span> ·
-            режим состава: <span x-text="rv2Result.composition_mode==='as_was'?'как было на начало периода':'текущий'"></span> ·
-            структура: <span id="rv2-result-structure" x-text="rv2Result.structure_mode==='as_was'?'как было':'текущая'"></span>
-            <template x-if="rv2Result.structure_mode==='as_was' && (rv2Result.structure_intervals||[]).length>1">
-              <span x-text="' (схема сети менялась в периоде, интервалов: '+rv2Result.structure_intervals.length+')'"></span>
+            Ревизия конфигурации: <span x-text="rv2R().configuration_revision_id"></span> ·
+            режим состава: <span x-text="rv2R().composition_mode==='as_was'?'как было на начало периода':'текущий'"></span> ·
+            структура: <span id="rv2-result-structure" x-text="rv2R().structure_mode==='as_was'?'как было':'текущая'"></span>
+            <template x-if="rv2R().structure_mode==='as_was' && (rv2R().structure_intervals||[]).length>1">
+              <span x-text="' (схема сети менялась в периоде, интервалов: '+rv2R().structure_intervals.length+')'"></span>
             </template>
           </div>
           <div id="rv2-assumed-legacy" style="font-size:12px;margin-bottom:8px;color:var(--warn)"
-               x-show="rv2Result.assumed_legacy">
-            История структуры ведётся с версии 0.22.0<template x-if="rv2Result.journal_started_at"><span
-              x-text="' (с '+new Date(rv2Result.journal_started_at*1000).toLocaleDateString('ru-RU')+')'"></span></template>.
+               x-show="rv2R().assumed_legacy">
+            История структуры ведётся с версии 0.22.0<template x-if="rv2R().journal_started_at"><span
+              x-text="' (с '+new Date(rv2R().journal_started_at*1000).toLocaleDateString('ru-RU')+')'"></span></template>.
             Для части периода до этого момента принята схема на начало журнала — это допущение, а не подтверждённая история.
           </div>
           <table class="rep-table">
             <thead><tr>
               <th>Название</th><th class="num">Значение</th><th>Ед.</th><th>Доступность</th>
               <th>Флаги / конфликт</th><th>Состав</th>
-              <template x-if="rv2Result.compare_period"><th class="num">Сравнение</th></template>
-              <template x-if="rv2Result.compare_period"><th class="num">Изменение</th></template>
-              <template x-if="rv2Result.compare_period"><th class="num">Изменение %</th></template>
-              <template x-if="rv2Result.compare_period"><th>Состав менялся</th></template>
+              <template x-if="rv2R().compare_period"><th class="num">Сравнение</th></template>
+              <template x-if="rv2R().compare_period"><th class="num">Изменение</th></template>
+              <template x-if="rv2R().compare_period"><th class="num">Изменение %</th></template>
+              <template x-if="rv2R().compare_period"><th>Состав менялся</th></template>
             </tr></thead>
             <tbody>
-              <template x-for="row in rv2Result.rows" :key="row.dimension+'_'+row.id">
+              <template x-for="row in (rv2R().rows||[])" :key="row.dimension+'_'+row.id">
                 <tr>
                   <!-- ТЗ §8.3: тот же общий инспектор, что и на «Структуре» —
                        balance_scope сюда не попадает (для неё нет отдельного
@@ -1192,16 +1195,16 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     <template x-for="(n,ni) in rv2RowNotes(row)" :key="ni"><div x-text="n"></div></template>
                   </td>
                   <td class="muted" style="font-size:11px" x-text="(row.member_point_ids||[]).length+' точ.'"></td>
-                  <template x-if="rv2Result.compare_period">
+                  <template x-if="rv2R().compare_period">
                     <td class="num mono" x-text="row.compare_result&&row.compare_result.value!=null?fmt(row.compare_result.value,3):'—'"></td>
                   </template>
-                  <template x-if="rv2Result.compare_period">
+                  <template x-if="rv2R().compare_period">
                     <td class="num mono" x-text="row.delta_value!=null?fmt(row.delta_value,3):'—'"></td>
                   </template>
-                  <template x-if="rv2Result.compare_period">
+                  <template x-if="rv2R().compare_period">
                     <td class="num mono" x-text="row.delta_percentage!=null?fmt(row.delta_percentage,1)+'%':'—'"></td>
                   </template>
-                  <template x-if="rv2Result.compare_period">
+                  <template x-if="rv2R().compare_period">
                     <td x-text="row.composition_changed===true?'да':(row.composition_changed===false?'нет':'—')"></td>
                   </template>
                 </tr>

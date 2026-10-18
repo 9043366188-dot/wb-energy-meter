@@ -202,10 +202,23 @@ jobs:
       - name: Run browser scenarios (tests/browser/run.py)
         run: python tests/browser/run.py
 
+      # П10: репетиция пилота (docs/pilot-checklist.md, разделы 1–5) на
+      # поддельных счётчиках; свой mosquitto на свободном порту поднимает сам
+      # сценарий, нужен только пакет.
+      - name: Install mosquitto (pilot rehearsal)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mosquitto
+
+      - name: Pilot rehearsal (tests/pilot/rehearsal.py)
+        run: python tests/pilot/rehearsal.py
+
       - name: Upload screenshots on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: browser-screenshots
-          path: tests/browser/_shots/
+          path: |
+            tests/browser/_shots/
+            tests/pilot/_out/
           if-no-files-found: ignore

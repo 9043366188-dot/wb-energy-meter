@@ -16,6 +16,12 @@
    процессоре, замедленном в 6 раз (воспроизводит медленный CI; до правки
    узел не создавался в 14 запусках из 16). Узел появляется в API.
 
+4. «Отчёты»: результат показан дважды подряд, затем меняется «Срез». Alpine успевал
+   вычислить выражения внутри убираемого блока результата при `rv2Result = null`, и в
+   консоль сыпалось «Cannot read properties of null (reading 'compare_period')»
+   (нашла репетиция пилота). Проверка: консоль без ошибок и после смены среза, и после
+   перехода на другую вкладку и обратно.
+
 Запуск: python tests/browser/test_b11_flaky_regressions.py
 """
 from __future__ import annotations
@@ -25,7 +31,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from harness import Harness, open_browser  # noqa: E402
+from harness import Harness, open_browser, HOUR  # noqa: E402
 
 APP = "document.querySelector('[x-data]')._x_dataStack[0]"
 fails: list[str] = []
@@ -142,6 +148,41 @@ def main() -> int:
             os.environ.pop("WBEM_BROWSER_CPU_THROTTLE", None)
         else:
             os.environ["WBEM_BROWSER_CPU_THROTTLE"] = old
+
+    # ---- 4. «Отчёты»: смена среза при показанном результате --------------------------
+    with Harness() as h:
+        p1 = h.make_point("P1-RV2", "Станок 1")
+        h.bind_meter(p1["id"], "dev-rv2-1", "Счётчик 1")
+        for i in range(48):
+            h.seed_energy("dev-rv2-1", 1.0, i * HOUR, (i + 1) * HOUR)
+        bp = open_browser(h.base_url, timezone_id="UTC")
+        page = bp.page
+        page.wait_for_timeout(1000)
+        page.evaluate(APP + ".toggleUiSet()")
+        page.wait_for_timeout(300)
+        page.locator("nav button:visible", has_text="Отчёты").click()
+        page.wait_for_timeout(800)
+        page.select_option("select[x-model='rv2Dimension']", "point")
+        page.select_option("select[x-model='rv2ScopeIds']", [str(p1["id"])])
+        page.fill("input[x-model='rv2From']", "1970-01-01")
+        page.fill("input[x-model='rv2To']", "1970-01-03")
+        for _ in range(2):
+            page.locator("button.btn-primary", has_text="Показать").click()
+            page.wait_for_selector("table.rep-table tbody tr", timeout=10000)
+            page.wait_for_timeout(500)
+        check(page.locator("table.rep-table tbody tr").count() == 1
+              and not bp.errors, f"отчёты: два запроса подряд, консоль чистая ({len(bp.errors)})")
+        page.select_option("select[x-model='rv2Dimension']", "branch")
+        page.wait_for_timeout(500)
+        check(page.locator("table.rep-table").count() == 0,
+              "отчёты: после смены среза старый результат убран")
+        page.locator("nav button:visible", has_text="Обзор").click()
+        page.wait_for_timeout(600)
+        page.locator("nav button:visible", has_text="Отчёты").click()
+        page.wait_for_timeout(600)
+        check(not bp.errors, f"отчёты: смена среза и возврат на вкладку — консоль без ошибок "
+              f"({len(bp.errors)}): " + "; ".join(sorted(set(bp.errors))[:3]))
+        bp.close()
 
     print("\nИТОГ:", "всё прошло" if not fails else f"{len(fails)} проблем(ы)")
     return 1 if fails else 0
