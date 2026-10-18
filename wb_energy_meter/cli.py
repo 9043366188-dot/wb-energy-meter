@@ -19,6 +19,7 @@ from .repo import GroupRepo, KvRepo, MeterRepo
 from .wb_db_client import HistoryChannel, RpcError, WbDbClient
 from .aggregates_repo import AggregateRepo, align_hour_down
 from .aggregator import Aggregator, AggregatorConfig
+from .binding_service import open_phase_targets
 
 
 log = logging.getLogger(__name__)
@@ -509,6 +510,20 @@ def cmd_aggregates_status(args, db, meters, groups, kv):
         for q, n in sorted(stats["by_quality"].items(),
                            key=lambda x: -x[1]):
             print(f"  {q:15s} {n}")
+    # П9: пофазные итоги — отдельной таблицей
+    ph = aggs.phase_stats()
+    print()
+    print(f"Пофазные итоги (phase_aggregates): {ph['rows_total']:,} часов")
+    if ph["by_meter_phase"]:
+        rows = []
+        for r in ph["by_meter_phase"]:
+            m = meters.get_by_id(r["meter_id"])
+            sum_kwh = (f"{r['sum_kwh']:.4f}" if r["sum_kwh"] is not None else "—")
+            rows.append([m.device_id if m else "?", r["phase"], r["rows"], sum_kwh,
+                         _fmt_ts(r["earliest_ts"]) if r["earliest_ts"] else "—",
+                         _fmt_ts(r["latest_ts"]) if r["latest_ts"] else "—"])
+        _print_table(rows, headers=["device_id", "phase", "hours",
+                                     "sum_kwh", "earliest", "latest"])
     return 0
 
 
@@ -522,12 +537,16 @@ def cmd_aggregates_show(args, db, meters, groups, kv):
     except ValueError as e:
         print(f"Ошибка периода: {e}", file=sys.stderr); return 2
 
+    phase = _phase_arg(args)
     aggs = AggregateRepo(db)
+    if phase:
+        aggs = aggs.for_profile("phase_" + phase.lower())
     ts_from = align_hour_down(period.ts_from)
     ts_to = align_hour_down(period.ts_to) + 3600
     items = aggs.list_range(m.id, ts_from, ts_to)
 
-    print(f"Счётчик: {m.display_name}  ({args.device_id})")
+    print(f"Счётчик: {m.display_name}  ({args.device_id})"
+          + (f"  фаза {phase}" if phase else ""))
     print(f"Период:  {period.description}")
     print(f"Часов:   {len(items)}")
     if not items:
@@ -548,8 +567,18 @@ def cmd_aggregates_show(args, db, meters, groups, kv):
     return 0
 
 
+def _phase_arg(args):
+    """`--phase L1|L2|L3` -> "L1"/"L2"/"L3"; не задан или `all` -> None."""
+    v = getattr(args, "phase", None)
+    return None if v in (None, "", "all") else v
+
+
 def cmd_aggregates_recompute(args, db, meters, groups, kv):
-    """Пересчитать диапазон часов вручную."""
+    """Пересчитать диапазон часов вручную.
+
+    Без `--phase` — итог прибора (`Total AP energy`), как всегда. `--phase L1`
+    (L2, L3) — часы одной фазы (`AP energy L1`, таблица `phase_aggregates`),
+    `--phase all` — итог прибора и все три фазы (П9)."""
     m = meters.get_by_device_id(args.device_id)
     if not m:
         print(f"Счётчик не найден: {args.device_id}", file=sys.stderr)
@@ -577,30 +606,42 @@ def cmd_aggregates_recompute(args, db, meters, groups, kv):
         print("Нет часов в диапазоне")
         return 0
 
-    print(f"Пересчитываю {len(hours)} часов для {m.device_id}...")
+    chosen = getattr(args, "phase", None)
+    if chosen == "all":
+        targets = [None, "L1", "L2", "L3"]
+    elif chosen in ("L1", "L2", "L3"):
+        targets = [chosen]
+    else:
+        targets = [None]
+
     # Используем внутренние методы напрямую — это CLI, можно
     from .aggregator import _group_into_batches, compute_hourly_aggregate
-    done = 0
-    for batch in _group_into_batches(hours, max_span_hours=24):
-        batch_start = batch[0]
-        batch_end = batch[-1] + 3600
-        points = aggr._rpc_get_values_with_retry(
-            m.device_id, aggr_cfg.energy_channel,
-            batch_start - 3600, batch_end + 300,
-        )
-        if points is None:
-            print(f"  ! RPC отказал для {len(batch)} часов")
-            continue
-        new_aggs = [
-            compute_hourly_aggregate(
-                meter_id=m.id, hour_start=h,
-                points_with_context=points,
+    for phase in targets:
+        repo = aggr._repo_for(phase)
+        energy_channel, _power = aggr._channels_for(phase)
+        label = f"{m.device_id}" + (f" {phase}" if phase else "")
+        print(f"Пересчитываю {len(hours)} часов для {label}...")
+        done = 0
+        for batch in _group_into_batches(hours, max_span_hours=24):
+            batch_start = batch[0]
+            batch_end = batch[-1] + 3600
+            points = aggr._rpc_get_values_with_retry(
+                m.device_id, energy_channel,
+                batch_start - 3600, batch_end + 300,
             )
-            for h in batch
-        ]
-        aggs_repo.upsert_many(new_aggs)
-        done += len(batch)
-    print(f"Готово: пересчитано {done} часов")
+            if points is None:
+                print(f"  ! RPC отказал для {len(batch)} часов")
+                continue
+            new_aggs = [
+                compute_hourly_aggregate(
+                    meter_id=m.id, hour_start=h,
+                    points_with_context=points,
+                )
+                for h in batch
+            ]
+            repo.upsert_many(new_aggs)
+            done += len(batch)
+        print(f"Готово: пересчитано {done} часов")
     return 0
 
 
@@ -611,7 +652,8 @@ def cmd_aggregates_catchup(args, db, meters, groups, kv):
     aggs_repo = AggregateRepo(db)
     aggr_cfg = AggregatorConfig(catchup_days=days,
                                  max_catchup_duration_s=args.max_duration)
-    aggr = Aggregator(aggr_cfg, client, meters, aggs_repo)
+    aggr = Aggregator(aggr_cfg, client, meters, aggs_repo,
+                      phase_targets=lambda: open_phase_targets(db))
 
     items = meters.list_all(only_enabled=True)
     if not items:
@@ -735,7 +777,8 @@ def build_parser():
                         help="управление почасовыми агрегатами")
     sa = pa.add_subparsers(dest="subcmd", required=True)
 
-    s = sa.add_parser("status", help="статистика по таблице period_aggregates")
+    s = sa.add_parser("status", help="статистика по таблицам period_aggregates "
+                                       "и phase_aggregates")
     s.set_defaults(func=cmd_aggregates_status)
 
     s = sa.add_parser("show", help="показать почасовые агрегаты счётчика")
@@ -743,6 +786,8 @@ def build_parser():
     s.add_argument("--period", choices=list(PERIOD_PRESETS), default="last_24h")
     s.add_argument("--from", dest="from_date")
     s.add_argument("--to", dest="to_date")
+    s.add_argument("--phase", choices=["L1", "L2", "L3"],
+                   help="показать часы фазы (по умолчанию — итог прибора)")
     s.set_defaults(func=cmd_aggregates_show)
 
     s = sa.add_parser("recompute",
@@ -751,6 +796,9 @@ def build_parser():
     s.add_argument("--period", choices=list(PERIOD_PRESETS))
     s.add_argument("--from", dest="from_date")
     s.add_argument("--to", dest="to_date")
+    s.add_argument("--phase", choices=["L1", "L2", "L3", "all"],
+                   help="пересчитать фазу (L1/L2/L3) или итог прибора и все "
+                        "фазы (all); по умолчанию — только итог прибора")
     s.set_defaults(func=cmd_aggregates_recompute)
 
     s = sa.add_parser("catchup",

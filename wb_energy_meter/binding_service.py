@@ -33,12 +33,18 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional, Set
+
+from . import domain_generation
 
 log = logging.getLogger(__name__)
 
 VALID_CHANNEL_PROFILES = ("total_3p", "phase_l1", "phase_l2", "phase_l3")
 VALID_ROLES = ("primary", "check")
+
+# Профиль привязки -> фаза (None — итог прибора). Партия находок 0.22.3, П9.
+PROFILE_PHASE = {"total_3p": None, "phase_l1": "L1", "phase_l2": "L2", "phase_l3": "L3"}
+PHASE_PROFILE = {"L1": "phase_l1", "L2": "phase_l2", "L3": "phase_l3"}
 
 
 class BindingConflict(ValueError):
@@ -258,6 +264,10 @@ class PointBindingRepo:
                  replacement_note, now)
             )
             binding_id = cur.lastrowid
+            if channel_profile != "total_3p":
+                # П9: код поколения 2 посчитал бы такую точку по итогу всего
+                # прибора — с этой привязки БД требует читателя поколения 3.
+                domain_generation.mark_phase_binding(c)
 
         log.info(
             "Открыта привязка точки %d: source=%d profile=%s role=%s (id=%d)",
@@ -350,12 +360,36 @@ class PointBindingRepo:
                 (point_id, new_meter_source_id, profile, at, replacement_note, now)
             )
             new_id = cur.lastrowid
+            if profile != "total_3p":
+                domain_generation.mark_phase_binding(c)
 
         log.info(
             "Точка %d: замена прибора на meter_source_id=%d с %d (новая привязка id=%d, "
             "закрыта id=%d)", point_id, new_meter_source_id, at, new_id, current["id"]
         )
         return self.get_by_id(new_id)
+
+
+def open_phase_targets(db) -> Dict[int, Set[str]]:
+    """Какие фазы каких приборов нужно считать агрегатору (П9): пары
+    (прибор, фаза), у которых есть ОТКРЫТАЯ привязка с профилем
+    `phase_l1`…`phase_l3` — `{meter_id: {"L1", "L3"}}`. Только такие пары:
+    считать фазы всех приборов «на всякий случай» утроило бы нагрузку на
+    `wb-mqtt-db` ради итогов, которые никто не читает
+    (docs/design-phase-aggregates.md §5)."""
+    with db.read() as c:
+        rows = c.execute(
+            "SELECT DISTINCT s.meter_id AS meter_id, b.channel_profile AS profile "
+            "FROM point_bindings b JOIN meter_sources s ON s.id = b.meter_source_id "
+            "WHERE b.valid_to IS NULL "
+            "AND b.channel_profile IN ('phase_l1', 'phase_l2', 'phase_l3')"
+        ).fetchall()
+    out: Dict[int, Set[str]] = {}
+    for r in rows:
+        phase = PROFILE_PHASE.get(r["profile"])
+        if phase:
+            out.setdefault(r["meter_id"], set()).add(phase)
+    return out
 
 
 # ---------------------------------------------------------------------

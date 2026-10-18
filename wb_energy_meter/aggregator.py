@@ -15,6 +15,13 @@
 3. **Латальщик**: раз в 6 часов перепроверяет последние 7 суток на дыры
    (`quality=no_data` или вообще отсутствующие часы) и пересчитывает их.
 
+4. **Фазы** (партия находок 0.22.3, П9, docs/design-phase-aggregates.md):
+   для приборов с открытой привязкой `phase_l1`…`phase_l3` те же три задачи
+   считают ещё и часы фазы по каналам `AP energy L1…L3` / `P L1…L3` в
+   таблицу `phase_aggregates`. Фазы приборов без пофазных привязок не
+   считаются (нагрузка на wb-mqtt-db). Пары (прибор, фаза), появившиеся
+   после старта, замечает четвёртый лёгкий поток и догоняет их историю.
+
 Все задачи в отдельных потоках, демон не блокируется.
 """
 
@@ -25,7 +32,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Callable, Dict, List, Optional, Set
 
 from .aggregates_repo import (
     AggregateRepo, HourlyAggregate, PERIOD_TYPE_HOUR, align_hour_down,
@@ -59,6 +66,11 @@ DEFAULTS = {
     # Канал, по которому считаем расход.
     "energy_channel": "Total AP energy",
     "power_channel": "Total P",
+    # Пофазные каналы (П9): шаблоны с {p} = L1|L2|L3.
+    "phase_energy_channel": "AP energy {p}",
+    "phase_power_channel": "P {p}",
+    # Как часто искать новые пары (прибор, фаза), появившиеся после старта.
+    "phase_watch_interval_s": 30.0,
     # При batch-запросе сколько точек за раз получать.
     "rpc_limit": 50000,
     # Пауза между обработкой счётчиков в catch-up.
@@ -89,6 +101,9 @@ class AggregatorConfig:
     patcher_interval_h: int = DEFAULTS["patcher_interval_h"]
     energy_channel: str = DEFAULTS["energy_channel"]
     power_channel: str = DEFAULTS["power_channel"]
+    phase_energy_channel: str = DEFAULTS["phase_energy_channel"]
+    phase_power_channel: str = DEFAULTS["phase_power_channel"]
+    phase_watch_interval_s: float = DEFAULTS["phase_watch_interval_s"]
     rpc_limit: int = DEFAULTS["rpc_limit"]
     inter_meter_pause_s: float = DEFAULTS["inter_meter_pause_s"]
     rpc_backoff_s: float = DEFAULTS["rpc_backoff_s"]
@@ -318,11 +333,17 @@ class Aggregator:
         db_client: WbDbClient,
         meters_repo: MeterRepo,
         aggregates_repo: AggregateRepo,
+        phase_targets: Optional[Callable[[], Dict[int, Set[str]]]] = None,
     ):
         self._cfg = config
         self._db_client = db_client
         self._meters = meters_repo
         self._aggregates = aggregates_repo
+        # П9: что считать по фазам — `{meter_id: {"L1", ...}}` (обычно
+        # binding_service.open_phase_targets(db)). None — фазы не считаются.
+        self._phase_targets_fn = phase_targets
+        self._known_phase_pairs: Set[tuple] = set()
+        self._phase_backfilled_pairs = 0
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         # Статус для UI/CLI
@@ -341,10 +362,14 @@ class Aggregator:
         if not self._cfg.enabled:
             log.info("Aggregator выключен в конфиге (aggregator.enabled=false)")
             return
+        # Пары (прибор, фаза), существующие на старте, догонит обычный
+        # catch-up; поток фаз ловит только появившиеся ПОСЛЕ старта.
+        self._known_phase_pairs = self._phase_pairs(self._get_phase_targets())
         for target, name in [
             (self._run_hourly, "aggr-hourly"),
             (self._run_catchup, "aggr-catchup"),
             (self._run_patcher, "aggr-patcher"),
+            (self._run_phase_watch, "aggr-phases"),
         ]:
             t = threading.Thread(target=target, name=name, daemon=True)
             t.start()
@@ -369,6 +394,7 @@ class Aggregator:
                 "catchup_total_planned": self._catchup_total_planned,
                 "last_hourly_at": self._last_hourly_at,
                 "last_patcher_at": self._last_patcher_at,
+                "phase_backfilled_pairs": self._phase_backfilled_pairs,
                 "config": {
                     "catchup_days": self._cfg.catchup_days,
                     "max_catchup_duration_s": self._cfg.max_catchup_duration_s,
@@ -376,6 +402,34 @@ class Aggregator:
                     "patcher_interval_h": self._cfg.patcher_interval_h,
                 },
             }
+
+    # ---- пофазные помощники (П9) ----
+
+    def _get_phase_targets(self) -> Dict[int, Set[str]]:
+        if self._phase_targets_fn is None:
+            return {}
+        try:
+            return self._phase_targets_fn() or {}
+        except Exception as e:  # noqa: BLE001 — БД занята/закрыта: фазы пропускаем
+            log.warning("aggregator: не удалось получить список фаз: %s", e)
+            return {}
+
+    @staticmethod
+    def _phase_pairs(targets: Dict[int, Set[str]]) -> Set[tuple]:
+        return {(mid, ph) for mid, phs in targets.items() for ph in phs}
+
+    def _repo_for(self, phase: Optional[str]) -> AggregateRepo:
+        """Репозиторий итогов: прибора (phase=None) или фазы."""
+        if phase is None:
+            return self._aggregates
+        return self._aggregates.for_profile("phase_" + phase.lower())
+
+    def _channels_for(self, phase: Optional[str]) -> tuple:
+        """(канал энергии, канал мощности) для итога прибора или фазы."""
+        if phase is None:
+            return self._cfg.energy_channel, self._cfg.power_channel
+        return (self._cfg.phase_energy_channel.format(p=phase),
+                self._cfg.phase_power_channel.format(p=phase))
 
     # ---- 1. hourly worker ----
 
@@ -404,14 +458,16 @@ class Aggregator:
         return delta
 
     def _compute_previous_hour_for_all(self) -> None:
-        """Посчитать прошедший час для всех активных счётчиков."""
+        """Посчитать прошедший час для всех активных счётчиков (и их фаз,
+        у которых есть пофазная привязка)."""
         now_aligned = align_hour_down(time.time())
         prev_hour_start = now_aligned - 3600
 
         meters = self._meters.list_all(only_enabled=True)
-        log.info("Hourly: считаю час %s для %d счётчиков",
+        phase_targets = self._get_phase_targets()
+        log.info("Hourly: считаю час %s для %d счётчиков (фаз: %d)",
                  datetime.fromtimestamp(prev_hour_start).isoformat(timespec="seconds"),
-                 len(meters))
+                 len(meters), len(self._phase_pairs(phase_targets)))
 
         for m in meters:
             if self._stop.is_set():
@@ -420,21 +476,34 @@ class Aggregator:
                 self._compute_one_hour_for_meter(m.id, m.device_id, prev_hour_start)
             except Exception as e:
                 log.warning("hourly: %s упал: %s", m.device_id, e)
+            for ph in sorted(phase_targets.get(m.id, ())):
+                if self._stop.is_set():
+                    return
+                try:
+                    self._compute_one_hour_for_meter(
+                        m.id, m.device_id, prev_hour_start, phase=ph)
+                except Exception as e:
+                    log.warning("hourly: %s %s упал: %s", m.device_id, ph, e)
 
     def _compute_one_hour_for_meter(
-        self, meter_id: int, device_id: str, hour_start: int
+        self, meter_id: int, device_id: str, hour_start: int,
+        phase: Optional[str] = None,
     ) -> Optional[HourlyAggregate]:
-        """Запросить RPC, посчитать, записать. Возвращает результат."""
+        """Запросить RPC, посчитать, записать. Возвращает результат.
+        `phase` (П9) — "L1"/"L2"/"L3": считать часы фазы (каналы `AP energy Lx`
+        / `P Lx`, таблица `phase_aggregates`); None — итог прибора."""
         hour_end = hour_start + 3600
+        repo = self._repo_for(phase)
+        energy_channel, power_channel = self._channels_for(phase)
         # Берём с запасом: 1 час назад для AP_start, 5 минут после для AP_end
         ts_from = hour_start - 3600
         ts_to = hour_end + 300
 
         points_energy = self._rpc_get_values_with_retry(
-            device_id, self._cfg.energy_channel, ts_from, ts_to,
+            device_id, energy_channel, ts_from, ts_to,
         )
         if points_energy is not None:
-            anchor = self._carry_forward_anchor(meter_id, hour_start)
+            anchor = self._carry_forward_anchor(meter_id, hour_start, phase)
             points_energy = inject_carry_forward_point(
                 hour_start, points_energy, anchor)
         if points_energy is None:
@@ -445,12 +514,12 @@ class Aggregator:
                 p_avg=None, p_max=None, samples_count=0,
                 quality_flag="no_data", computed_at=int(time.time()),
             )
-            self._aggregates.upsert(agg)
+            repo.upsert(agg)
             return agg
 
-        # Total P — best-effort, не критично если упадёт
+        # Total P / P Lx — best-effort, не критично если упадёт
         points_power = self._rpc_get_values_with_retry(
-            device_id, self._cfg.power_channel, hour_start, hour_end,
+            device_id, power_channel, hour_start, hour_end,
             allow_empty=True,
         ) or []
 
@@ -459,13 +528,14 @@ class Aggregator:
             points_with_context=points_energy,
             points_power=points_power,
         )
-        self._aggregates.upsert(agg)
+        repo.upsert(agg)
         if agg.quality_flag == QUALITY_SPARSE:
-            self._mark_earlier_sparse_hours(meter_id, hour_start, points_energy)
+            self._mark_earlier_sparse_hours(meter_id, hour_start, points_energy, phase)
         return agg
 
     def _mark_earlier_sparse_hours(
-        self, meter_id: int, hour_start: int, points: list[HistoryPoint]
+        self, meter_id: int, hour_start: int, points: list[HistoryPoint],
+        phase: Optional[str] = None,
     ) -> None:
         """A14: почасовой воркер считает каждый час «по состоянию на сейчас» и
         не мог знать, что следующее показание придёт через несколько часов —
@@ -477,13 +547,14 @@ class Aggregator:
         if interval is None:
             return
         a, _b = interval
+        repo = self._repo_for(phase)
         h = align_hour_down(a.timestamp)
         if h < a.timestamp:
             h += 3600          # час, где лежит `a`, посчитан по другим показаниям
         now_ts = int(time.time())
         marked = []
         while h < hour_start:
-            old = self._aggregates.get(meter_id, h)
+            old = repo.get(meter_id, h)
             if old is None or old.quality_flag in ("edge_approx", "no_data",
                                                     QUALITY_SPARSE):
                 marked.append(HourlyAggregate(
@@ -496,14 +567,15 @@ class Aggregator:
                 ))
             h += 3600
         if marked:
-            self._aggregates.upsert_many(marked)
+            repo.upsert_many(marked)
 
-    def _carry_forward_anchor(self, meter_id: int, before_ts: int):
+    def _carry_forward_anchor(self, meter_id: int, before_ts: int,
+                              phase: Optional[str] = None):
         """Последнее достоверное значение до before_ts, с учётом
         carryforward_max_lookback_days — обёртка над
         AggregateRepo.last_known_value_before для трёх мест использования
-        ниже (hourly/catchup/patcher)."""
-        return self._aggregates.last_known_value_before(
+        ниже (hourly/catchup/patcher). `phase` — якорь из таблицы фазы."""
+        return self._repo_for(phase).last_known_value_before(
             meter_id, before_ts,
             max_lookback_s=self._cfg.carryforward_max_lookback_days * 86400,
         )
@@ -572,6 +644,7 @@ class Aggregator:
                  self._cfg.max_catchup_duration_s,
                  self._cfg.catchup_days, len(meters))
 
+        phase_targets = self._get_phase_targets()
         try:
             for m in meters:
                 if self._stop.is_set() or time.time() >= deadline:
@@ -584,6 +657,14 @@ class Aggregator:
                                              ts_oldest, ts_now, deadline)
                 except Exception as e:
                     log.warning("catch-up %s: %s", m.device_id, e)
+                for ph in sorted(phase_targets.get(m.id, ())):
+                    if self._stop.is_set() or time.time() >= deadline:
+                        break
+                    try:
+                        self._catchup_one_meter(m.id, m.device_id, ts_oldest,
+                                                 ts_now, deadline, phase=ph)
+                    except Exception as e:
+                        log.warning("catch-up %s %s: %s", m.device_id, ph, e)
 
                 if self._stop.wait(self._cfg.inter_meter_pause_s):
                     break
@@ -604,16 +685,21 @@ class Aggregator:
         ts_oldest: int,
         ts_newest: int,
         deadline: float,
+        phase: Optional[str] = None,
     ) -> None:
-        """Догнать пропущенные часы для одного счётчика."""
-        missing = self._aggregates.missing_hours(meter_id, ts_oldest, ts_newest)
+        """Догнать пропущенные часы для одного счётчика (`phase` — для его
+        фазы: каналы `AP energy Lx`, таблица `phase_aggregates`)."""
+        repo = self._repo_for(phase)
+        energy_channel, _power_channel = self._channels_for(phase)
+        missing = repo.missing_hours(meter_id, ts_oldest, ts_newest)
         if not missing:
             return
 
         with self._status_lock:
             self._catchup_total_planned += len(missing)
 
-        log.info("Catch-up %s: %d часов для расчёта", device_id, len(missing))
+        log.info("Catch-up %s%s: %d часов для расчёта", device_id,
+                 (" " + phase) if phase else "", len(missing))
 
         # Группируем подряд идущие пропуски в «диапазоны» — за один RPC
         # получаем сразу все точки для дня (или большего куска), а затем
@@ -627,10 +713,10 @@ class Aggregator:
             ts_to = batch_end + 300
 
             points_energy = self._rpc_get_values_with_retry(
-                device_id, self._cfg.energy_channel, ts_from, ts_to,
+                device_id, energy_channel, ts_from, ts_to,
             )
             if points_energy is not None:
-                anchor = self._carry_forward_anchor(meter_id, batch_start)
+                anchor = self._carry_forward_anchor(meter_id, batch_start, phase)
                 points_energy = inject_carry_forward_point(
                     batch_start, points_energy, anchor)
             if points_energy is None:
@@ -648,7 +734,7 @@ class Aggregator:
                     )
                     for h in batch
                 ]
-                self._aggregates.upsert_many(no_data_aggs)
+                repo.upsert_many(no_data_aggs)
                 with self._status_lock:
                     self._catchup_processed_hours += len(batch)
                 continue
@@ -663,7 +749,7 @@ class Aggregator:
                                          # (экономия RPC; можно посчитать позже)
                 )
                 aggs.append(agg)
-            self._aggregates.upsert_many(aggs)
+            repo.upsert_many(aggs)
             with self._status_lock:
                 self._catchup_processed_hours += len(batch)
 
@@ -689,52 +775,116 @@ class Aggregator:
         """
         Перепроверить последние `recompute_recent_h` часов и пересчитать
         строки с quality=no_data — возможно, в wb-mqtt-db уже подъехали точки.
+        Включает фазы приборов с пофазными привязками (П9).
         """
         meters = self._meters.list_all(only_enabled=True)
         if not meters:
             return
         ts_now = align_hour_down(time.time())
         ts_oldest = ts_now - self._cfg.recompute_recent_h * 3600
+        phase_targets = self._get_phase_targets()
         patched = 0
         for m in meters:
             if self._stop.is_set():
                 return
-            # Найти часы с no_data (и пропущенные) в диапазоне
-            missing = self._aggregates.missing_hours(m.id, ts_oldest, ts_now)
-            no_data_existing = [
-                a.period_start
-                for a in self._aggregates.list_range(m.id, ts_oldest, ts_now)
-                if a.quality_flag == "no_data"
-            ]
-            todo = sorted(set(missing) | set(no_data_existing))
-            if not todo:
-                continue
-            log.info("Patcher %s: %d часов на пересчёт", m.device_id, len(todo))
-            for batch in _group_into_batches(todo, max_span_hours=24):
+            patched += self._patch_one_target(m, None, ts_oldest, ts_now)
+            for ph in sorted(phase_targets.get(m.id, ())):
                 if self._stop.is_set():
                     return
-                batch_start = batch[0]
-                batch_end = batch[-1] + 3600
-                points = self._rpc_get_values_with_retry(
-                    m.device_id, self._cfg.energy_channel,
-                    batch_start - 3600, batch_end + 300,
-                )
-                if points is None:
-                    continue
-                anchor = self._carry_forward_anchor(m.id, batch_start)
-                points = inject_carry_forward_point(batch_start, points, anchor)
-                aggs = [
-                    compute_hourly_aggregate(
-                        meter_id=m.id, hour_start=h,
-                        points_with_context=points,
-                    )
-                    for h in batch
-                ]
-                self._aggregates.upsert_many(aggs)
-                patched += len(batch)
+                patched += self._patch_one_target(m, ph, ts_oldest, ts_now)
         if patched:
             log.info("Patcher: пересчитано часов: %d", patched)
 
+    def _patch_one_target(self, m, phase: Optional[str],
+                          ts_oldest: int, ts_now: int) -> int:
+        """Латальщик для итога прибора (phase=None) или его фазы. Возвращает
+        число пересчитанных часов."""
+        repo = self._repo_for(phase)
+        energy_channel, _power = self._channels_for(phase)
+        # Найти часы с no_data (и пропущенные) в диапазоне
+        missing = repo.missing_hours(m.id, ts_oldest, ts_now)
+        no_data_existing = [
+            a.period_start
+            for a in repo.list_range(m.id, ts_oldest, ts_now)
+            if a.quality_flag == "no_data"
+        ]
+        todo = sorted(set(missing) | set(no_data_existing))
+        if not todo:
+            return 0
+        log.info("Patcher %s%s: %d часов на пересчёт", m.device_id,
+                 (" " + phase) if phase else "", len(todo))
+        patched = 0
+        for batch in _group_into_batches(todo, max_span_hours=24):
+            if self._stop.is_set():
+                return patched
+            batch_start = batch[0]
+            batch_end = batch[-1] + 3600
+            points = self._rpc_get_values_with_retry(
+                m.device_id, energy_channel,
+                batch_start - 3600, batch_end + 300,
+            )
+            if points is None:
+                continue
+            anchor = self._carry_forward_anchor(m.id, batch_start, phase)
+            points = inject_carry_forward_point(batch_start, points, anchor)
+            aggs = [
+                compute_hourly_aggregate(
+                    meter_id=m.id, hour_start=h,
+                    points_with_context=points,
+                )
+                for h in batch
+            ]
+            repo.upsert_many(aggs)
+            patched += len(batch)
+        return patched
+
+    # ---- 4. пофазный наблюдатель (П9) ----
+
+    def _run_phase_watch(self) -> None:
+        """Раз в `phase_watch_interval_s` ищет пары (прибор, фаза), у которых
+        появилась пофазная привязка уже после старта, и догоняет их историю.
+        Так привязка, созданная любым путём (форма, API, мастер), получает
+        прошлые часы без связи api_v2 с агрегатором."""
+        if self._phase_targets_fn is None:
+            return
+        while not self._stop.wait(self._cfg.phase_watch_interval_s):
+            try:
+                self.check_new_phase_targets()
+            except Exception as e:
+                log.exception("phase watcher error: %s", e)
+
+    def check_new_phase_targets(self) -> int:
+        """Один проход наблюдателя: для новых пар (прибор, фаза) догнать часы
+        за `catchup_days` (только отсутствующие — `missing_hours`). Возвращает
+        число догнанных пар. Публичный — вызывается и тестами, и потоком."""
+        targets = self._get_phase_targets()
+        pairs = self._phase_pairs(targets)
+        new_pairs = sorted(pairs - self._known_phase_pairs)
+        if not new_pairs:
+            # пары, у которых привязку закрыли, забываем: при повторном
+            # открытии пара снова «новая» и дозаполнится
+            self._known_phase_pairs &= pairs
+            return 0
+        meters = {m.id: m for m in self._meters.list_all(only_enabled=True)}
+        ts_now = align_hour_down(time.time())
+        ts_oldest = ts_now - self._cfg.catchup_days * 86400
+        deadline = time.time() + self._cfg.max_catchup_duration_s
+        done = 0
+        for mid, ph in new_pairs:
+            if self._stop.is_set():
+                break
+            m = meters.get(mid)
+            if m is None:
+                continue
+            log.info("Пофазная привязка: догоняю историю %s %s", m.device_id, ph)
+            self._catchup_one_meter(mid, m.device_id, ts_oldest, ts_now,
+                                    deadline, phase=ph)
+            self._known_phase_pairs.add((mid, ph))
+            done += 1
+        self._known_phase_pairs &= pairs | set(new_pairs)
+        with self._status_lock:
+            self._phase_backfilled_pairs += done
+        return done
 
 # ---------------------------------------------------------------------------
 # Helpers

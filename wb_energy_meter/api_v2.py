@@ -90,7 +90,10 @@ from . import overview_service
 from . import reports_service
 from . import topology_history
 from .overview_service import BalanceAlgorithmError
-from .binding_service import BindingConflict, PointBindingRepo, VALID_CHANNEL_PROFILES
+from .binding_service import (
+    BindingConflict, PHASE_PROFILE, PointBindingRepo, PROFILE_PHASE,
+    VALID_CHANNEL_PROFILES,
+)
 from .location_repo import LocationRepo
 from .model import PHASES
 from .point_repo import MeteringPointRepo, MeterSourceRepo
@@ -280,6 +283,9 @@ def register_v2_routes(app, state, json_response):
                 holder = _point_repo().get_by_id(row["point_id"])
                 if holder is not None:
                     label = "«" + (holder.name or holder.code) + "»"
+                    holder_phase = PROFILE_PHASE.get(row.get("channel_profile"))
+                    if holder_phase:
+                        label += " (фаза %s)" % holder_phase       # П9
                     if holder.archived_at is not None:
                         label += " (в архиве)"
                     if label not in holders:
@@ -1561,6 +1567,157 @@ def register_v2_routes(app, state, json_response):
                 raise ValueError("поле %s должно быть числом" % field) from None
         return v
 
+    def _phase_channels_problem(device_id, phases):
+        """П9: текст отказа, если у прибора нет пофазных счётчиков энергии
+        (`AP energy L1…L3`) в MQTT для всех `phases`, иначе None. Не знающий
+        этого прибора реестр — тоже отказ: без пофазных счётчиков нечего
+        считать, а молча подключить фазу к итогу всего прибора нельзя."""
+        registry = getattr(state, "registry", None)
+        meter = registry.get(device_id) if registry is not None else None
+        if meter is None:
+            return ("Прибор «%s» ещё не появлялся в MQTT — проверить, есть ли у "
+                    "него пофазные счётчики энергии, нечем. Подключите «все три "
+                    "фазы — одна линия» или дождитесь появления прибора." % device_id)
+        missing = [ph for ph in phases if meter.get("AP energy " + ph) is None]
+        if missing:
+            return ("У прибора «%s» нет пофазных счётчиков энергии (AP energy %s) — "
+                    "подключить по фазам нельзя. Подключите «все три фазы — одна "
+                    "линия»." % (device_id, ", ".join(missing)))
+        return None
+
+    def _parse_phase_items(data):
+        """Разобрать `phases` запроса «по фазам». Каждый элемент:
+        {phase, line_id | to_node_id | new_load_name, name?} или
+        {phase, skip: true} («не используется»). ValueError — 400."""
+        raw = data.get("phases")
+        if not isinstance(raw, list) or not raw:
+            raise ValueError(
+                "укажите фазы: phases — список из L1/L2/L3 с целью каждой фазы")
+        items, seen = [], set()
+        for it in raw:
+            if not isinstance(it, dict):
+                raise ValueError("phases: каждый элемент должен быть объектом")
+            ph = str(it.get("phase") or "").strip().upper()
+            if ph not in PHASE_PROFILE:
+                raise ValueError("фаза должна быть L1, L2 или L3")
+            if ph in seen:
+                raise ValueError("фаза %s указана дважды" % ph)
+            seen.add(ph)
+            if it.get("skip"):
+                continue
+            line_id = _optional_int(it, "line_id")
+            to_node_id = _optional_int(it, "to_node_id")
+            new_name = it.get("new_load_name")
+            new_name = str(new_name).strip() if new_name is not None else ""
+            if line_id is None and to_node_id is None and not new_name:
+                raise ValueError(
+                    "фаза %s: укажите линию, узел или новую нагрузку (либо "
+                    "отметьте «не используется»)" % ph)
+            items.append({"phase": ph, "line_id": line_id, "to_node_id": to_node_id,
+                          "new_load_name": new_name or None,
+                          "name": (str(it.get("name") or "").strip() or None)})
+        if not items:
+            raise ValueError("ни одна фаза не используется — подключать прибор не к чему")
+        for field, text in (("line_id", "линия"), ("to_node_id", "узел")):
+            vals = [i[field] for i in items if i[field] is not None]
+            if len(set(vals)) != len(vals):
+                raise ValueError("один и тот же %s указан для двух фаз — у каждой "
+                                 "фазы своя линия" % text)
+        return sorted(items, key=lambda i: i["phase"])
+
+    def _node_add_meter_by_phases(node_id, data, device_id):
+        """«+ Счётчик» → «по фазам» (П9): один WB-MAP3E, у которого L1, L2 и L3
+        питают разные нагрузки. ОДНА серверная операция на все фазы — одна
+        ревизия; любой отказ не оставляет ничего (ни линий, ни нагрузок, ни
+        точек, ни привязок). Тело — см. docstring v2_topology_node_add_meter."""
+        node_repo = _node_repo()
+        if data.get("measures") != "outgoing":
+            body, status = _err(
+                "bad_request", "«По фазам» — только для отходящих линий: каждая фаза "
+                "питает свою линию от этого узла (measures=\"outgoing\")", 400,
+                fields=["measures"], ids=[node_id])
+            return json_response(body, status)
+        try:
+            items = _parse_phase_items(data)
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400, fields=["phases"], ids=[node_id])
+            return json_response(body, status)
+        problem = _phase_channels_problem(device_id, [i["phase"] for i in items])
+        if problem:
+            body, status = _err("bad_request", problem, 400,
+                                fields=["device_id"], ids=[node_id])
+            return json_response(body, status)
+
+        known_meter = MeterRepo(db, GroupRepo(db)).get_by_device_id(device_id)
+        base_name = (str(data.get("name") or "").strip()
+                     or (known_meter.display_name if known_meter else None)
+                     or device_id)
+        point_repo = _point_repo()
+        edge_repo = _edge_repo()
+
+        def _mutate():
+            source_id = _resolve_or_provision_meter_source(
+                None, {"device_id": device_id}, at=data.get("at"))
+            results = []
+            for it in items:
+                ph = it["phase"]
+                edge, created_edge, new_node = plan_v3_service.resolve_meter_line(
+                    node_repo, edge_repo, node_id, "outgoing",
+                    line_id=it["line_id"], to_node_id=it["to_node_id"],
+                    new_load_name=it["new_load_name"], phase_count=1)
+                if edge.primary_point_id is not None:
+                    holder = point_repo.get_by_id(edge.primary_point_id)
+                    if holder is not None and holder.archived_at is None:
+                        raise plan_v3_service.LineAlreadyMetered(
+                            "Эта линия уже измеряется точкой «%s». Сначала уберите её "
+                            "счётчик (кнопка «Убрать счётчик»), затем ставьте новый." % (
+                                holder.name or holder.code), edge.id, holder.id)
+                point = point_repo.add(
+                    code="pv3-m-%d-%s-%d" % (node_id, ph, time.time_ns() // 1000),
+                    name=it["name"] or "%s · %s" % (base_name, ph))
+                _binding_repo().open_binding(
+                    point.id, source_id, PHASE_PROFILE[ph], role="primary",
+                    valid_from=data.get("at"))
+                edge = edge_repo.update_fields(
+                    edge.id, {"primary_point_id": point.id, "phase_count": 1})
+                results.append((ph, point, edge, created_edge, new_node))
+            return source_id, results
+
+        try:
+            (source_id, results), new_rev = with_revision_check(
+                db, data.get("expected_revision"), _mutate,
+                touched=[("electrical_node", node_id), ("metering_point", "new"),
+                         ("electrical_edge", "new")])
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e, ids=[node_id])
+        except plan_v3_service.LineAlreadyMetered as e:
+            body, status = _err("already_metered", str(e), 409, ids=[e.edge_id, e.point_id])
+            return json_response(body, status)
+        except plan_v3_service.PlanV3Conflict as e:
+            body, status = _err("topology_conflict", str(e), 409, ids=[node_id])
+            return json_response(body, status)
+        except BindingConflict as e:
+            log.info("Отказ «+ Счётчик» по фазам в узле %s: %s", node_id, e)
+            body, status = _err(
+                "double_counting", _binding_conflict_text(e, device_id), 409,
+                ids=[node_id])
+            return json_response(body, status)
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400, ids=[node_id])
+            return json_response(body, status)
+
+        out = {"point": None, "edge": None, "node": None,
+               "created_edge": any(r[3] for r in results),
+               "created_node": any(r[4] is not None for r in results),
+               "meter_source_id": source_id, "measures": "outgoing", "mode": "phases",
+               "phases": [{"phase": ph, "point": _point_to_dict(pt),
+                           "edge": _edge_to_dict(ed), "created_edge": bool(ce),
+                           "node": _node_to_dict(nn) if nn is not None else None,
+                           "created_node": nn is not None}
+                          for ph, pt, ed, ce, nn in results],
+               "configuration_revision": new_rev}
+        return json_response(out, 201)
+
     @app.route("/api/v2/topology/nodes/<int:node_id>/meters", methods=["POST"])
     def v2_topology_node_add_meter(node_id):
         """Партия 13, П5 (решение R10), «+ Счётчик» в карточке узла: живой
@@ -1586,6 +1743,20 @@ def register_v2_routes(app, state, json_response):
         created_edge, created_node, meter_source_id, measures,
         configuration_revision}. 200 с `attached: "already"` — тот же прибор
         уже стоит на этой линии (ничего не записано).
+
+        «По фазам» (партия находок 0.22.3, П9, docs/design-phase-aggregates.md
+        §8): `mode="phases"`, `measures="outgoing"` и
+        `phases=[{phase: "L1", line_id | to_node_id | new_load_name, name?},
+        {phase: "L2", …}, {phase: "L3", skip: true}]` — каждая используемая
+        фаза получает свою линию (`phase_count = 1`), точку и привязку с
+        профилем `phase_lN`, ВСЁ одной ревизией. Ответ 201:
+        {point: null, edge: null, node: null, created_edge, created_node,
+        meter_source_id, measures, mode: "phases", phases: [{phase, point,
+        edge, node, created_edge, created_node}], configuration_revision}.
+        400 — нет пофазных счётчиков энергии в MQTT, пустой список фаз, одна
+        линия на две фазы; 409 `double_counting` — фаза (или весь прибор)
+        занята. Одиночный `channel_profile="phase_lN"` — тот же расчёт по
+        фазе, с той же проверкой пофазных счётчиков.
         Отказы (ничего не создано — ни линии, ни нагрузки, ни точки, ни
         привязки, ни ревизии): 400 bad_request (неверные данные), 404
         not_found (узел), 409 revision_conflict (устаревшая ревизия), 409
@@ -1611,6 +1782,8 @@ def register_v2_routes(app, state, json_response):
         except ValueError as e:
             body, status = _err("bad_request", str(e), 400, ids=[node_id])
             return json_response(body, status)
+        if data.get("mode") == "phases" or data.get("phases") is not None:
+            return _node_add_meter_by_phases(node_id, data, device_id)
         measures = data.get("measures")
         channel_profile = data.get("channel_profile") or "total_3p"
         if channel_profile not in VALID_CHANNEL_PROFILES:
@@ -1619,6 +1792,13 @@ def register_v2_routes(app, state, json_response):
                     channel_profile, ", ".join(VALID_CHANNEL_PROFILES)),
                 400, fields=["channel_profile"], ids=[node_id])
             return json_response(body, status)
+        single_phase = PROFILE_PHASE.get(channel_profile)
+        if single_phase is not None:
+            problem = _phase_channels_problem(device_id, [single_phase])
+            if problem:
+                body, status = _err("bad_request", problem, 400,
+                                    fields=["device_id"], ids=[node_id])
+                return json_response(body, status)
 
         known_meter = MeterRepo(db, GroupRepo(db)).get_by_device_id(device_id)
         point_name = (str(data.get("name") or "").strip()
@@ -1632,7 +1812,8 @@ def register_v2_routes(app, state, json_response):
                 node_repo, edge_repo, node_id, measures,
                 line_id=line_id, to_node_id=to_node_id,
                 new_load_name=data.get("new_load_name"),
-                fed_from_node_id=fed_from_node_id)
+                fed_from_node_id=fed_from_node_id,
+                phase_count=1 if single_phase else None)
             if edge.primary_point_id is not None:
                 holder = point_repo.get_by_id(edge.primary_point_id)
                 if holder is not None and holder.archived_at is None:
@@ -1653,7 +1834,10 @@ def register_v2_routes(app, state, json_response):
             _binding_repo().open_binding(
                 point.id, source_id, channel_profile, role="primary",
                 valid_from=data.get("at"))
-            updated_edge = edge_repo.update_fields(edge.id, {"primary_point_id": point.id})
+            edge_fields = {"primary_point_id": point.id}
+            if single_phase:
+                edge_fields["phase_count"] = 1          # линия одной фазы
+            updated_edge = edge_repo.update_fields(edge.id, edge_fields)
             return point, source_id, updated_edge, created_edge, new_node
 
         try:
@@ -1698,7 +1882,8 @@ def register_v2_routes(app, state, json_response):
     def v2_topology_node_lines(node_id):
         try:
             lines = plan_v3_service.describe_node_lines(
-                _node_repo(), _edge_repo(), _point_repo(), node_id)
+                _node_repo(), _edge_repo(), _point_repo(), node_id,
+                binding_repo=_binding_repo(), source_repo=_source_repo())
         except ValueError as e:
             body, status = _err("not_found", str(e), 404, ids=[node_id])
             return json_response(body, status)
@@ -2116,6 +2301,7 @@ def register_v2_routes(app, state, json_response):
             "point_id": point.id, "code": point.code, "name": point.name,
             "enabled": bool(point.enabled),
             "binding_status": "unbound",
+            "channel_profile": None,
             "device_status": None,
             "device_status_reason": None,
             "power_w": None, "energy_total_kwh": None,
@@ -2153,14 +2339,28 @@ def register_v2_routes(app, state, json_response):
         # здесь заново (единый источник классификации, см. status.py).
         result["device_status"] = meter.status.value
         result["device_status_reason"] = meter.status_reason
-        result["power_w"] = meter.get_float("Total P")
-        result["energy_total_kwh"] = meter.get_float("Total AP energy")
+        # П9: профиль привязки выбирает, что показывать. total_3p — итог всего
+        # прибора (Total P, Total AP energy, все фазы); phase_lN — только своя
+        # фаза (P LN, AP energy LN, Urms/Irms LN): остальные фазы прибора
+        # принадлежат другим точкам, их ток и мощность этой точке не относятся.
+        phase = PROFILE_PHASE.get(binding.channel_profile)
+        if phase is None:
+            result["power_w"] = meter.get_float("Total P")
+            result["energy_total_kwh"] = meter.get_float("Total AP energy")
+            shown_phases = PHASES
+        else:
+            result["power_w"] = meter.get_float(f"P {phase}")
+            result["energy_total_kwh"] = meter.get_float(f"AP energy {phase}")
+            shown_phases = (phase,)
+        result["channel_profile"] = binding.channel_profile
         result["frequency_hz"] = meter.get_float("Frequency")
 
-        voltage = {ph: meter.get_float(f"Urms {ph}") for ph in PHASES}
+        voltage = {ph: (meter.get_float(f"Urms {ph}") if ph in shown_phases else None)
+                   for ph in PHASES}
         if any(v is not None for v in voltage.values()):
             result["voltage_v"] = voltage
-        current = {ph: meter.get_float(f"Irms {ph}") for ph in PHASES}
+        current = {ph: (meter.get_float(f"Irms {ph}") if ph in shown_phases else None)
+                   for ph in PHASES}
         if any(v is not None for v in current.values()):
             result["current_a"] = current
 
@@ -2335,27 +2535,48 @@ def register_v2_routes(app, state, json_response):
         # точки. Раньше «свободные» считались по первичным привязкам
         # активных точек, и прибор, занятый контрольной привязкой, считался
         # свободным до отказа сервера.
+        # Партия находок 0.22.3, П9: занятость — по ФАЗАМ. `total_3p` занимает
+        # все три фазы, `phase_lN` — одну; прибор с занятой L1 остаётся
+        # доступным для L2 и L3. К прежним полям записи добавлены `profiles`,
+        # `busy_phases` ({"L1": {point_id, point_name, archived}}),
+        # `free_phases` и `fully_busy`; серым в списке показывается только
+        # `fully_busy`.
         with db.read() as c:
             occ_rows = c.execute(
                 "SELECT b.point_id AS point_id, s.device_id AS device_id, "
-                "s.controller_key AS controller_key FROM point_bindings b "
+                "s.controller_key AS controller_key, "
+                "b.channel_profile AS channel_profile FROM point_bindings b "
                 "JOIN meter_sources s ON s.id = b.meter_source_id "
                 "WHERE b.valid_to IS NULL ORDER BY b.id").fetchall()
         holders_by_id = {p.id: p for p in point_repo.list_all(include_archived=True)}
+        by_device = {}
         occupied_devices = []
-        seen_occ = set()
         for r in occ_rows:
             key = (r["controller_key"], r["device_id"])
-            if key in seen_occ:
-                continue
-            seen_occ.add(key)
             holder = holders_by_id.get(r["point_id"])
-            occupied_devices.append({
-                "device_id": r["device_id"], "controller_key": r["controller_key"],
+            holder_info = {
                 "point_id": r["point_id"],
                 "point_name": (holder.name or holder.code) if holder else None,
                 "archived": bool(holder is not None and holder.archived_at is not None),
-            })
+            }
+            entry = by_device.get(key)
+            if entry is None:
+                entry = {
+                    "device_id": r["device_id"], "controller_key": r["controller_key"],
+                    **holder_info, "profiles": [], "busy_phases": {},
+                }
+                by_device[key] = entry
+                occupied_devices.append(entry)
+            if r["channel_profile"] not in entry["profiles"]:
+                entry["profiles"].append(r["channel_profile"])
+            held = PHASES if r["channel_profile"] == "total_3p" else (
+                (PROFILE_PHASE.get(r["channel_profile"]),) )
+            for ph in held:
+                if ph is not None:
+                    entry["busy_phases"].setdefault(ph, dict(holder_info))
+        for entry in occupied_devices:
+            entry["free_phases"] = [ph for ph in PHASES if ph not in entry["busy_phases"]]
+            entry["fully_busy"] = not entry["free_phases"]
 
         return json_response({"points": items, "occupied_devices": occupied_devices})
 
