@@ -16,6 +16,45 @@ const _planV3ItemLayers=new Map();
 const _planV3EdgeLayers=new Map();
 let _planV3NeedsFit=null;
 
+// П8: свободное место для значка нового элемента рядом с родителем.
+// Раньше новая нагрузка всегда ложилась в (x+60, y+60) щита: три нагрузки —
+// три значка и три подписи друг на друге. Чистая функция (без DOM): ряд под
+// родителем, вправо от него, затем влево, затем следующий ряд; место
+// свободно, если рамка значка с подписью не пересекает рамки уже стоящих
+// значков и целиком лежит внутри плана. Подпись Leaflet стоит справа от
+// маркера, поэтому рамка — маркер плюс текст (≈7,5 px на символ; запас на
+// «· счётчик», который подпись получит после постановки счётчика). Размеры
+// заданы в экранных пикселях и переводятся в единицы холста по масштабу
+// карты (unit — единиц холста в одном экранном пикселе), так что подписи
+// не налезают друг на друга при любом масштабе. Нет места — null.
+function _planV3FreeSpot(o){
+  const unit=o.unit>0 ? o.unit : 1;
+  const W=o.W, H=o.H;
+  const boxOf=(x, y, text)=>{
+    const w=(7.5*String(text||'').length + 12 + 11*7.5 + 8)*unit;   // маркер + текст + запас + поля
+    const h=30*unit;
+    return {x0:x-12*unit, x1:x-12*unit+w, y0:y-h/2, y1:y+h/2};
+  };
+  const hit=(a,b)=>a.x0<b.x1 && b.x0<a.x1 && a.y0<b.y1 && b.y0<a.y1;
+  const occupied=(o.occupied||[]).map(it=>boxOf(it.x, it.y, it.text));
+  const rowStep=40*unit, colStep=24*unit, margin=8*unit;
+  const maxCols=Math.ceil(W/colStep);
+  for(let row=1; row<=40; row++){
+    const y=o.parent.y + row*rowStep;
+    if(y + 15*unit > H - margin) break;
+    for(let k=0; k<=2*maxCols; k++){
+      // 0, +1, +2, … вправо от родителя; затем -1, -2, … влево
+      const dx = k<=maxCols ? k*colStep : -(k-maxCols)*colStep;
+      const x=o.parent.x + dx;
+      const b=boxOf(x, y, o.label);
+      if(b.x0 < margin || b.x1 > W - margin) continue;
+      if(occupied.some(r=>hit(b, r))) continue;
+      return {x:Math.round(x), y:Math.round(y)};
+    }
+  }
+  return null;
+}
+
 (function () {
   window.WBEM = window.WBEM || { parts: [], conflicts: [] };
 
@@ -352,6 +391,24 @@ let _planV3NeedsFit=null;
 
       _planV3LatLngToXy(latlng, height){ return [latlng.lng, height-latlng.lat]; },
 
+      // П8: место для значка нового элемента рядом с родителем — одно на «+ Счётчик»
+      // (scheme.js::_schemePlaceAfterMeter) и «Добавить отходящую линию».
+      _planV3SpotNear(plan, parentGeom, label){
+          const [W,H]=this._planV3EffectiveDims(plan);
+          const zoom=_planV3Map ? _planV3Map.getZoom() : -1;
+          const nodeName=(id)=>{
+            const n=(this.structNodes||[]).find(x=>x.id===id);
+            return n ? (n.name||n.code||'') : '';
+          };
+          const occupied=(plan.items||[])
+            .filter(it=>it.kind==='node' && it.geometry && typeof it.geometry.x==='number')
+            .map(it=>({x:it.geometry.x, y:it.geometry.y, text:nodeName(it.node_id)||it.label||''}));
+          const spot=_planV3FreeSpot({W, H, unit:1/Math.pow(2, zoom), parent:parentGeom,
+                                      label, occupied});
+          // Места нет (план забит): прежнее смещение, но не за границу плана.
+          return spot || {x:Math.min(W, parentGeom.x+60), y:Math.min(H, parentGeom.y+60)};
+        },
+
       _planV3CoordSpace(){
           return this.planV3Current && this.planV3Current.plan_kind==='floor'
             ? 'image_px_xy_v2' : 'canvas_xy_v2';
@@ -609,7 +666,8 @@ let _planV3NeedsFit=null;
               const [W,H]=this._planV3EffectiveDims(this.planV3Current);
               let x=W/2, y=H/2;
               if(parentItem && parentItem.geometry){
-                x=Math.min(W, parentItem.geometry.x+60); y=Math.min(H, parentItem.geometry.y+60);
+                const spot=this._planV3SpotNear(this.planV3Current, parentItem.geometry, d.node.name);
+                x=spot.x; y=spot.y;
               }
               const ir=await fetch('/api/v2/plans/'+this.planV3Current.id+'/items', {
                 method:'POST', headers:{'Content-Type':'application/json'},
@@ -758,7 +816,15 @@ let _planV3NeedsFit=null;
 
       _planV3TryFit(){
           if(!_planV3Map || !_planV3NeedsFit) return false;
-          const el=this.$refs.planV3Map;
+          // П11: контейнер берём у самой карты, а не из this.$refs. Метод зовут
+          // и из продолжений обработчиков после await (создание плана:
+          // planV3CreateEmptyPlan → selectPlanV3 → _planV3RenderBase), где
+          // this — область кнопки «Создать план». К этому моменту Alpine уже
+          // убрал эту кнопку из DOM, и её $refs, считаемые по предкам в DOM,
+          // не содержат planV3Map: вписывание молча не выполнялось, карта
+          // оставалась в масштабе 0, а клик по плану давал «Точка вне границ
+          // плана». Чаще всего это случалось на медленном процессоре (CI).
+          const el=_planV3Map.getContainer();
           if(!el || el.offsetWidth===0 || el.offsetHeight===0) return false;
           const bounds=_planV3NeedsFit;
           _planV3NeedsFit=null;

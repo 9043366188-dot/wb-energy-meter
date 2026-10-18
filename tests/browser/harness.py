@@ -284,5 +284,12 @@ def open_browser(url: str, viewport=None, timezone_id=None) -> BrowserPage:
         kwargs["timezone_id"] = timezone_id
     page = browser.new_page(**kwargs)
     bp = BrowserPage(pw, browser, page)
+    # Замедление процессора браузера (WBEM_BROWSER_CPU_THROTTLE=4 — в 4 раза):
+    # ловит гонки, которые на быстрой машине не видны, а на медленном CI
+    # дают мигающие тесты (П11: x-show Alpine, вписывание карты после await).
+    throttle = float(os.environ.get("WBEM_BROWSER_CPU_THROTTLE") or 1)
+    if throttle > 1:
+        page.context.new_cdp_session(page).send(
+            "Emulation.setCPUThrottlingRate", {"rate": throttle})
     page.goto(url)
     return bp

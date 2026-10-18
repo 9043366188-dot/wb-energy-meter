@@ -73,6 +73,7 @@
  "_planV3RefreshNodeLiveNow",
  "_planV3RenderBase",
  "_planV3RenderItems",
+ "_planV3SpotNear",
  "_planV3TryFit",
  "_planV3XyToLatLng",
  "_planZoneAnchorLatLng",

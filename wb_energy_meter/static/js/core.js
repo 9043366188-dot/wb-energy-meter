@@ -33,6 +33,19 @@ const NODE_METER_NOTE =
 const SCHEME_EMPTY_HINT =
   'Схема — это вводы, щиты и нагрузки, соединённые линиями. '+
   'Счётчик ставится на линию: тогда видно, сколько прошло по ней.';
+// П11: x-show без каскада скрытия. Alpine 3.13.0 скрывает вложенные x-show
+// через requestAnimationFrame и _x_hidePromise родителя. Если вложенный
+// элемент успевает переключиться «скрыт → показан → скрыт», пока скрытие
+// родителя ждёт кадра, он попадает в _x_hideChildren родителя дважды: второй
+// проход берёт уже удалённый _x_hidePromise и падает «u is not a function»,
+// а сам родитель остаётся на экране (так мигал test_b08 после «Удалить план»).
+// x-transition в проекте не используется, поэтому каскад не нужен: x-show
+// применяет значение сразу, итоговое состояние всегда равно последнему
+// значению выражения. Вендорный alpine.min.js не правим.
+document.addEventListener('alpine:init', ()=>{
+  Element.prototype._x_toggleAndCascadeWithTransitions=
+    function(el, value, show, hide){ if(value) show(); else hide(); };
+});
 function _planCssVar(name){
   try{
     const v=getComputedStyle(document.documentElement).getPropertyValue(name).trim();

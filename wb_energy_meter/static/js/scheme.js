@@ -419,8 +419,9 @@
           finally{ f.saving=false; }
         },
 
-      // Новая нагрузка и новая линия появляются и на плане: значок рядом с
-      // щитом (+60,+60, как у «отходящей линии») и линия между значками.
+      // Новая нагрузка и новая линия появляются и на плане: значок в свободном
+      // месте рядом со щитом (П8, _planV3SpotNear — то же, что у «отходящей
+      // линии») и линия между значками.
       // Только если открыт план и значок самого элемента на нём есть; иначе
       // новое остаётся в схеме, а на карту его ставят из списка «Не размещены».
       async _schemePlaceAfterMeter(d, nodeId){
@@ -431,8 +432,7 @@
             const parent=itemOf(nodeId);
             let newItem=null;
             if(d.node && parent && parent.geometry){
-              const [W,H]=this._planV3EffectiveDims(plan);
-              const x=Math.min(W, parent.geometry.x+60), y=Math.min(H, parent.geometry.y+60);
+              const {x,y}=this._planV3SpotNear(plan, parent.geometry, d.node.name);
               const ir=await fetch('/api/v2/plans/'+plan.id+'/items', {
                 method:'POST', headers:{'Content-Type':'application/json'},
                 body: JSON.stringify({kind:'node', node_id:d.node.id, geometry:{x,y},
