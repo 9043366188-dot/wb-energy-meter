@@ -2521,6 +2521,9 @@ def register_v2_routes(app, state, json_response):
                 "meter_device_id": meter_device_id,
                 "meter_controller_key": meter_controller_key,
                 "meter_serial": meter_serial,
+                # П9: какую часть прибора меряет точка (total_3p / phase_lN)
+                "channel_profile": binding.channel_profile if binding is not None else None,
+                "meter_phase": PROFILE_PHASE.get(binding.channel_profile) if binding is not None else None,
                 "placed_on_plan": p.id in plan_point_ids,
                 "is_input": power_supply["is_input"],
                 "fed_from_point_id": fed_from_point_id,

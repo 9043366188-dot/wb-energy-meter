@@ -1700,7 +1700,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                         <option :value="d.device_id" :disabled="d.disabled" :selected="d.device_id===nodeMeterForm.device_id" x-text="d.label"></option>
                       </template>
                     </select>
-                    <div class="muted" style="font-size:11px" x-show="structKnownDevicesLoaded && structFreeDevices().length===0">
+                    <div class="muted" style="font-size:11px" x-show="structKnownDevicesLoaded && structSelectableDevices().length===0">
                       Свободных приборов нет: все известные приборы уже заняты точками учёта.
                     </div>
                     <div class="sf-lbl">Название счётчика</div>
@@ -1712,6 +1712,10 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                         <input type="radio" :value="c.value" x-model="nodeMeterForm.measures" style="width:auto">
                         <span x-text="c.label"></span>
                       </label>
+                    </template>
+                    <template x-if="nodeMeterForm.measures==='input' && nodeMeterBusyPhases().length">
+                      <div class="warn-item" data-testid="node-meter-input-busy"
+                           x-text="'Часть фаз этого прибора уже занята ('+nodeMeterBusyPhases().map(b=>b.phase).join(', ')+') — вводу нужен весь прибор. Выберите другой прибор или поставьте свободные фазы на отходящие линии.'"></div>
                     </template>
                     <template x-if="nodeMeterForm.measures==='input' && nodeMeterInLine()">
                       <div class="muted" style="font-size:11px"
@@ -1734,19 +1738,77 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     </template>
                     <template x-if="nodeMeterForm.measures==='outgoing'">
                       <div style="display:flex;flex-direction:column;gap:4px">
-                        <div class="sf-lbl">Куда идёт линия?</div>
-                        <select x-model="nodeMeterForm.out_target" data-testid="node-meter-out-target">
-                          <template x-for="l in nodeMeterOutLines()" :key="'l'+l.edge_id">
-                            <option :value="'line:'+l.edge_id" x-text="'→ к «'+l.other_node_name+'» (линия уже есть)'"></option>
-                          </template>
-                          <template x-for="n in nodeMeterLoadTargets()" :key="'n'+n.id">
-                            <option :value="'node:'+n.id" x-text="'→ к «'+n.name+'» (линия будет создана)'"></option>
-                          </template>
-                          <option value="new">+ новая нагрузка…</option>
-                        </select>
-                        <template x-if="nodeMeterForm.out_target==='new'">
-                          <input type="text" x-model="nodeMeterForm.new_load_name" placeholder="название новой нагрузки"
-                                 data-testid="node-meter-new-load">
+                        <!-- П9: весь прибор одной линией или по линии на каждую фазу -->
+                        <div class="sf-lbl">Как подключить прибор?</div>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+                          <input type="radio" value="total" x-model="nodeMeterForm.mode" style="width:auto"
+                                 :disabled="nodeMeterTotalDisabled()" data-testid="node-meter-mode-total">
+                          <span>все три фазы — одна линия</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+                          <input type="radio" value="phases" x-model="nodeMeterForm.mode" style="width:auto"
+                                 :disabled="!nodeMeterPhasesAvailable()" data-testid="node-meter-mode-phases">
+                          <span>по фазам — каждая фаза своя линия</span>
+                        </label>
+                        <div class="muted" style="font-size:11px" x-show="nodeMeterModeNote()!==''"
+                             x-text="nodeMeterModeNote()" data-testid="node-meter-mode-note"></div>
+                        <template x-if="nodeMeterForm.mode==='total'">
+                          <div style="display:flex;flex-direction:column;gap:4px">
+                            <div class="sf-lbl">Куда идёт линия?</div>
+                            <select x-model="nodeMeterForm.out_target" data-testid="node-meter-out-target">
+                              <template x-for="l in nodeMeterOutLines()" :key="'l'+l.edge_id">
+                                <option :value="'line:'+l.edge_id" x-text="'→ к «'+l.other_node_name+'» (линия уже есть)'"></option>
+                              </template>
+                              <template x-for="n in nodeMeterLoadTargets()" :key="'n'+n.id">
+                                <option :value="'node:'+n.id" x-text="'→ к «'+n.name+'» (линия будет создана)'"></option>
+                              </template>
+                              <option value="new">+ новая нагрузка…</option>
+                            </select>
+                            <template x-if="nodeMeterForm.out_target==='new'">
+                              <input type="text" x-model="nodeMeterForm.new_load_name" placeholder="название новой нагрузки"
+                                     data-testid="node-meter-new-load">
+                            </template>
+                          </div>
+                        </template>
+                        <template x-if="nodeMeterForm.mode==='phases'">
+                          <div style="display:flex;flex-direction:column;gap:6px" data-testid="node-meter-phases">
+                            <div class="sf-lbl">Куда идёт линия каждой фазы?</div>
+                            <template x-for="r in nodeMeterPhaseRows()" :key="r.phase">
+                              <div :data-testid="'node-meter-phase-'+r.phase"
+                                   style="display:flex;flex-direction:column;gap:3px;border:1px solid var(--line);border-radius:6px;padding:6px">
+                                <div style="display:flex;align-items:center;gap:6px">
+                                  <span class="sf-val" style="min-width:24px" x-text="r.phase"></span>
+                                  <template x-if="r.busy">
+                                    <span class="muted" style="font-size:12px"
+                                          :data-testid="'node-meter-phase-busy-'+r.phase"
+                                          x-text="'занята точкой «'+r.busy_name+'»'"></span>
+                                  </template>
+                                  <template x-if="!r.busy">
+                                    <select x-model="nodeMeterForm.phases[r.phase].target" style="flex:1"
+                                            :data-testid="'node-meter-phase-target-'+r.phase">
+                                      <option value="skip">не используется</option>
+                                      <template x-for="l in nodeMeterOutLines()" :key="'l'+l.edge_id">
+                                        <option :value="'line:'+l.edge_id" x-text="'→ к «'+l.other_node_name+'» (линия уже есть)'"></option>
+                                      </template>
+                                      <template x-for="n in nodeMeterLoadTargets()" :key="'n'+n.id">
+                                        <option :value="'node:'+n.id" x-text="'→ к «'+n.name+'» (линия будет создана)'"></option>
+                                      </template>
+                                      <option value="new">+ новая нагрузка…</option>
+                                    </select>
+                                  </template>
+                                </div>
+                                <template x-if="!r.busy && nodeMeterForm.phases[r.phase].target==='new'">
+                                  <input type="text" x-model="nodeMeterForm.phases[r.phase].new_load_name"
+                                         placeholder="название новой нагрузки"
+                                         :data-testid="'node-meter-phase-new-'+r.phase">
+                                </template>
+                              </div>
+                            </template>
+                            <template x-if="nodeMeterPhasesProblem()!==''">
+                              <div class="warn-item" data-testid="node-meter-phases-problem"
+                                   x-text="nodeMeterPhasesProblem()"></div>
+                            </template>
+                          </div>
                         </template>
                       </div>
                     </template>
@@ -2839,7 +2901,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                         <option :value="d.device_id" :disabled="d.disabled" :selected="d.device_id===nodeMeterForm.device_id" x-text="d.label"></option>
                       </template>
                     </select>
-                    <div class="muted" style="font-size:11px" x-show="structKnownDevicesLoaded && structFreeDevices().length===0">
+                    <div class="muted" style="font-size:11px" x-show="structKnownDevicesLoaded && structSelectableDevices().length===0">
                       Свободных приборов нет: все известные приборы уже заняты точками учёта.
                     </div>
                     <div class="sf-lbl">Название счётчика</div>
@@ -2851,6 +2913,10 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                         <input type="radio" :value="c.value" x-model="nodeMeterForm.measures" style="width:auto">
                         <span x-text="c.label"></span>
                       </label>
+                    </template>
+                    <template x-if="nodeMeterForm.measures==='input' && nodeMeterBusyPhases().length">
+                      <div class="warn-item" data-testid="node-meter-input-busy"
+                           x-text="'Часть фаз этого прибора уже занята ('+nodeMeterBusyPhases().map(b=>b.phase).join(', ')+') — вводу нужен весь прибор. Выберите другой прибор или поставьте свободные фазы на отходящие линии.'"></div>
                     </template>
                     <template x-if="nodeMeterForm.measures==='input' && nodeMeterInLine()">
                       <div class="muted" style="font-size:11px"
@@ -2873,19 +2939,77 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     </template>
                     <template x-if="nodeMeterForm.measures==='outgoing'">
                       <div style="display:flex;flex-direction:column;gap:4px">
-                        <div class="sf-lbl">Куда идёт линия?</div>
-                        <select x-model="nodeMeterForm.out_target" data-testid="node-meter-out-target">
-                          <template x-for="l in nodeMeterOutLines()" :key="'l'+l.edge_id">
-                            <option :value="'line:'+l.edge_id" x-text="'→ к «'+l.other_node_name+'» (линия уже есть)'"></option>
-                          </template>
-                          <template x-for="n in nodeMeterLoadTargets()" :key="'n'+n.id">
-                            <option :value="'node:'+n.id" x-text="'→ к «'+n.name+'» (линия будет создана)'"></option>
-                          </template>
-                          <option value="new">+ новая нагрузка…</option>
-                        </select>
-                        <template x-if="nodeMeterForm.out_target==='new'">
-                          <input type="text" x-model="nodeMeterForm.new_load_name" placeholder="название новой нагрузки"
-                                 data-testid="node-meter-new-load">
+                        <!-- П9: весь прибор одной линией или по линии на каждую фазу -->
+                        <div class="sf-lbl">Как подключить прибор?</div>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+                          <input type="radio" value="total" x-model="nodeMeterForm.mode" style="width:auto"
+                                 :disabled="nodeMeterTotalDisabled()" data-testid="node-meter-mode-total">
+                          <span>все три фазы — одна линия</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;font-size:13px">
+                          <input type="radio" value="phases" x-model="nodeMeterForm.mode" style="width:auto"
+                                 :disabled="!nodeMeterPhasesAvailable()" data-testid="node-meter-mode-phases">
+                          <span>по фазам — каждая фаза своя линия</span>
+                        </label>
+                        <div class="muted" style="font-size:11px" x-show="nodeMeterModeNote()!==''"
+                             x-text="nodeMeterModeNote()" data-testid="node-meter-mode-note"></div>
+                        <template x-if="nodeMeterForm.mode==='total'">
+                          <div style="display:flex;flex-direction:column;gap:4px">
+                            <div class="sf-lbl">Куда идёт линия?</div>
+                            <select x-model="nodeMeterForm.out_target" data-testid="node-meter-out-target">
+                              <template x-for="l in nodeMeterOutLines()" :key="'l'+l.edge_id">
+                                <option :value="'line:'+l.edge_id" x-text="'→ к «'+l.other_node_name+'» (линия уже есть)'"></option>
+                              </template>
+                              <template x-for="n in nodeMeterLoadTargets()" :key="'n'+n.id">
+                                <option :value="'node:'+n.id" x-text="'→ к «'+n.name+'» (линия будет создана)'"></option>
+                              </template>
+                              <option value="new">+ новая нагрузка…</option>
+                            </select>
+                            <template x-if="nodeMeterForm.out_target==='new'">
+                              <input type="text" x-model="nodeMeterForm.new_load_name" placeholder="название новой нагрузки"
+                                     data-testid="node-meter-new-load">
+                            </template>
+                          </div>
+                        </template>
+                        <template x-if="nodeMeterForm.mode==='phases'">
+                          <div style="display:flex;flex-direction:column;gap:6px" data-testid="node-meter-phases">
+                            <div class="sf-lbl">Куда идёт линия каждой фазы?</div>
+                            <template x-for="r in nodeMeterPhaseRows()" :key="r.phase">
+                              <div :data-testid="'node-meter-phase-'+r.phase"
+                                   style="display:flex;flex-direction:column;gap:3px;border:1px solid var(--line);border-radius:6px;padding:6px">
+                                <div style="display:flex;align-items:center;gap:6px">
+                                  <span class="sf-val" style="min-width:24px" x-text="r.phase"></span>
+                                  <template x-if="r.busy">
+                                    <span class="muted" style="font-size:12px"
+                                          :data-testid="'node-meter-phase-busy-'+r.phase"
+                                          x-text="'занята точкой «'+r.busy_name+'»'"></span>
+                                  </template>
+                                  <template x-if="!r.busy">
+                                    <select x-model="nodeMeterForm.phases[r.phase].target" style="flex:1"
+                                            :data-testid="'node-meter-phase-target-'+r.phase">
+                                      <option value="skip">не используется</option>
+                                      <template x-for="l in nodeMeterOutLines()" :key="'l'+l.edge_id">
+                                        <option :value="'line:'+l.edge_id" x-text="'→ к «'+l.other_node_name+'» (линия уже есть)'"></option>
+                                      </template>
+                                      <template x-for="n in nodeMeterLoadTargets()" :key="'n'+n.id">
+                                        <option :value="'node:'+n.id" x-text="'→ к «'+n.name+'» (линия будет создана)'"></option>
+                                      </template>
+                                      <option value="new">+ новая нагрузка…</option>
+                                    </select>
+                                  </template>
+                                </div>
+                                <template x-if="!r.busy && nodeMeterForm.phases[r.phase].target==='new'">
+                                  <input type="text" x-model="nodeMeterForm.phases[r.phase].new_load_name"
+                                         placeholder="название новой нагрузки"
+                                         :data-testid="'node-meter-phase-new-'+r.phase">
+                                </template>
+                              </div>
+                            </template>
+                            <template x-if="nodeMeterPhasesProblem()!==''">
+                              <div class="warn-item" data-testid="node-meter-phases-problem"
+                                   x-text="nodeMeterPhasesProblem()"></div>
+                            </template>
+                          </div>
                         </template>
                       </div>
                     </template>

@@ -380,6 +380,32 @@ def test_total_binding_does_not_raise_generation_and_phase_does():
     print("[OK] total_3p оставляет поколение 2, первая пофазная привязка поднимает до 3")
 
 
+def test_devices_report_phase_channels_and_points_report_phase():
+    """Форма «+ Счётчик» решает по этим полям, можно ли «по фазам» и какую фазу меряет точка."""
+    client, db = make_world()
+    try:
+        # приборы реестра БД (registry/meters) и видимые только в MQTT (unregistered)
+        assert client.post("/api/registry/meters", json={"device_id": DEV, "display_name": "Трёхфазный"}).status_code == 201
+        assert client.post("/api/registry/meters", json={"device_id": "wb-plain_1", "display_name": "Простой"}).status_code == 201
+        reg = {m["device_id"]: m for m in client.get("/api/registry/meters").get_json()["items"]}
+        assert reg[DEV]["phase_channels"] is True and reg["wb-plain_1"]["phase_channels"] is False, reg
+        unreg = {m["device_id"]: m for m in client.get("/api/meters/unregistered").get_json()["items"]}
+        assert unreg["wb-map3e_17"]["phase_channels"] is True, unreg
+
+        panel = make_node(client, "Щит 1", "panel")
+        assert by_phases(client, panel["id"], DEV, [
+            {"phase": "L2", "new_load_name": "Розетки"}]).status_code == 201
+        assert add_meter(client, panel["id"], device_id="wb-plain_1", measures="outgoing",
+                         new_load_name="Станок").status_code == 201
+        pts = {p["meter_device_id"]: p for p in client.get("/api/v2/structure/points").get_json()["points"]}
+        assert pts[DEV]["meter_phase"] == "L2" and pts[DEV]["channel_profile"] == "phase_l2", pts[DEV]
+        assert pts["wb-plain_1"]["meter_phase"] is None and pts["wb-plain_1"]["channel_profile"] == "total_3p"
+    finally:
+        db.close()
+    print("[OK] registry/meters и unregistered называют phase_channels; structure/points — "
+          "channel_profile и meter_phase точки")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

@@ -24,8 +24,13 @@
       // Форма — всегда объект (шаблоны x-model читают её поля даже в момент
       // закрытия); открыта ли она, говорит флаг nodeMeterOpen.
       nodeMeterOpen:false,
+      // П9: mode 'total' — весь прибор одной линией, 'phases' — по линии на фазу
+      // (phases[Lx].target: 'skip' | 'line:<id>' | 'node:<id>' | 'new').
       nodeMeterForm:{node_id:null, device_id:'', name:'', nameTouched:false, measures:'input',
-                     out_target:'', new_load_name:'', fed_from_node_id:'', saving:false, error:null},
+                     out_target:'', new_load_name:'', fed_from_node_id:'', saving:false, error:null,
+                     mode:'total',
+                     phases:{L1:{target:'skip', new_load_name:''}, L2:{target:'skip', new_load_name:''},
+                             L3:{target:'skip', new_load_name:''}}},
 
       // ---- П4: приборы, занятые точками (с сервера, structure/points)
       structOccupiedDevices:[],
@@ -60,14 +65,24 @@
           const free=[], busy=[];
           (this.structKnownDevices||[]).forEach(d=>{
             const o=occ[d.device_id];
-            if(o){
+            if(o && o.fully_busy!==false){
               busy.push({device_id:d.device_id, disabled:true,
                 label:(d.name||d.device_id)+' — занят точкой «'+(o.point_name||'без имени')+'»'});
+            }else if(o){
+              // П9: часть фаз занята — прибор выбрать можно, ставятся свободные фазы
+              free.push({device_id:d.device_id, disabled:false,
+                label:(d.name||d.device_id)+' — свободны '+(o.free_phases||[]).join(', ')});
             }else{
               free.push({device_id:d.device_id, disabled:false, label:d.label});
             }
           });
           return free.concat(busy);
+        },
+
+      // Приборы, которые можно выбрать в форме «+ Счётчик»: свободные и занятые
+      // не полностью (у них остались свободные фазы).
+      structSelectableDevices(){
+          return this.structDeviceOptions().filter(o=>!o.disabled);
         },
 
       structFreeDevices(){
@@ -108,6 +123,7 @@
               point_id:e.primary_point_id, edge_id:e.id, role, direction,
               name: p ? (p.name||p.code) : ('#'+e.primary_point_id),
               device_id: p ? p.meter_device_id : null,
+              phase: p ? (p.meter_phase||null) : null,
               power_w: snap ? snap.power_w : null,
               energy: (this.structTreeEnergy||{})[e.primary_point_id]||null,
             });
@@ -143,9 +159,13 @@
         },
 
       // Подпись счётчика для списка: «имя · прибор — роль».
+      // П9: у пофазной точки в подписи — прибор и фаза («wb-map3e_16 · L1 — линия к
+      // «Освещение»»).
       structMeterTitle(m){
-          const dev = m.device_id && m.device_id!==m.name ? (' · '+m.device_id) : '';
-          return m.name+dev+' — '+m.role;
+          let base=m.name;
+          if(m.phase && !String(base).endsWith(' · '+m.phase)) base+=' · '+m.phase;
+          const dev = m.device_id && String(base).indexOf(m.device_id)<0 ? (' · '+m.device_id) : '';
+          return base+dev+' — '+m.role;
         },
 
       // Дерево по опубликованным действующим линиям: корни — элементы без
@@ -280,6 +300,9 @@
             measures: kind==='source' ? 'outgoing' : 'input',
             out_target:'', new_load_name:'', fed_from_node_id:'',
             saving:false, error:null,
+            mode:'total',
+            phases:{L1:{target:'skip', new_load_name:''}, L2:{target:'skip', new_load_name:''},
+                    L3:{target:'skip', new_load_name:''}},
           };
           this.nodeMeterForm=f;
           this.nodeMeterOpen=true;
@@ -292,6 +315,81 @@
       nodeMeterDeviceChanged(){
           const f=this.nodeMeterForm; if(!f || !this.nodeMeterOpen) return;
           if(!f.nameTouched) f.name = f.device_id ? this.structDeviceName(f.device_id) : '';
+          // П9: способ подключения зависит от прибора — если часть фаз занята,
+          // «все три фазы» невозможно; если пофазных счётчиков нет — наоборот.
+          f.phases={L1:{target:'skip', new_load_name:''}, L2:{target:'skip', new_load_name:''},
+                    L3:{target:'skip', new_load_name:''}};
+          if(this.nodeMeterBusyPhases().length && this.nodeMeterPhasesAvailable()) f.mode='phases';
+          else f.mode='total';
+        },
+
+      _nodeMeterDevice(){
+          const f=this.nodeMeterForm;
+          return (this.structKnownDevices||[]).find(x=>x.device_id===f.device_id)||null;
+        },
+
+      // Уже занятые фазы выбранного прибора: [{phase, point_name}].
+      nodeMeterBusyPhases(){
+          const f=this.nodeMeterForm;
+          const occ=f.device_id ? (this.structOccupiedMap()[f.device_id]||null) : null;
+          if(!occ || !occ.busy_phases) return [];
+          return ['L1','L2','L3'].filter(ph=>occ.busy_phases[ph]).map(ph=>({
+            phase:ph, point_name:(occ.busy_phases[ph].point_name||'без имени')}));
+        },
+
+      // «По фазам» возможно, если у прибора видны пофазные счётчики энергии.
+      nodeMeterPhasesAvailable(){
+          const d=this._nodeMeterDevice();
+          return !!(d && d.phase_channels);
+        },
+
+      // «Все три фазы» невозможно, если хотя бы одна фаза уже занята.
+      nodeMeterTotalDisabled(){ return this.nodeMeterBusyPhases().length>0; },
+
+      nodeMeterModeNote(){
+          const f=this.nodeMeterForm;
+          if(!f.device_id) return 'Выберите прибор — тогда станет видно, можно ли разнести его по фазам.';
+          const busy=this.nodeMeterBusyPhases();
+          const name=this.structDeviceName(f.device_id);
+          if(!this.nodeMeterPhasesAvailable()){
+            if(busy.length) return 'Часть фаз прибора «'+name+'» уже занята ('+busy.map(b=>b.phase).join(', ')+
+              '), а пофазных счётчиков энергии (AP energy L1–L3) в MQTT не видно — ставить на него больше нечего.';
+            return 'У прибора «'+name+'» нет пофазных счётчиков энергии (AP energy L1–L3) — '+
+              'доступно только «все три фазы — одна линия».';
+          }
+          if(busy.length) return 'Фазы '+busy.map(b=>b.phase).join(', ')+' прибора «'+name+
+            '» уже заняты — «все три фазы» недоступно; свободным фазам назначьте по своей линии.';
+          return '';
+        },
+
+      nodeMeterPhaseRows(){
+          const busy={}; this.nodeMeterBusyPhases().forEach(b=>{ busy[b.phase]=b; });
+          return ['L1','L2','L3'].map(ph=>({
+            phase:ph, busy:!!busy[ph], busy_name: busy[ph] ? busy[ph].point_name : ''}));
+        },
+
+      // Задания фаз, которые уйдут на сервер: [{phase, target, new_load_name}].
+      _nodeMeterActivePhases(){
+          const f=this.nodeMeterForm;
+          return this.nodeMeterPhaseRows().filter(r=>!r.busy).map(r=>({
+            phase:r.phase, target:(f.phases[r.phase]||{}).target||'skip',
+            new_load_name:((f.phases[r.phase]||{}).new_load_name||'').trim()}))
+            .filter(x=>x.target!=='skip');
+        },
+
+      // Текст, почему «по фазам» нельзя отправить сейчас (или '').
+      nodeMeterPhasesProblem(){
+          const act=this._nodeMeterActivePhases();
+          const seen=new Set();
+          for(const a of act){
+            if(a.target==='new') continue;
+            if(seen.has(a.target)){
+              return 'Одну и ту же линию нельзя отдать двум фазам: выберите для каждой фазы свою '+
+                'линию или «+ новая нагрузка…».';
+            }
+            seen.add(a.target);
+          }
+          return '';
         },
 
       nodeMeterChoices(){
@@ -365,9 +463,17 @@
       nodeMeterCanSubmit(){
           const f=this.nodeMeterForm; if(!this.nodeMeterOpen || f.saving || !f.device_id) return false;
           if(f.measures==='input'){
+            if(this.nodeMeterBusyPhases().length) return false;     // вводу нужен весь прибор
             if(this.nodeMeterInLine()) return !this.nodeMeterInLineBusy();
             return !!f.fed_from_node_id;
           }
+          if(f.mode==='phases'){
+            if(!this.nodeMeterPhasesAvailable() || this.nodeMeterPhasesProblem()) return false;
+            const act=this._nodeMeterActivePhases();
+            if(!act.length) return false;
+            return act.every(a=>a.target!=='new' || a.new_load_name!=='');
+          }
+          if(this.nodeMeterTotalDisabled()) return false;
           if(f.out_target==='new') return !!(f.new_load_name||'').trim();
           return !!f.out_target;
         },
@@ -378,7 +484,24 @@
           const body={device_id:f.device_id, measures:f.measures};
           const nm=(f.name||'').trim();
           if(nm) body.name=nm;
-          if(f.measures==='input'){
+          if(f.measures==='outgoing' && f.mode==='phases'){
+            const prob=this.nodeMeterPhasesProblem();
+            if(prob){ f.error=prob; return; }
+            const act=this._nodeMeterActivePhases();
+            if(!act.length){ f.error='Выберите хотя бы одну фазу: куда идёт её линия'; return; }
+            body.mode='phases';
+            body.phases=[];
+            for(const a of act){
+              const it={phase:a.phase};
+              if(a.target.indexOf('line:')===0) it.line_id=Number(a.target.slice(5));
+              else if(a.target.indexOf('node:')===0) it.to_node_id=Number(a.target.slice(5));
+              else if(a.target==='new'){
+                if(!a.new_load_name){ f.error='Назовите новую нагрузку для фазы '+a.phase; return; }
+                it.new_load_name=a.new_load_name;
+              }
+              body.phases.push(it);
+            }
+          }else if(f.measures==='input'){
             if(!this.nodeMeterInLine()){
               if(!f.fed_from_node_id){ f.error='Укажите, откуда питается этот элемент'; return; }
               body.fed_from_node_id=Number(f.fed_from_node_id);
@@ -404,14 +527,19 @@
             // выбор и повторяет (текст отказа — человеческий, без служебных слов).
             if(!r.ok){ f.error=this._apiErrorMessage(d, r.status); return; }
             const pointName=d.point ? (d.point.name||d.point.code) : '';
-            if(d.attached==='already'){
+            if(d.mode==='phases'){
+              const loads=(d.phases||[]).filter(p=>p.node).map(p=>'«'+p.node.name+'»');
+              this.showToast('Счётчик «'+this.structDeviceName(f.device_id)+'» поставлен по фазам: '+
+                (d.phases||[]).map(p=>p.phase).join(', ')+
+                (loads.length ? ('; нагрузки '+loads.join(', ')+' добавлены в схему') : ''), true);
+            }else if(d.attached==='already'){
               this.showToast('Этот прибор уже стоит на этой линии («'+pointName+'»)', true);
             }else{
               this.showToast('Счётчик «'+pointName+'» поставлен'+
                 (d.node ? ('; нагрузка «'+d.node.name+'» добавлена в схему') : ''), true);
             }
             this.nodeMeterOpen=false;
-            if(d.created_edge || d.node) await this._schemePlaceAfterMeter(d, f.node_id);
+            if(d.created_edge || d.node || (d.phases||[]).length) await this._schemePlaceAfterMeter(d, f.node_id);
             await this._loadStructureLists();
             if(this.planV3Current) await this.reloadPlanV3Items();
             else await this.openInspectorInPlace('node', f.node_id);
@@ -430,23 +558,35 @@
           try{
             const itemOf=(nid)=>(plan.items||[]).find(it=>it.kind==='node' && it.node_id===nid);
             const parent=itemOf(nodeId);
-            let newItem=null;
-            if(d.node && parent && parent.geometry){
-              const {x,y}=this._planV3SpotNear(plan, parent.geometry, d.node.name);
-              const ir=await fetch('/api/v2/plans/'+plan.id+'/items', {
-                method:'POST', headers:{'Content-Type':'application/json'},
-                body: JSON.stringify({kind:'node', node_id:d.node.id, geometry:{x,y},
-                  coord_space:this._planV3CoordSpace(), label:d.node.name})});
-              if(ir.ok) newItem=await ir.json();
-            }
-            if(d.created_edge && d.edge){
-              const find=(nid)=>itemOf(nid)||(newItem && newItem.node_id===nid ? newItem : null);
-              const fromItem=find(d.edge.from_node_id), toItem=find(d.edge.to_node_id);
-              if(fromItem && toItem){
-                await fetch('/api/v2/plans/'+plan.id+'/edges', {
+            // «По фазам» создаёт до трёх линий и нагрузок за раз (П9): каждая
+            // нагрузка встаёт в своё свободное место, учитывая уже поставленные
+            // этим же действием (extra).
+            const entries = (d.mode==='phases')
+              ? (d.phases||[]).map(p=>({node:p.node, edge:p.edge, created_edge:p.created_edge}))
+              : [{node:d.node, edge:d.edge, created_edge:d.created_edge}];
+            const extra=[];
+            for(const en of entries){
+              let newItem=null;
+              if(en.node && parent && parent.geometry){
+                const {x,y}=this._planV3SpotNear(plan, parent.geometry, en.node.name, extra);
+                const ir=await fetch('/api/v2/plans/'+plan.id+'/items', {
                   method:'POST', headers:{'Content-Type':'application/json'},
-                  body: JSON.stringify({edge_id:d.edge.id, from_item_id:fromItem.id,
-                                         to_item_id:toItem.id, view_kind:'structural'})});
+                  body: JSON.stringify({kind:'node', node_id:en.node.id, geometry:{x,y},
+                    coord_space:this._planV3CoordSpace(), label:en.node.name})});
+                if(ir.ok){
+                  newItem=await ir.json();
+                  extra.push({kind:'node', node_id:en.node.id, geometry:{x,y}, label:en.node.name});
+                }
+              }
+              if(en.created_edge && en.edge){
+                const find=(nid)=>itemOf(nid)||(newItem && newItem.node_id===nid ? newItem : null);
+                const fromItem=find(en.edge.from_node_id), toItem=find(en.edge.to_node_id);
+                if(fromItem && toItem){
+                  await fetch('/api/v2/plans/'+plan.id+'/edges', {
+                    method:'POST', headers:{'Content-Type':'application/json'},
+                    body: JSON.stringify({edge_id:en.edge.id, from_item_id:fromItem.id,
+                                           to_item_id:toItem.id, view_kind:'structural'})});
+                }
               }
             }
           }catch(e){ /* значок на плане — удобство; схема уже записана */ }

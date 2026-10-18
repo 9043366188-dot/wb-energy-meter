@@ -393,14 +393,16 @@ function _planV3FreeSpot(o){
 
       // П8: место для значка нового элемента рядом с родителем — одно на «+ Счётчик»
       // (scheme.js::_schemePlaceAfterMeter) и «Добавить отходящую линию».
-      _planV3SpotNear(plan, parentGeom, label){
+      _planV3SpotNear(plan, parentGeom, label, extraItems){
           const [W,H]=this._planV3EffectiveDims(plan);
           const zoom=_planV3Map ? _planV3Map.getZoom() : -1;
           const nodeName=(id)=>{
             const n=(this.structNodes||[]).find(x=>x.id===id);
             return n ? (n.name||n.code||'') : '';
           };
-          const occupied=(plan.items||[])
+          // extraItems — значки, созданные этим же действием и ещё не попавшие в
+          // plan.items (счётчик «по фазам» ставит до трёх нагрузок подряд).
+          const occupied=(plan.items||[]).concat(extraItems||[])
             .filter(it=>it.kind==='node' && it.geometry && typeof it.geometry.x==='number')
             .map(it=>({x:it.geometry.x, y:it.geometry.y, text:nodeName(it.node_id)||it.label||''}));
           const spot=_planV3FreeSpot({W, H, unit:1/Math.pow(2, zoom), parent:parentGeom,
