@@ -382,6 +382,34 @@ def test_image_size_limit_rejected():
         db.close(); os.unlink(path)
 
 
+def test_large_area_accepted_r16():
+    """R16 (20.10.2026): предел площади 24 Мп снят — план 7200×4840 (≈35 Мп,
+    как у Кира) принимается; предел длинной стороны 8192 px остаётся (см.
+    test_image_size_limit_rejected)."""
+    client, db, path, plans_dir = make_client()
+    try:
+        assert MAX_DECODED_MEGAPIXELS >= MAX_DECODED_LONG_SIDE ** 2
+        png_bytes = make_png(7200, 4840)
+        r = client.post("/api/v2/plans", data={
+            "name": "Большой план", "plan_kind": "floor",
+            "file": (io.BytesIO(png_bytes), "bg.png"),
+        }, content_type="multipart/form-data")
+        assert r.status_code == 201, (r.status_code, r.get_json())
+        d = r.get_json()
+        assert (d["image_width"], d["image_height"]) == (7200, 4840), d
+
+        # Квадрат 8192×8192 (67 Мп) — тоже принимается: площадь ограничена
+        # только стороной.
+        r = client.post("/api/v2/plans", data={
+            "name": "Квадрат", "plan_kind": "floor",
+            "file": (io.BytesIO(make_png(8192, 8192)), "bg.png"),
+        }, content_type="multipart/form-data")
+        assert r.status_code == 201, (r.status_code, r.get_json())
+        print("[OK] R16: площадь больше 24 Мп принимается, предел — только сторона 8192 px")
+    finally:
+        db.close(); os.unlink(path)
+
+
 def test_waypoints_out_of_bounds_rejected():
     """Тест: waypoints с точками вне границ плана отклоняются 400."""
     client, db, path, plans_dir = make_client()
@@ -713,6 +741,7 @@ if __name__ == "__main__":
     test_plan_item_removal_preserves_entity()
     test_plan_delete_cascade_and_404s()
     test_image_size_limit_rejected()
+    test_large_area_accepted_r16()
     test_waypoints_out_of_bounds_rejected()
     test_layout_frontend_payload_shape()
     test_layout_frontend_payload_shape_waypoints_drawing()
