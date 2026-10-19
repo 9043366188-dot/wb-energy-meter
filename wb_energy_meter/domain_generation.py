@@ -42,6 +42,16 @@ LEGACY_GENERATION = 1
 # Поколение 2 — этап F (docs/migration-plan-v2.md, ТЗ §11.2): первое,
 # понимающее /api/v2 и доменную модель metering_point/topology/plan_items.
 CURRENT_GENERATION = 2
+# Поколение 3 — партия находок 0.22.3 (П9, docs/design-phase-aggregates.md):
+# код понимает пофазные привязки (`phase_l1`…`phase_l3`) и считает их по
+# пофазным часовым итогам. Код поколения 2 такую точку посчитал бы по итогу
+# всего прибора — молча неверно, поэтому с ПЕРВОЙ пофазной привязки БД
+# требует читателя поколения 3 (`mark_phase_binding`), а откат на 0.22.2
+# блокируется стражем (`scripts/check-generation.sh`, `self-update.sh`).
+# До первой пофазной привязки БД остаётся поколения 2 и откат разрешён.
+PHASE_GENERATION = 3
+# Что понимает САМ код (то же число — `__code_generation__` в `__init__.py`).
+CODE_GENERATION = PHASE_GENERATION
 
 KEY_DOMAIN_GENERATION = "domain_model_generation"
 KEY_MIN_READER_GENERATION = "minimum_reader_generation"
@@ -110,4 +120,38 @@ def mark_v2_domain_write(c, revision: Optional[str] = None) -> bool:
     _upsert(KEY_V2_FIRST_WRITE, rev)
     _upsert(KEY_DOMAIN_GENERATION, CURRENT_GENERATION)
     _upsert(KEY_MIN_READER_GENERATION, CURRENT_GENERATION)
+    return True
+
+
+def mark_phase_binding(c) -> bool:
+    """Отметить первую пофазную привязку: поднять поколение БД до
+    `PHASE_GENERATION`. Как и `mark_v2_domain_write`, принимает курсор уже
+    открытой транзакции и вызывается внутри того же `db.transaction()`, что и
+    запись привязки, — маркер и данные попадают в БД атомарно.
+
+    Идемпотентно: если БД уже требует читателя поколения 3 и выше — ничего не
+    делает и возвращает False. Поколение не убывает. Если v2-записей ещё не
+    было, сначала ставит их маркер (`mark_v2_domain_write`), чтобы набор
+    ключей поколения всегда был согласован."""
+    row = c.execute(
+        "SELECT value FROM kv WHERE key = ?", (KEY_MIN_READER_GENERATION,)
+    ).fetchone()
+    current = LEGACY_GENERATION
+    if row is not None:
+        try:
+            current = _coerce_generation(json.loads(row[0]))
+        except (TypeError, ValueError):
+            current = _coerce_generation(row[0])
+    if current >= PHASE_GENERATION:
+        return False
+
+    mark_v2_domain_write(c)
+    now = int(time.time())
+    for key in (KEY_DOMAIN_GENERATION, KEY_MIN_READER_GENERATION):
+        c.execute(
+            "INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+            "updated_at = excluded.updated_at",
+            (key, json.dumps(PHASE_GENERATION), now),
+        )
     return True

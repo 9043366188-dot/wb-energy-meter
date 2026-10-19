@@ -191,7 +191,7 @@ def migration_status(db) -> Dict[str, Any]:
     Ключи:
       schema_version              — максимальная применённая миграция схемы;
       code_generation             — поколение, которое объявляет ЭТОТ код
-                                    (`domain_generation.CURRENT_GENERATION`);
+                                    (`domain_generation.CODE_GENERATION`, = `__code_generation__`);
       domain_model_generation,
       minimum_reader_generation   — ключи `kv` (нет ключа = поколение 1);
       model_v2_first_write_revision — метка первой записи через /api/v2 или
@@ -237,7 +237,7 @@ def migration_status(db) -> Dict[str, Any]:
 
         return {
             "schema_version": schema_version,
-            "code_generation": domain_generation.CURRENT_GENERATION,
+            "code_generation": domain_generation.CODE_GENERATION,
             "domain_model_generation": domain_generation.get_domain_generation(kv),
             "minimum_reader_generation": domain_generation.get_min_reader_generation(kv),
             "model_v2_first_write_revision":

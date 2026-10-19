@@ -67,3 +67,6 @@ NOTES.local
 
 # Скриншоты браузерных тестов (tests/browser/, партия 7, этап 1)
 tests/browser/_shots/
+
+# Репетиция пилота: таблицы раздела 4
+tests/pilot/_out/

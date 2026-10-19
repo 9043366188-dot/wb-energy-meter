@@ -11,15 +11,12 @@
 - topology_service — достижимость по активному графу сети для отклонения
   электрически пересекающихся sum() (A03/A04).
 
-Известное ограничение первой реализации (см. §6.2 ТЗ, "Ключ нового
-исходного агрегата"): `period_aggregates` всё ещё хранит один час на
-физический прибор (meter_id), без разделения по channel_profile/эпохе —
-полная многоканальная схема агрегатов не входит в эту задачу и остаётся
-отдельным, ещё не выполненным пунктом плана. measured_point() поэтому
-корректно обрабатывает сегментацию по времени и замене прибора (A18/A19,
-не делит агрегат на границе), но предполагает один канал на прибор, как
-сейчас в проде — раздельные total_3p/phase_* агрегаты для одного и того же
-физического WB-MAP3E пока не различаются на уровне сырых данных.
+Профиль привязки выбирает источник итогов (партия находок 0.22.3, П9,
+docs/design-phase-aggregates.md): `total_3p` — `period_aggregates` (итог
+прибора, `Total AP energy`), `phase_l1`…`phase_l3` — `phase_aggregates`
+(часы фазы, `AP energy Lx`). Раньше профиль не смотрели вовсе, и точка на
+фазе получала расход всего прибора. Сегментация по времени и замене прибора
+(A18/A19, агрегат на границе не делится) от профиля не зависит.
 """
 
 from __future__ import annotations
@@ -41,6 +38,22 @@ from .topology_service import build_children_map, is_descendant
 log = logging.getLogger(__name__)
 
 HOUR = 3600
+
+
+def _repo_for_profile(aggregates_repo, channel_profile):
+    """Репозиторий часовых итогов для профиля привязки сегмента: `total_3p`
+    — сам `aggregates_repo` (итоги прибора), `phase_lN` — итоги фазы N
+    (`AggregateRepo.for_profile`). Репозиторий без `for_profile` пофазные
+    итоги дать не может — это ошибка конфигурации, а не «нет данных»: молча
+    отдать итог прибора фазе значило бы вернуть неверное число."""
+    if channel_profile in (None, "total_3p"):
+        return aggregates_repo
+    for_profile = getattr(aggregates_repo, "for_profile", None)
+    if for_profile is None:
+        raise ValueError(
+            "репозиторий агрегатов не умеет пофазные итоги (профиль %r)"
+            % (channel_profile,))
+    return for_profile(channel_profile)
 
 
 class AccountingConflict(ValueError):
@@ -191,14 +204,16 @@ def measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
     # запросом каждый — на сегмент, а не на час; результат раскладывается
     # по часам в памяти. Логика по часам (гэпы/edge_approx/reset) не
     # изменилась ни на строчку — изменился только способ достать данные.
-    seg_data = {}  # id(segment) -> (meter_id | None, {period_start: HourlyAggregate})
+    # П9: итоги берутся из репозитория ПРОФИЛЯ сегмента (прибор или фаза).
+    seg_data = {}  # id(segment) -> (meter_id | None, {period_start: HourlyAggregate}, repo)
     for seg in segments:
         src = meter_source_repo.get_by_id(seg.meter_source_id)
         if src is None:
-            seg_data[id(seg)] = (None, {})
+            seg_data[id(seg)] = (None, {}, None)
             continue
-        rows = aggregates_repo.list_range(src.meter_id, seg.ts_from, seg.ts_to)
-        seg_data[id(seg)] = (src.meter_id, {a.period_start: a for a in rows})
+        seg_repo = _repo_for_profile(aggregates_repo, seg.channel_profile)
+        rows = seg_repo.list_range(src.meter_id, seg.ts_from, seg.ts_to)
+        seg_data[id(seg)] = (src.meter_id, {a.period_start: a for a in rows}, seg_repo)
 
     requested_hours = set(h for h, _ in hours)
     sparse_by_seg = {}          # id(segment) -> _SparseRuns
@@ -221,7 +236,7 @@ def measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
             continue
 
         seg = covering[0]
-        meter_id, agg_by_hour = seg_data[id(seg)]
+        meter_id, agg_by_hour, seg_repo = seg_data[id(seg)]
         if meter_id is None:
             parts.append(None)
             flags.add(QF_GAP)
@@ -233,7 +248,7 @@ def measured_point(point_binding_repo, aggregates_repo, meter_source_repo,
         if agg is not None and agg.quality_flag == QF_SPARSE:
             runs = sparse_by_seg.get(id(seg))
             if runs is None:
-                runs = _SparseRuns(aggregates_repo, meter_id, requested_hours)
+                runs = _SparseRuns(seg_repo, meter_id, requested_hours)
                 sparse_by_seg[id(seg)] = runs
             run = runs.resolve(h_start, agg_by_hour, seg)
             if run["valid"]:

@@ -57,6 +57,9 @@ def main() -> int:
         page.click("button:has-text('+ Элемент схемы')")
         page.wait_for_timeout(300)
         page.fill("input[placeholder='Название']", "Ввод")
+        # П11: форма инструмента сдвигает карту вниз — координаты клика берём
+        # из свежего замера, а не из замера до открытия формы.
+        box = page.locator(".leaflet-container:visible").first.bounding_box()
         page.mouse.click(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * 0.3)
         page.wait_for_timeout(1500)
         n_nodes = len(page.evaluate("fetch('/api/v2/topology/nodes').then(r=>r.json())"))
@@ -68,6 +71,7 @@ def main() -> int:
         z_before = page.evaluate("_planV3Map.getZoom()")
         page.click("button:has-text('+ Элемент схемы')")
         page.fill("input[placeholder='Название']", "ЩР-1")
+        box = page.locator(".leaflet-container:visible").first.bounding_box()
         page.mouse.click(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5)
         page.wait_for_timeout(1500)
         z_after = page.evaluate("_planV3Map.getZoom()")

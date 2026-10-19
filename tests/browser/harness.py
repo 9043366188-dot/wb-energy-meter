@@ -50,7 +50,7 @@ from wb_energy_meter.db import Database  # noqa: E402
 from wb_energy_meter.repo import GroupRepo, MeterRepo  # noqa: E402
 from wb_energy_meter.alert_repo import AlertRepo  # noqa: E402
 from wb_energy_meter.api import create_app, _AppState  # noqa: E402
-from wb_energy_meter.model import MeterRegistry  # noqa: E402
+from wb_energy_meter.model import ControlState, MeterRegistry  # noqa: E402
 from wb_energy_meter.aggregates_repo import AggregateRepo, HourlyAggregate  # noqa: E402
 from wb_energy_meter.consumption import ConsumptionService  # noqa: E402
 from wb_energy_meter.wb_db_client import RpcError  # noqa: E402
@@ -218,14 +218,34 @@ class Harness:
             p_avg=None, p_max=None, samples_count=1, quality_flag="ok",
             computed_at=0))
 
-    def see_in_mqtt(self, device_id, display_name=None):
+    def seed_phase_energy(self, device_id, phase, kwh, period_start=0, period_end=HOUR):
+        """Часовой агрегат ФАЗЫ прибора (`phase_aggregates`, П9). Прибор уже
+        должен быть в `meters` — его заводит «+ Счётчик» → «по фазам»."""
+        meter = self.meters_repo.get_by_device_id(device_id)
+        assert meter is not None, f"прибор {device_id} должен уже существовать"
+        AggregateRepo(self.db).for_profile("phase_" + phase.lower()).upsert(HourlyAggregate(
+            meter_id=meter.id, period_start=period_start, period_end=period_end,
+            ap_energy_start=0.0, ap_energy_end=kwh, ap_energy_delta=kwh,
+            p_avg=None, p_max=None, samples_count=1, quality_flag="ok",
+            computed_at=0))
+
+    def see_in_mqtt(self, device_id, display_name=None, phases=False):
         """Прибор «виден в MQTT», но ещё не привязан ни к одной точке —
         заполняет MeterRegistry напрямую, без настоящего брокера
         (браузерные сценарии не поднимают mosquitto — это не даемон/e2e
-        юнит-тест, а HTTP+UI поверх готовых данных в БД)."""
+        юнит-тест, а HTTP+UI поверх готовых данных в БД).
+
+        `phases=True` — у прибора есть пофазные счётчики энергии
+        (`AP energy L1…L3`, как у WB-MAP3E): только тогда «+ Счётчик» разрешает
+        «по фазам» (партия находок 0.22.3, П9)."""
         m = self.registry.get_or_create(device_id)
         if display_name:
             m.display_name = display_name
+        if phases:
+            for ph in ("L1", "L2", "L3"):
+                name = "AP energy " + ph
+                m.controls[name] = ControlState(name=name, value=1.0, raw_value="1.0",
+                                                meta={"type": "value"})
         return m
 
     def create_plan(self, name="Смоук"):
@@ -284,5 +304,12 @@ def open_browser(url: str, viewport=None, timezone_id=None) -> BrowserPage:
         kwargs["timezone_id"] = timezone_id
     page = browser.new_page(**kwargs)
     bp = BrowserPage(pw, browser, page)
+    # Замедление процессора браузера (WBEM_BROWSER_CPU_THROTTLE=4 — в 4 раза):
+    # ловит гонки, которые на быстрой машине не видны, а на медленном CI
+    # дают мигающие тесты (П11: x-show Alpine, вписывание карты после await).
+    throttle = float(os.environ.get("WBEM_BROWSER_CPU_THROTTLE") or 1)
+    if throttle > 1:
+        page.context.new_cdp_session(page).send(
+            "Emulation.setCPUThrottlingRate", {"rate": throttle})
     page.goto(url)
     return bp

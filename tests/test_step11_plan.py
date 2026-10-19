@@ -631,7 +631,7 @@ def test_migration_004_on_existing_db():
         # комплекте) — должна доехать до текущей версии, ничего не потеряв.
         db = Database(path=dbpath)
         db.open()
-        assert db.current_schema_version() == 5
+        assert db.current_schema_version() == 6  # 006 — пофазные итоги (П9, 0.22.3)
 
         row = db.conn().execute(
             "SELECT display_name, group_id FROM meters WHERE device_id='wb-map3e_1'"
@@ -650,12 +650,12 @@ def test_migration_004_on_existing_db():
             assert n == 0, t
 
         # И миграции можно применить второй раз (повторный запуск сервиса)
-        # без ошибок — current_schema_version уже 5, значит они просто
+        # без ошибок — current_schema_version уже 6, значит они просто
         # пропускаются (см. db.py::_apply_migrations: version <= current).
         db.close()
         db2 = Database(path=dbpath)
         db2.open()
-        assert db2.current_schema_version() == 5
+        assert db2.current_schema_version() == 6
         db2.close()
     print("[OK] миграции 004-005 применяются на БД с данными v0.10.0 без потерь")
 

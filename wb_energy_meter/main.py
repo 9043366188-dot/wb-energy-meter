@@ -23,6 +23,7 @@ from .status import StatusEngine
 from .wb_db_client import WbDbClient
 from .aggregates_repo import AggregateRepo
 from .aggregator import Aggregator, AggregatorConfig
+from .binding_service import open_phase_targets
 from .alert_repo import AlertRepo
 
 log = logging.getLogger(__name__)
@@ -136,6 +137,8 @@ def main(argv=None):
         db_client=wb_db_client,
         meters_repo=meters_repo,
         aggregates_repo=aggregates_repo,
+        # П9: фазы считаются только у приборов с открытой пофазной привязкой
+        phase_targets=lambda: open_phase_targets(db),
     )
     aggregator.start()
 

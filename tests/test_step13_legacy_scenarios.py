@@ -201,7 +201,7 @@ def test_migration_apply_is_not_atomic():
                    # ниже; этот тест намеренно бьёт мимо него, напрямую
                    # через executescript, чтобы задокументировать, ПОЧЕМУ
                    # атомарный протокол вообще понадобился)
-        assert db.current_schema_version() == 5
+        assert db.current_schema_version() == 6  # 006 — пофазные итоги (П9, 0.22.3)
 
         # Имитация гипотетической будущей миграции, применённой СТАРЫМ
         # способом (прямой executescript, без обёртки) — вторая
@@ -226,7 +226,7 @@ def test_migration_apply_is_not_atomic():
         assert "hypothetical_probe" in tables, (
             "если это упало — поведение executescript уже изменилось, "
             "обновите тест и docs/migration-plan-v2.md")
-        assert db.current_schema_version() == 5  # версия гипотетической миграции нигде не записана
+        assert db.current_schema_version() == 6  # версия гипотетической миграции нигде не записана
 
         try:
             db.conn().executescript(
@@ -252,16 +252,16 @@ def test_atomic_migration_wrapper_rolls_back_cleanly():
     try:
         db = Database(path=os.path.join(tmpdir, "state.db"))
         db.open()
-        assert db.current_schema_version() == 5
+        assert db.current_schema_version() == 6  # 006 — пофазные итоги (П9, 0.22.3)
 
         broken_sql = (
             "CREATE TABLE hypothetical_probe (id INTEGER PRIMARY KEY, code TEXT);\n"
             "CREATE TABEL hypothetical_probe_2 (id INTEGER PRIMARY KEY);\n"
             "INSERT INTO schema_migrations (version, name, applied_at) "
-            "VALUES (6, 'hypothetical', strftime('%s','now'));\n"
+            "VALUES (7, 'hypothetical', strftime('%s','now'));\n"
         )
         try:
-            db._apply_migration_atomic(6, "hypothetical", broken_sql)
+            db._apply_migration_atomic(7, "hypothetical", broken_sql)
             raise AssertionError("ожидалась ошибка на опечатке")
         except sqlite3.OperationalError:
             pass
@@ -271,17 +271,17 @@ def test_atomic_migration_wrapper_rolls_back_cleanly():
         assert "hypothetical_probe" not in tables, (
             "атомарный протокол должен откатывать ВСЁ, включая уже "
             "выполненные statements того же скрипта")
-        assert db.current_schema_version() == 5, "версия не должна была измениться"
+        assert db.current_schema_version() == 6, "версия не должна была измениться"
 
         # Повторный запуск после исправления опечатки проходит штатно —
         # идемпотентность восстановлена.
         fixed_sql = (
             "CREATE TABLE hypothetical_probe (id INTEGER PRIMARY KEY, code TEXT);\n"
             "INSERT INTO schema_migrations (version, name, applied_at) "
-            "VALUES (6, 'hypothetical', strftime('%s','now'));\n"
+            "VALUES (7, 'hypothetical', strftime('%s','now'));\n"
         )
-        db._apply_migration_atomic(6, "hypothetical", fixed_sql)
-        assert db.current_schema_version() == 6
+        db._apply_migration_atomic(7, "hypothetical", fixed_sql)
+        assert db.current_schema_version() == 7
         print("[OK] атомарный протокол миграций откатывает частично "
               "применённый DDL целиком и остаётся идемпотентным")
     finally:

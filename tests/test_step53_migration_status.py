@@ -99,7 +99,7 @@ def test_m1_empty_db_reports_generation_1_and_zero_counts():
             expected_schema = c.execute(
                 "SELECT MAX(version) AS v FROM schema_migrations").fetchone()["v"]
         assert s["schema_version"] == expected_schema and expected_schema >= 5, s
-        assert s["code_generation"] == domain_generation.CURRENT_GENERATION == 2
+        assert s["code_generation"] == domain_generation.CODE_GENERATION == 3  # П9: код понимает пофазные привязки
         # ключей kv нет → «поколение 1», как требует docs/migration-plan-v2.md §7
         assert s["domain_model_generation"] == 1
         assert s["minimum_reader_generation"] == 1

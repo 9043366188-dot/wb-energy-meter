@@ -34,6 +34,10 @@
 
       rv2Result:null,
 
+      // Результат отчёта или пустой объект — для выражений внутри блока результата
+      // (см. комментарий у `x-if="!rv2Loading && rv2Result"` в index.html).
+      rv2R(){ return this.rv2Result || {}; },
+
       rv2Points:[],
 
       rv2Groups:[],

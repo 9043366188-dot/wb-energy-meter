@@ -186,7 +186,8 @@ def add_consumer_line(node_repo, edge_repo, from_node_id: int, load_name: str, *
                        load_code: Optional[str] = None,
                        edge_code: Optional[str] = None,
                        rated_current_a: Optional[float] = None,
-                       cable_note: Optional[str] = None):
+                       cable_note: Optional[str] = None,
+                       phase_count: Optional[int] = None):
     """«Добавить отходящую линию» (§1 задания) — заводит узел-потребителя
     (kind='load') с именем load_name и линию к нему от from_node_id,
     одним действием пользователя. Проверка "from_node_id не load" —
@@ -209,7 +210,8 @@ def add_consumer_line(node_repo, edge_repo, from_node_id: int, load_name: str, *
 
     edge = connect_nodes(
         node_repo, edge_repo, from_node_id, new_node.id,
-        code=edge_code, rated_current_a=rated_current_a, cable_note=cable_note)
+        code=edge_code, rated_current_a=rated_current_a, cable_note=cable_note,
+        phase_count=phase_count)
     return new_node, edge
 
 
@@ -217,7 +219,8 @@ def resolve_meter_line(node_repo, edge_repo, node_id: int, measures: str, *,
                        line_id: Optional[int] = None,
                        to_node_id: Optional[int] = None,
                        new_load_name: Optional[str] = None,
-                       fed_from_node_id: Optional[int] = None):
+                       fed_from_node_id: Optional[int] = None,
+                       phase_count: Optional[int] = None):
     """Какую линию измеряет новый счётчик узла `node_id` (партия 13, П5,
     «+ Счётчик»). Возвращает (edge, created_edge, new_node): линию,
     признак «линия создана этим же действием» и новый узел-нагрузку (или
@@ -236,6 +239,8 @@ def resolve_meter_line(node_repo, edge_repo, node_id: int, measures: str, *,
                    к существующему узлу (`to_node_id`; линия создаётся,
                    если её не было), либо к НОВОЙ нагрузке
                    (`new_load_name`).
+    `phase_count` (П9, «по фазам») — число фаз для СОЗДАВАЕМЫХ этим вызовом
+    линий (у линии одной фазы — 1); существующую линию проставляет вызывающий.
     ValueError — неверные входные данные (400); PlanV3Conflict — правила
     леса (409)."""
     node = node_repo.get_by_id(node_id)
@@ -276,7 +281,8 @@ def resolve_meter_line(node_repo, edge_repo, node_id: int, measures: str, *,
         feeder = node_repo.get_by_id(fed_from_node_id)
         if feeder is None or feeder.archived_at is not None:
             raise ValueError(f"Узел {fed_from_node_id} не найден")
-        edge = connect_nodes(node_repo, edge_repo, fed_from_node_id, node_id)
+        edge = connect_nodes(node_repo, edge_repo, fed_from_node_id, node_id,
+                             phase_count=phase_count)
         return edge, True, None
 
     # outgoing
@@ -295,11 +301,13 @@ def resolve_meter_line(node_repo, edge_repo, node_id: int, measures: str, *,
         existing = next((e for e in outs if e.to_node_id == to_node_id), None)
         if existing is not None:
             return existing, False, None
-        edge = connect_nodes(node_repo, edge_repo, node_id, to_node_id)
+        edge = connect_nodes(node_repo, edge_repo, node_id, to_node_id,
+                             phase_count=phase_count)
         return edge, True, None
     if new_load_name is not None and str(new_load_name).strip():
         new_node, edge = add_consumer_line(
-            node_repo, edge_repo, node_id, str(new_load_name))
+            node_repo, edge_repo, node_id, str(new_load_name),
+            phase_count=phase_count)
         return edge, True, new_node
     raise ValueError(
         "укажите, какую отходящую линию измеряет счётчик: существующую "
@@ -307,11 +315,16 @@ def resolve_meter_line(node_repo, edge_repo, node_id: int, measures: str, *,
         "(new_load_name)")
 
 
-def describe_node_lines(node_repo, edge_repo, point_repo, node_id: int) -> List[dict]:
+def describe_node_lines(node_repo, edge_repo, point_repo, node_id: int,
+                        binding_repo=None, source_repo=None) -> List[dict]:
     """Список линий узла для карточки (§1 задания: «в карточке узла
     показывать список линий этого узла») — одна входящая (максимум,
     инвариант леса) и сколько угодно отходящих, каждая — со своей
-    измеряющей точкой (или без неё, линия без счётчика допустима)."""
+    измеряющей точкой (или без неё, линия без счётчика допустима).
+
+    С `binding_repo` и `source_repo` (П9) у линии с точкой добавлены
+    `meter_device_id`, `channel_profile` и `phase` ("L1"…"L3" или null) —
+    карточка узла пишет «wb-map3e_16 · L1 — линия к «Освещение»»."""
     node = node_repo.get_by_id(node_id)
     if node is None:
         raise ValueError(f"Узел {node_id} не найден")
@@ -345,6 +358,18 @@ def describe_node_lines(node_repo, edge_repo, point_repo, node_id: int) -> List[
             "phase_count": e.phase_count, "rated_current_a": e.rated_current_a,
             "cable_note": e.cable_note,
         })
+        if binding_repo is not None and source_repo is not None:
+            device_id = profile = phase = None
+            if point is not None:
+                binding = binding_repo.get_open_primary(point.id)
+                if binding is not None:
+                    src = source_repo.get_by_id(binding.meter_source_id)
+                    device_id = src.device_id if src is not None else None
+                    profile = binding.channel_profile
+                    phase = {"phase_l1": "L1", "phase_l2": "L2",
+                             "phase_l3": "L3"}.get(profile)
+            out[-1].update({"meter_device_id": device_id,
+                            "channel_profile": profile, "phase": phase})
     # входящая линия — первой, отходящие — по имени другого узла
     out.sort(key=lambda d: (d["direction"] != "in", d["other_node_name"] or ""))
     return out

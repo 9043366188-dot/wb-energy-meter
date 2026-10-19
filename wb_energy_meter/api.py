@@ -134,6 +134,15 @@ def _build_status(state):
     }
 
 
+def _has_phase_channels(state, device_id) -> bool:
+    """П9: видны ли в MQTT пофазные счётчики энергии прибора (`AP energy L1…L3`)."""
+    registry = getattr(state, "registry", None)
+    meter = registry.get(device_id) if registry is not None else None
+    if meter is None:
+        return False
+    return all(meter.get("AP energy " + ph) is not None for ph in ("L1", "L2", "L3"))
+
+
 def _sync_registry_groups(state) -> None:
     """Push-синхронизация group/display_name из БД в in-memory реестр.
 
@@ -600,6 +609,7 @@ def create_app(state):
             m = state.registry.get(did)
             result.append({
                 "device_id": did,
+                "phase_channels": _has_phase_channels(state, did),
                 "mqtt_name": m.mqtt_name if m else None,
                 "serial": m.get_serial() if m else None,
                 "status": m.status.value if m else "unknown",
@@ -647,10 +657,14 @@ def create_app(state):
         if state.meters_repo is None:
             return json_response({"error": "meters_repo not available"}, 503)
         items = state.meters_repo.list_all()
-        return json_response({
-            "count": len(items),
-            "items": [m.to_dict() for m in items],
-        })
+        out = []
+        for m in items:
+            d = m.to_dict()
+            # П9: есть ли у прибора пофазные счётчики энергии — от этого зависит,
+            # можно ли ставить счётчик «по фазам» (форма «+ Счётчик»)
+            d["phase_channels"] = _has_phase_channels(state, m.device_id)
+            out.append(d)
+        return json_response({"count": len(items), "items": out})
 
     @app.route("/api/registry/meters/<device_id>", methods=["GET"])
     def api_registry_meter_get(device_id):

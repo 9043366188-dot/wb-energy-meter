@@ -556,7 +556,9 @@ class ElectricalEdgeRepo:
         тот же метод, чтобы карточка могла сохранить оба вида полей
         ОДНИМ PATCH-запросом, одной транзакцией, без двойного расхода
         ревизии. `fields` — словарь с любым подмножеством ключей
-        {"primary_point_id", "name", "rated_current_a", "cable_note"};
+        {"primary_point_id", "name", "rated_current_a", "cable_note",
+        "phase_count"} (последнее — партия находок 0.22.3, П9: линия одной
+        фазы получает phase_count = 1);
         отсутствующие ключи не трогаются, лишние — молча игнорируются.
 
         Уникальность «одна точка — максимум одна ДЕЙСТВУЮЩАЯ связь»
@@ -564,7 +566,9 @@ class ElectricalEdgeRepo:
         valid_to IS NULL) уже гарантирована схемой — здесь она только
         транслируется в понятный ValueError вместо голого
         sqlite3.IntegrityError."""
-        allowed_meta = ("name", "rated_current_a", "cable_note")
+        allowed_meta = ("name", "rated_current_a", "cable_note", "phase_count")
+        if fields.get("phase_count") not in (None, 1, 2, 3):
+            raise ValueError("число фаз линии: 1, 2 или 3")
         has_point = "primary_point_id" in fields
         meta = [(k, fields[k]) for k in allowed_meta if k in fields]
         if not has_point and not meta:
