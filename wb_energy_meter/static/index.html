@@ -2229,7 +2229,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <span x-show="planUploadBusy"><span class="spin" style="width:12px;height:12px"></span> Загрузка…</span>
               </button>
               <div class="muted" style="color:var(--err)" x-show="planUploadError" x-text="planUploadError"></div>
-              <div class="muted">Принимаются PNG и JPEG, до 10 МБ. SVG не поддерживается — экспортируйте план в PNG.</div>
+              <div class="muted">Принимаются PNG и JPEG, до 25 МБ. SVG не поддерживается — экспортируйте план в PNG.</div>
             </div>
           </div>
 
@@ -2618,8 +2618,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           <button class="btn btn-primary" :disabled="planV3Saving" @click="planV3CreateEmptyPlan()">Создать план</button>
         </div>
         <div class="muted" style="font-size:11px;margin-top:6px">
-          Подложка необязательна: план помещения в PNG или JPEG, до 10 МБ. Без неё
-          план — пустой холст.
+          Подложка необязательна: план помещения в PNG или JPEG. Картинку больше
+          8192 px по стороне или 25 МБ браузер уменьшит сам. Без подложки план —
+          пустой холст.
         </div>
       </div>
     </template>
@@ -2658,7 +2659,8 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                    @change="planV3PickPlanFile($event)"></label>
           <button class="btn btn-sm btn-primary" :disabled="planV3Saving" @click="planV3CreateEmptyPlan()">Создать план</button>
           <span class="muted" style="font-size:11px;width:100%">
-            Подложка необязательна: PNG или JPEG, до 10 МБ. Схема одна на все планы:
+            Подложка необязательна: PNG или JPEG; больше 8192 px по стороне или
+            25 МБ браузер уменьшит сам. Схема одна на все планы:
             элементы, уже стоящие на другом плане, ставятся на новый кнопкой
             «Разместить на карте» в списке «Не размещены на плане».
           </span>

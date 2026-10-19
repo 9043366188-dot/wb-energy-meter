@@ -17,7 +17,10 @@
   5. «+ План» без файла → пустой холст `single_line`; у него кнопки «Заменить
      подложку…» нет.
   6. Не картинка → понятный отказ, план не создан.
-  7. Консоль без ошибок.
+  7. R16 (20.10.2026): план 7000×5000 (35 Мп — раньше отказ «слишком большая
+     площадь») загружается целиком, без уменьшения; картинка 9000×1200 (больше
+     8192 px по стороне) — браузер сам уменьшает до 8192×1092 и говорит об этом.
+  8. Консоль без ошибок.
 
 Запуск: python tests/browser/test_b18_plan_background.py
 """
@@ -44,9 +47,11 @@ def check(cond: bool, msg: str) -> None:
 
 
 def make_png(width: int, height: int, rgb=(214, 226, 240)) -> bytes:
-    """Настоящий PNG (декодируется браузером), без сторонних библиотек."""
+    """Настоящий PNG (декодируется браузером), без сторонних библиотек.
+    Сжатие построчно — большой план не держит в памяти все сырые байты."""
     row = b"\x00" + bytes(rgb) * width
-    raw = row * height
+    comp = zlib.compressobj(9)
+    raw = b"".join(comp.compress(row) for _ in range(height)) + comp.flush()
 
     def chunk(kind: bytes, data: bytes) -> bytes:
         return (struct.pack(">I", len(data)) + kind + data
@@ -54,7 +59,7 @@ def make_png(width: int, height: int, rgb=(214, 226, 240)) -> bytes:
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
-            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+            + chunk(b"IDAT", raw) + chunk(b"IEND", b""))
 
 
 def api(page, path):
@@ -87,6 +92,12 @@ def main() -> int:
         f.write(make_png(800, 500))
     with open(big, "wb") as f:
         f.write(make_png(1000, 600, rgb=(232, 236, 214)))
+    huge_area = os.path.join(tmp, "floor-7000x5000.png")
+    too_wide = os.path.join(tmp, "floor-9000x1200.png")
+    with open(huge_area, "wb") as f:
+        f.write(make_png(7000, 5000, rgb=(240, 240, 232)))
+    with open(too_wide, "wb") as f:
+        f.write(make_png(9000, 1200, rgb=(226, 240, 230)))
     with open(bad, "wb") as f:
         f.write("это не картинка".encode("utf-8"))
 
@@ -189,9 +200,42 @@ def main() -> int:
         check(image_layer(page) is None, "на пустом холсте слоя картинки нет")
         bp.screenshot("b18_plan_background")
 
+        # ---- 7. R16: большие картинки ------------------------------------------
+        def create_with(name, path, wait_ms=4000):
+            page.click("[data-testid=planv3-new-plan]")
+            page.wait_for_timeout(300)
+            f = page.locator("[data-testid=planv3-new-plan-form]:visible")
+            f.locator("input[placeholder='Название плана']").fill(name)
+            page.set_input_files("[data-testid=planv3-new-plan-form] [data-testid=planv3-new-file]", path)
+            f.locator("button", has_text="Создать план").click()
+            for _ in range(int(wait_ms / 250)):
+                page.wait_for_timeout(250)
+                got = next((p for p in api(page, "/api/v2/plans") if p["name"] == name), None)
+                if got:
+                    return got
+            return {}
+
+        p35 = create_with("35 Мп", huge_area)
+        check((p35.get("image_width"), p35.get("image_height")) == (7000, 5000),
+              f"35 Мп (раньше — отказ по площади) загружен целиком: "
+              f"{p35.get('image_width')}×{p35.get('image_height')}")
+        check("уменьшил" not in page.inner_text("body"),
+              "картинку в пределах 8192 px браузер не уменьшал")
+        layer35 = wait_image(page, 7000, tries=40)
+        check(bool(layer35) and layer35["w"] == 7000,
+              f"большая подложка показана в браузере ({layer35 and layer35['w']})")
+
+        pw = create_with("Широкий", too_wide)
+        check((pw.get("image_width"), pw.get("image_height")) == (8192, 1092),
+              f"9000×1200 браузер уменьшил до 8192×1092 и загрузил: "
+              f"{pw.get('image_width')}×{pw.get('image_height')}")
+        check("уменьшил её до 8192×1092" in page.inner_text("body"),
+              "сообщение: картинка была больше 8192 px — браузер уменьшил её до 8192×1092")
+
         # Ровно один ожидаемый отказ сервера — шаг 6 («не картинка» → 400); как
         # 409 в b07/b08, браузер пишет его в консоль сам. Других ошибок быть не должно.
         expected_400 = [e for e in bp.errors if "status of 400" in e]
+        # Шаг 7 не должен давать ни одного отказа сервера.
         check(len(expected_400) <= 1, f"400 только от шага «не картинка» ({len(expected_400)})")
         errs = [e for e in bp.errors if "status of 400" not in e]
         check(not errs, f"консоль без других ошибок ({len(errs)}): " + "; ".join(errs[:5]))

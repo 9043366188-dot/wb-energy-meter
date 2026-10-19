@@ -19,6 +19,59 @@ let _planV3NeedsFit=null;
 // поля в Proxy, а FormData.append принимает только настоящий Blob/File.
 let _planV3NewPlanFile=null;
 
+// Решение R16 (20.10.2026): сервер берёт картинку до 8192 px по длинной
+// стороне и до 25 МБ (plan_service_v2.MAX_DECODED_LONG_SIDE,
+// plan_repo.MAX_UPLOAD_BYTES). Больше — браузер уменьшает сам перед
+// загрузкой, чтобы для человека ограничения не было. Держать в синхроне с
+// сервером.
+const PLAN_IMG_MAX_SIDE=8192;
+const PLAN_IMG_MAX_BYTES=25*1024*1024;
+
+// → {blob, name, resized:{w,h}|null} или {error}. Не картинка (браузер не
+// декодирует) — отдаём файл как есть: сервер ответит понятным отказом про
+// формат. Уменьшение — по длинной стороне до PLAN_IMG_MAX_SIDE, затем, если
+// файл всё ещё больше PLAN_IMG_MAX_BYTES, — JPEG и шаг 0,8 по размеру.
+async function _planV3FitImage(file){
+  if(!file) return {blob:null, name:'', resized:null};
+  let bmp=null;
+  try{ bmp=await createImageBitmap(file); }
+  catch(e){ return {blob:file, name:file.name, resized:null}; }
+  const w=bmp.width, h=bmp.height, side=Math.max(w, h);
+  if(side<=PLAN_IMG_MAX_SIDE && file.size<=PLAN_IMG_MAX_BYTES){
+    if(bmp.close) bmp.close();
+    return {blob:file, name:file.name, resized:null};
+  }
+  const base=(file.name||'plan').replace(/\.[^.]*$/, '');
+  const toBlob=(canvas, type)=>new Promise(res=>canvas.toBlob(res, type, 0.92));
+  let scale=Math.min(1, PLAN_IMG_MAX_SIDE/side);
+  try{
+    for(let attempt=0; attempt<5; attempt++){
+      const tw=Math.max(1, Math.round(w*scale)), th=Math.max(1, Math.round(h*scale));
+      const canvas=document.createElement('canvas');
+      canvas.width=tw; canvas.height=th;
+      const ctx=canvas.getContext('2d');
+      ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
+      ctx.drawImage(bmp, 0, 0, tw, th);
+      let blob=await toBlob(canvas, file.type==='image/png' ? 'image/png' : 'image/jpeg');
+      if(blob && blob.size>PLAN_IMG_MAX_BYTES && blob.type==='image/png'){
+        blob=await toBlob(canvas, 'image/jpeg');
+      }
+      canvas.width=0; canvas.height=0;
+      if(blob && blob.size<=PLAN_IMG_MAX_BYTES){
+        return {blob, name:base+(blob.type==='image/png' ? '.png' : '.jpg'), resized:{w:tw, h:th}};
+      }
+      scale*=0.8;
+    }
+  }finally{ if(bmp.close) bmp.close(); }
+  return {error:'Не удалось уменьшить картинку до 25 МБ. Сохраните план в JPEG поменьше и выберите его снова.'};
+}
+
+function _planV3ResizedNote(fit){
+  return fit && fit.resized
+    ? ' Картинка была больше 8192 px или 25 МБ — браузер уменьшил её до '+fit.resized.w+'×'+fit.resized.h+' px.'
+    : '';
+}
+
 // П8: свободное место для значка нового элемента рядом с родителем.
 // Раньше новая нагрузка всегда ложилась в (x+60, y+60) щита: три нагрузки —
 // три значка и три подписи друг на друге. Чистая функция (без DOM): ряд под
@@ -359,9 +412,12 @@ function _planV3FreeSpot(o){
           try{
             const fd=new FormData();
             fd.append('name', name);
+            let fit=null;
             if(_planV3NewPlanFile){
+              fit=await _planV3FitImage(_planV3NewPlanFile);
+              if(fit.error){ this.showToast(fit.error, false); return; }
               fd.append('plan_kind', 'floor');
-              fd.append('file', _planV3NewPlanFile);
+              fd.append('file', fit.blob, fit.name);
             }else{
               fd.append('plan_kind', 'single_line');
               fd.append('canvas_width', '2000'); fd.append('canvas_height', '1200');
@@ -374,6 +430,7 @@ function _planV3FreeSpot(o){
             this.planV3NewPlanOpen=false;
             await this.loadPlanV3List();
             await this.selectPlanV3(d.id);
+            if(fit && fit.resized) this.showToast('План создан.'+_planV3ResizedNote(fit), true);
           }catch(e){ this.showToast('Ошибка сети: '+e, false); }
           finally{ this.planV3Saving=false; }
         },
@@ -388,13 +445,15 @@ function _planV3FreeSpot(o){
           if(!f || !pc || pc.plan_kind!=='floor'){ if(input) input.value=''; return; }
           this.planV3BgBusy=true;
           try{
+            const fit=await _planV3FitImage(f);
+            if(fit.error){ this.showToast(fit.error, false); return; }
             const fd=new FormData();
-            fd.append('file', f);
+            fd.append('file', fit.blob, fit.name);
             const r=await fetch('/api/v2/plans/'+pc.id+'/image', {method:'POST', body:fd});
             const d=await r.json();
             if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
             await this.selectPlanV3(pc.id);
-            this.showToast('Подложка заменена. Значки остались на прежних местах картинки — проверьте, что они стоят где нужно.', true);
+            this.showToast('Подложка заменена. Значки остались на прежних местах картинки — проверьте, что они стоят где нужно.'+_planV3ResizedNote(fit), true);
           }catch(e){ this.showToast('Ошибка сети: '+e, false); }
           finally{ this.planV3BgBusy=false; if(input) input.value=''; }
         },
