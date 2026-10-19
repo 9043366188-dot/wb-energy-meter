@@ -2608,11 +2608,18 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     <template x-if="!planV3Loading && planV3Plans.length===0">
       <div class="plan-empty" style="text-align:left;max-width:560px;margin:0 auto;line-height:1.5">
         <b>Планов пока нет.</b><br>
-        Создайте пустой план ниже, чтобы расставлять на нём элементы схемы.
+        Создайте план ниже, чтобы расставлять на нём элементы схемы.
         <span x-text="schemeEmptyHint"></span>
-        <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <input type="text" x-model="planV3NewPlanName" placeholder="Название плана" style="max-width:260px">
+          <label class="muted" style="font-size:12px">Подложка:
+            <input type="file" accept="image/png,image/jpeg" data-testid="planv3-new-file"
+                   @change="planV3PickPlanFile($event)"></label>
           <button class="btn btn-primary" :disabled="planV3Saving" @click="planV3CreateEmptyPlan()">Создать план</button>
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:6px">
+          Подложка необязательна: план помещения в PNG или JPEG, до 10 МБ. Без неё
+          план — пустой холст.
         </div>
       </div>
     </template>
@@ -2624,6 +2631,16 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             <option :value="p.id" x-text="p.name"></option>
           </template>
         </select>
+        <button class="btn btn-sm" data-testid="planv3-new-plan" :class="{'btn-primary': planV3NewPlanOpen}"
+                @click="planV3NewPlanOpen=!planV3NewPlanOpen">+ План</button>
+        <template x-if="planV3Current && planV3Current.plan_kind==='floor'">
+          <label class="btn btn-sm btn-secondary" data-testid="planv3-replace-bg" style="cursor:pointer"
+                 :class="{'disabled': planV3BgBusy}">
+            <span x-text="planV3BgBusy ? 'Загрузка…' : 'Заменить подложку…'"></span>
+            <input type="file" accept="image/png,image/jpeg" style="display:none"
+                   :disabled="planV3BgBusy" @change="planV3ReplaceBackground($event)">
+          </label>
+        </template>
         <div class="spacer"></div>
         <button class="btn btn-sm" :class="{'btn-primary': planV3Tool=='node'}" @click="planV3SetTool('node')">+ Элемент схемы</button>
         <button class="btn btn-sm" :class="{'btn-primary': planV3Tool=='edge'}" @click="planV3SetTool('edge')">+ Линия</button>
@@ -2632,6 +2649,21 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         <button class="btn btn-sm btn-danger" x-show="planV3Current" data-testid="plan-delete"
                 @click="askDeletePlan()">Удалить план</button>
       </div>
+
+      <template x-if="planV3NewPlanOpen">
+        <div class="plan-toolbar" style="margin-top:-6px;flex-wrap:wrap" data-testid="planv3-new-plan-form">
+          <input type="text" x-model="planV3NewPlanName" placeholder="Название плана" style="max-width:220px">
+          <label class="muted" style="font-size:12px">Подложка:
+            <input type="file" accept="image/png,image/jpeg" data-testid="planv3-new-file"
+                   @change="planV3PickPlanFile($event)"></label>
+          <button class="btn btn-sm btn-primary" :disabled="planV3Saving" @click="planV3CreateEmptyPlan()">Создать план</button>
+          <span class="muted" style="font-size:11px;width:100%">
+            Подложка необязательна: PNG или JPEG, до 10 МБ. Схема одна на все планы:
+            элементы, уже стоящие на другом плане, ставятся на новый кнопкой
+            «Разместить на карте» в списке «Не размещены на плане».
+          </span>
+        </div>
+      </template>
 
       <template x-if="planV3Tool=='node'">
         <div class="plan-toolbar" style="margin-top:-6px;flex-wrap:wrap" data-testid="planv3-node-form">

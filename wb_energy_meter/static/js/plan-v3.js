@@ -15,6 +15,9 @@ let _planV3ImageLayer=null;
 const _planV3ItemLayers=new Map();
 const _planV3EdgeLayers=new Map();
 let _planV3NeedsFit=null;
+// Файл подложки для нового плана. Хранится вне компонента: Alpine оборачивает
+// поля в Proxy, а FormData.append принимает только настоящий Blob/File.
+let _planV3NewPlanFile=null;
 
 // П8: свободное место для значка нового элемента рядом с родителем.
 // Раньше новая нагрузка всегда ложилась в (x+60, y+60) щита: три нагрузки —
@@ -73,6 +76,13 @@ function _planV3FreeSpot(o){
       planV3Current:null,
 
       planV3NewPlanName:'',
+
+      // 0.22.4: форма «+ План» в панели и имя выбранного файла подложки.
+      planV3NewPlanOpen:false,
+
+      planV3NewPlanFileName:'',
+
+      planV3BgBusy:false,
 
       planV3Tool:null,
 
@@ -334,21 +344,59 @@ function _planV3FreeSpot(o){
           this.planV3Loading=false;
         },
 
+      // Файл подложки для «Создать план» (поле в пустом состоянии и в форме «+ План»).
+      planV3PickPlanFile(ev){
+          const f=(ev && ev.target && ev.target.files && ev.target.files[0]) || null;
+          _planV3NewPlanFile=f;
+          this.planV3NewPlanFileName=f ? f.name : '';
+        },
+
+      // 0.22.4: план с подложкой — вид «floor» (координаты — пиксели картинки,
+      // _planV3CoordSpace), без файла — пустой холст «single_line», как раньше.
       async planV3CreateEmptyPlan(){
           const name=(this.planV3NewPlanName||'').trim() || 'План v3';
           this.planV3Saving=true;
           try{
             const fd=new FormData();
-            fd.append('name', name); fd.append('plan_kind', 'single_line');
-            fd.append('canvas_width', '2000'); fd.append('canvas_height', '1200');
+            fd.append('name', name);
+            if(_planV3NewPlanFile){
+              fd.append('plan_kind', 'floor');
+              fd.append('file', _planV3NewPlanFile);
+            }else{
+              fd.append('plan_kind', 'single_line');
+              fd.append('canvas_width', '2000'); fd.append('canvas_height', '1200');
+            }
             const r=await fetch('/api/v2/plans', {method:'POST', body:fd});
             const d=await r.json();
             if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
             this.planV3NewPlanName='';
+            _planV3NewPlanFile=null; this.planV3NewPlanFileName='';
+            this.planV3NewPlanOpen=false;
             await this.loadPlanV3List();
             await this.selectPlanV3(d.id);
           }catch(e){ this.showToast('Ошибка сети: '+e, false); }
           finally{ this.planV3Saving=false; }
+        },
+
+      // 0.22.4: заменить подложку плана с картинкой. Старый файл сервер хранит
+      // (версии, §7.2); значки не пересчитываются — остаются на тех же
+      // пикселях картинки, об этом говорит сообщение.
+      async planV3ReplaceBackground(ev){
+          const input=ev && ev.target;
+          const f=(input && input.files && input.files[0]) || null;
+          const pc=this.planV3Current;
+          if(!f || !pc || pc.plan_kind!=='floor'){ if(input) input.value=''; return; }
+          this.planV3BgBusy=true;
+          try{
+            const fd=new FormData();
+            fd.append('file', f);
+            const r=await fetch('/api/v2/plans/'+pc.id+'/image', {method:'POST', body:fd});
+            const d=await r.json();
+            if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
+            await this.selectPlanV3(pc.id);
+            this.showToast('Подложка заменена. Значки остались на прежних местах картинки — проверьте, что они стоят где нужно.', true);
+          }catch(e){ this.showToast('Ошибка сети: '+e, false); }
+          finally{ this.planV3BgBusy=false; if(input) input.value=''; }
         },
 
       async selectPlanV3(id){
@@ -800,7 +848,9 @@ function _planV3FreeSpot(o){
           const [W,H]=this._planV3EffectiveDims(pc);
           const bounds=[[0,0],[H,W]];
           if(pc.plan_kind==='floor'){
-            _planV3ImageLayer=L.imageOverlay('/api/v2/plans/'+pc.id+'/image', bounds).addTo(_planV3Map);
+            // ?v= — после «Заменить подложку» тот же адрес отдал бы картинку из
+            // кэша браузера (Cache-Control: max-age=3600).
+            _planV3ImageLayer=L.imageOverlay('/api/v2/plans/'+pc.id+'/image?v='+(pc.updated_at||0), bounds).addTo(_planV3Map);
           }else{
             _planV3ImageLayer=L.rectangle(bounds, {color:_planCssVar('--line'), weight:1, fill:false, dashArray:'4,4'}).addTo(_planV3Map);
           }
