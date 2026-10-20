@@ -139,6 +139,9 @@ function _planV3FreeSpot(o){
 
       planV3Tool:null,
 
+      // Таймер троттлинга invalidateSize карты (13.1, planV3InvalidateMap).
+      _planV3InvalidateTimer:null,
+
       planV3PendingNodeForm:{kind:'panel', name:''},
 
       planV3EdgeFirstItem:null,
@@ -247,15 +250,24 @@ function _planV3FreeSpot(o){
           const pointIds=[...new Set((this.structInspector.lines||[])
             .filter(l=>l.primary_point_id!=null).map(l=>l.primary_point_id))];
           if(!pointIds.length) return;
+          // Партия 13, 13.4/13.5: лента 'card-live' — один запрос за раз; при обрыве прежние
+          // P-now остаются на карточке с признаком «устарело, обновлено ЧЧ:ММ».
+          const t=this.feedStart('card-live', {live:true, skipIfBusy:true});
+          if(!t) return;
           try{
-            const r=await fetch('/api/v2/snapshot?point_ids='+pointIds.join(','));
-            if(!r.ok) return;
+            const r=await fetch('/api/v2/snapshot?point_ids='+pointIds.join(','), {signal:t.signal});
+            if(!r.ok) throw new Error('HTTP '+r.status);
             const pts=(await r.json()).points||[];
+            if(!this.feedLive(t)) return;
             if(!this.structInspector || this.structInspector.kind!=='node' || this.structInspector.id!==nodeId) return;
             const live={};
             pts.forEach(p=>{ live[p.point_id]={power_w:p.power_w, current_a:p.current_a}; });
             this.structInspector.lineLive=live;
-          }catch(e){ /* необязательно — просто не покажем P-now */ }
+            this.feedDone(t, 'ready');
+          }catch(e){
+            if(this.feedAborted(e) || !this.feedLive(t)) return;
+            this.feedFail(t, e.message);
+          }
         },
 
       async _planV3LoadNodeLineEnergy(){
@@ -309,10 +321,16 @@ function _planV3FreeSpot(o){
           if(!this.structInspector) return;
           if(this.structInspector.kind==='edge'){
             const edgeId=this.structInspector.id;
-            const {currentA, loadPct, phases, power_w}=await this._planEdgeLiveMetrics(this.structInspector.data);
+            if(this.structInspector.data.primary_point_id==null) return;
+            const t=this.feedStart('card-live', {live:true, skipIfBusy:true});
+            if(!t) return;
+            const m=await this._planEdgeLiveMetrics(this.structInspector.data, t.signal);
+            if(m.aborted || !this.feedLive(t)) return;
+            if(m.failed){ this.feedFail(t, 'нет ответа'); return; }
             if(this.structInspector && this.structInspector.kind==='edge' && this.structInspector.id===edgeId){
-              this.structInspector.currentA=currentA; this.structInspector.loadPct=loadPct;
-              this.structInspector.phases=phases; this.structInspector.power_w=power_w;
+              this.structInspector.currentA=m.currentA; this.structInspector.loadPct=m.loadPct;
+              this.structInspector.phases=m.phases; this.structInspector.power_w=m.power_w;
+              this.feedDone(t, 'ready');
             }
           } else if(this.structInspector.kind==='node'){
             await this._planV3RefreshNodeLiveNow();
@@ -359,7 +377,10 @@ function _planV3FreeSpot(o){
           _planV3Map.setView([0,0],0);
           _planV3Map.on('click', (e)=>this._planV3OnMapClick(e));
           _planV3Map.on('pm:create', (e)=>this._planV3OnPmCreate(e));
-          window.addEventListener('resize', ()=>{ if(_planV3Map) _planV3Map.invalidateSize(); });
+          // Партия 13, 13.1: resize/поворот экрана — не чаще раза в 150 мс, зум и
+          // центр не сбрасываются (invalidateSize их не меняет, вписывание
+          // _planV3TryFit срабатывает только пока план ещё не вписан).
+          window.addEventListener('resize', ()=>this.planV3InvalidateMap());
           // Э3/B1, доп. правка (найдено браузерным прогоном test_b02 ПОСЛЕ
           // первой версии фикса выше): $nextTick после смены вкладки/выбора
           // плана НЕ гарантирует, что x-show родительского контейнера
@@ -382,6 +403,17 @@ function _planV3FreeSpot(o){
               if(_planV3Map){ _planV3Map.invalidateSize(); this._planV3TryFit(); }
             }).observe(el);
           }
+        },
+
+      // Партия 13, 13.1: «подстроить карту под контейнер» — с троттлингом;
+      // вызывается на resize окна и при открытии/закрытии панели карточки
+      // (layout.js). Зум, центр и открытая карточка не трогаются.
+      planV3InvalidateMap(){
+          if(!_planV3Map || this._planV3InvalidateTimer) return;
+          this._planV3InvalidateTimer=setTimeout(()=>{
+            this._planV3InvalidateTimer=null;
+            if(_planV3Map){ _planV3Map.invalidateSize({pan:false}); this._planV3TryFit(); }
+          },150);
         },
 
       async loadPlanV3List(){

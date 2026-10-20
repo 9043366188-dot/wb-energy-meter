@@ -161,19 +161,37 @@
         },
 
       async loadOverviewV2Snapshot(){
+          // Партия 13, 13.4/13.5: одна лента 'ov-snap' — пока предыдущий запрос не завершён,
+          // новый тик не начинает свой; при обрыве прежний снимок остаётся на экране с
+          // признаком «устарело, обновлено ЧЧ:ММ» (feedStale), а не заменяется ошибкой.
+          const t=this.feedStart('ov-snap', {live:true, skipIfBusy:true});
+          if(!t) return;
           const shouldShowLoading=!this.overviewV2Snapshot;
           if(shouldShowLoading) this.overviewV2Loading=true;
           try{
-            const r=await fetch('/api/v2/snapshot');
+            const r=await fetch('/api/v2/snapshot', {signal:t.signal});
             if(!r.ok){ throw new Error(`HTTP ${r.status}`); }
             const d=await r.json();
+            if(!this.feedLive(t)) return;
             this.overviewV2Snapshot=d;
             this.overviewV2Error=null;
+            this.feedDone(t, (d.points||[]).length===0 ? 'empty' :
+              (this.overviewV2PartialText()!=='' ? 'partial' : 'ready'));
           }catch(e){
+            if(this.feedAborted(e) || !this.feedLive(t)) return;
             this.overviewV2Error=`Не удалось загрузить снимок: ${e.message}`;
+            this.feedFail(t, e.message);
           }finally{
-            this.overviewV2Loading=false;
+            if(this.feedLive(t)) this.overviewV2Loading=false;
           }
+        },
+
+      // «Частично»: у части точек снимка нет значения мощности — суммы плиток неполные.
+      overviewV2PartialText(){
+          const pts=(this.overviewV2Snapshot||{}).points||[];
+          const missing=pts.filter(p=>p.power_w==null).length;
+          if(!pts.length || missing===0) return '';
+          return `Нет данных по ${missing} из ${pts.length} точек — суммы неполные.`;
         },
 
       overviewV2TotalPowerKw(){
@@ -255,26 +273,49 @@
           // "не удалось посчитать" — подождём, когда оба поля устаканятся
           // (второй @change перезапустит расчёт с уже верным диапазоном).
           if(this.ovFrom > this.ovTo) return;
+          // Партия 13, 13.4 (A33): каждый новый расчёт обесценивает предыдущий — запоздавший
+          // ответ СТАРОГО периода не перетирает новый (лента 'ov-summary').
+          const key=this.ovFrom+'|'+this.ovTo;
+          const t=this.feedStart('ov-summary');
           this.ovLoading=true; this.ovError=null;
           try{
             const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
             const r=await fetch('/api/v2/overview/summary', {
               method:'POST', headers:{'Content-Type':'application/json'},
               body:JSON.stringify({from:this.ovFrom, to:this.ovTo, timezone:tz}),
+              signal:t.signal,
             });
             const d=await r.json();
+            if(!this.feedLive(t)) return;
             if(!r.ok){ throw new Error(d.message||`HTTP ${r.status}`); }
             this.ovSummary=d;
+            this._ovSummaryKey=key;
             // Партия 5, задача 3 (§8.5): различать ПОЧЕМУ у точки в режиме
             // сравнения (electrическое пересечение группы) нет числа — раньше
             // везде было одно "нет данных" независимо от причины.
             if((d.branches||[]).some(b=>b.mode==='comparison')) await this._loadOvDataStateHelpers();
+            this.feedDone(t, this._ovSummaryKind(d));
           }catch(e){
+            if(this.feedAborted(e) || !this.feedLive(t)) return;
             this.ovError=`Не удалось посчитать итог за период: ${e.message}`;
-            this.ovSummary=null;
+            // Прежний итог ТОГО ЖЕ периода остаётся на экране с признаком «устарело»;
+            // итог другого периода выдавать за текущий нельзя.
+            if(this._ovSummaryKey!==key) this.ovSummary=null;
+            this.feedFail(t, e.message);
           }finally{
-            this.ovLoading=false;
+            if(this.feedLive(t)) this.ovLoading=false;
           }
+        },
+
+      _ovSummaryKey:null,
+
+      // Состояние итога по §8.5: empty — ввод не назначен (считать нечего), partial — итог
+      // неполный (не все вводы/ветви измеряются), ready — посчитан целиком.
+      _ovSummaryKind(d){
+          if(!d.object_total && d.object_total_unavailable_reason==='no_input_assigned') return 'empty';
+          if((d.unmetered_inputs||[]).length>0 || d.boundary_coverage==='has_unmetered_branches' ||
+             (d.object_total && d.object_total.value==null)) return 'partial';
+          return 'ready';
         },
 
       async _loadOvDataStateHelpers(){

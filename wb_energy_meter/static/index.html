@@ -3,7 +3,9 @@
 <head>
 <meta charset="utf-8">
 <title>wb-energy-meter</title>
-<meta name="viewport" content="width=1100">
+<!-- Партия 13, 13.1: адаптивный viewport (ТЗ §8.5). Классический набор на телефоне
+     остаётся страницей шириной 1100 — JS (js/layout.js) возвращает ему прежний viewport. -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Вендорено локально (ТЗ v0.11.0) — см. wb_energy_meter/static/vendor/VENDOR.md -->
 <link rel="stylesheet" href="/static/vendor/leaflet.css">
 <link rel="stylesheet" href="/static/vendor/leaflet-geoman.css">
@@ -297,6 +299,8 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 #site-plan-v3-map{height:calc(100vh - 220px);min-height:420px;
   border-radius:10px;border:1px solid var(--line);background:var(--bg3)}
 #site-plan-v3-map.planv3-placing{cursor:crosshair}
+/* 13.1: панели Leaflet (z-index до 1000) не должны всплывать над выдвижной панелью */
+#site-plan-v3-map{isolation:isolate}
 .leaflet-container{background:var(--bg3);font-family:inherit;outline:none}
 .leaflet-popup-content-wrapper{background:var(--bg2);color:var(--txt);
   border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.4)}
@@ -387,6 +391,69 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 .structure-chip{display:inline-block;background:var(--bg3);border:1px solid var(--line);
   border-radius:12px;padding:3px 10px;font-size:12px;margin:2px 4px 2px 0;cursor:pointer}
 .structure-chip:hover{border-color:var(--accent2)}
+
+/* ===== Партия 13, 13.1 — адаптивность (ТЗ §8.5; брейкпоинты синхронны с js/layout.js) =====
+   ≥1280 — дерево/холст и карточка рядом, как раньше; 768–1279 — карточка выдвижная
+   справа (.drawer); 360–767 — одна рабочая область, карточка — нижняя панель.
+   Классический набор при ширине 1100+ не меняется: правила ниже 1280 касаются
+   только элементов набора v2 (.drawer, .tbl-scroll, .plan-layout-v3, .structure-layout),
+   а шапка перестраивается ниже 1100. */
+:root{--hdr-h:56px}
+:focus-visible{outline:2px solid var(--accent2);outline-offset:2px}
+.tbl-scroll{overflow-x:auto;max-width:100%}
+.plan-layout>*,.structure-layout>*{min-width:0}
+.only-narrow,.drawer-head{display:none}
+.drawer:focus{outline:none}
+@media (max-width:1279px){
+  main{padding:20px 16px}
+  .only-narrow{display:inline-block}
+  .structure-layout,.plan-layout-v3.plan-edit-open{grid-template-columns:minmax(0,1fr)}
+  .structure-layout>.structure-col:not(.drawer){max-height:none;overflow:visible}
+  .drawer{position:fixed;z-index:40;top:var(--hdr-h);right:0;bottom:0;left:auto;
+    width:min(440px,100vw);max-height:none;margin:0;border-radius:0;border-width:0 0 0 1px;
+    box-shadow:-10px 0 28px rgba(0,0,0,.35);overflow:auto;
+    transform:translateX(105%);visibility:hidden;
+    transition:transform .18s ease,visibility 0s linear .18s}
+  .drawer.open{transform:none;visibility:visible;transition:transform .18s ease}
+  .drawer-head{display:flex;justify-content:flex-end;margin:0 0 8px;padding:2px 0;
+    position:sticky;top:0;z-index:1;background:var(--bg2)}
+}
+@media (max-width:1099px){
+  header{height:auto;min-height:56px;flex-wrap:wrap;padding:8px 16px;gap:8px 12px}
+  nav{order:10;flex:1 1 100%;margin-left:0;overflow-x:auto;padding-bottom:2px}
+  nav button{flex:0 0 auto;white-space:nowrap}
+}
+@media (max-width:767px){
+  header{position:static;padding:8px 12px}
+  .spacer{display:none}
+  header .ico-btn{flex:1 1 auto;text-align:center}
+  main{padding:12px}
+  .tiles{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .drawer{top:auto;left:0;right:0;width:auto;max-height:62vh;
+    border-width:1px 0 0;border-radius:14px 14px 0 0;
+    box-shadow:0 -10px 28px rgba(0,0,0,.35);transform:translateY(105%)}
+  .drawer.open{transform:none}
+  #site-plan-v3-map{height:calc(100vh - 200px);min-height:360px}
+  /* зоны касания 44×44 (ТЗ §8.5) */
+  button,.btn,.btn-sm,.ico-btn,select,input[type=text],input[type=date],input[type=number],
+  input[type=search],nav button{min-height:44px}
+  .btn,.btn-sm,.ico-btn{min-width:44px}
+  input[type=checkbox],input[type=radio]{width:22px;height:22px}
+  .structure-tree-row,.structure-tree-meter,.structure-list-row{min-height:44px}
+  [data-testid=off-scheme-device] select{max-width:60%!important;flex:1 1 auto}
+  input,select,textarea{font-size:16px}
+  .leaflet-touch .leaflet-bar a{width:44px;height:44px;line-height:44px}
+}
+/* состояния и признак устаревания (13.4): прежние данные остаются, но не выдаются за свежие */
+.feed-stale{color:var(--warn);font-size:12px;font-weight:600}
+.feed-note{font-size:12px;color:var(--txt2);margin:0 0 10px}
+.feed-note .feed-stale{margin-right:10px}
+.is-stale{opacity:.62;transition:opacity .18s ease}
+.is-loading{opacity:.7;transition:opacity .18s ease}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
+    transition-duration:.001ms!important;scroll-behavior:auto!important}
+}
 </style>
 </head>
 <body>
@@ -491,6 +558,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     <button x-show="uiSet=='v2'" :class="{active:tab=='reportsv2'}" @click="tab='reportsv2';openReportsV2Tab()">Отчёты</button>
     <button x-show="uiSet=='v2'" :class="{active:tab=='structurev2'}" @click="tab='structurev2';openStructureTab()">Структура</button>
     <button x-show="uiSet=='v2'" :class="{active:tab=='planv3'}" @click="tab='planv3';openPlanV3Tab()">План v3</button>
+    <!-- Партия 13, 13.2: «Настройки» в наборе v2 — обновление, Uptime, тема и версия;
+         разделы старой структуры (зоны, реестр, перенос) здесь не показываются. -->
+    <button x-show="uiSet=='v2'" data-testid="nav-settings-v2" :class="{active:tab=='settings'}" @click="tab='settings';loadSettings();initUpdatePanel()">Настройки</button>
   </nav>
   <div class="spacer"></div>
   <span class="muted mono" x-text="version?'v'+version:''"></span>
@@ -611,7 +681,13 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   <!-- ОБЗОР v2 (ТЗ §8.2) -->
   <template x-if="tab=='overviewv2'">
     <div>
-      <div class="tiles">
+      <!-- Партия 13, 13.4: состояние снимка — «устарело, обновлено ЧЧ:ММ» (прежние числа
+           остаются на экране, но затемнены), неполные суммы, ошибка. -->
+      <div class="feed-note" data-testid="ov-state" role="status">
+        <span class="feed-stale" data-testid="ov-stale" x-show="feedStale('ov-snap')" x-text="feedStaleText('ov-snap')"></span>
+        <span data-testid="ov-partial" x-show="overviewV2PartialText()!==''" x-text="overviewV2PartialText()"></span>
+      </div>
+      <div class="tiles" :class="{'is-stale':feedStale('ov-snap')}">
         <div class="tile">
           <div class="lbl">Мощность сейчас</div>
           <div class="val mono"><span x-text="overviewV2TotalPowerKw()!=null?fmt(overviewV2TotalPowerKw(),1):'—'"></span><small> кВт</small></div>
@@ -670,11 +746,16 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           <div class="empty"><span class="spin"></span> считаем…</div>
         </template>
         <template x-if="ovError">
-          <div class="empty" style="color:var(--err)" x-text="ovError"></div>
+          <div data-testid="ov-summary-error" :class="ovSummary?'warn-item':'empty'"
+               :style="ovSummary?'':'color:var(--err)'" x-text="ovError"></div>
         </template>
+        <div class="feed-note" data-testid="ov-summary-state" role="status" x-show="ovSummary">
+          <span class="feed-stale" data-testid="ov-summary-stale" x-show="feedStale('ov-summary')" x-text="feedStaleText('ov-summary')"></span>
+          <span data-testid="ov-summary-partial" x-show="feedStatus('ov-summary')==='partial'">Итог неполный — часть вводов или ветвей не измеряется (ниже указано, каких).</span>
+        </div>
 
-        <template x-if="!ovLoading && ovSummary">
-          <div>
+        <template x-if="ovSummary">
+          <div :class="{'is-stale':feedStale('ov-summary'), 'is-loading':ovLoading}">
             <!-- Партия 7, Э2.8: итог объекта — три исхода: полный (value
                  не null), частичный (объект есть, но value=null — не все
                  вводы измеряются, unmetered_input), и вовсе не посчитан
@@ -761,7 +842,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                  из первого измерения на каждом отходе от вводов, участвуют
                  в небалансе. Неизмеренные ветви — отдельными строками без
                  чисел (нельзя выдумывать значение). -->
-            <table class="rep-table" data-testid="ov-branches" x-show="((ovSummary||{}).network_branches||[]).length>0 || ((ovSummary||{}).unmetered_branches||[]).length>0">
+            <div class="tbl-scroll"><table class="rep-table" data-testid="ov-branches" x-show="((ovSummary||{}).network_branches||[]).length>0 || ((ovSummary||{}).unmetered_branches||[]).length>0">
               <thead><tr>
                 <th>Ветвь сети</th><th class="num">кВт·ч</th><th class="num">% объекта</th>
               </tr></thead>
@@ -781,7 +862,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   </tr>
                 </template>
               </tbody>
-            </table>
+            </table></div>
 
             <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px;padding:8px 0;
                         border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
@@ -863,7 +944,8 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         <div class="empty"><span class="spin"></span> загрузка…</div>
       </template>
       <template x-if="overviewV2Error">
-        <div class="empty" style="color:var(--err)" x-text="overviewV2Error"></div>
+        <div data-testid="ov-snap-error" :class="overviewV2Snapshot?'warn-item':'empty'"
+             :style="overviewV2Snapshot?'':'color:var(--err)'" x-text="overviewV2Error"></div>
       </template>
       <template x-if="!overviewV2Loading && overviewV2Snapshot && overviewV2Snapshot.points.length===0">
         <div class="empty" style="text-align:left;line-height:1.5" data-testid="overview-empty">
@@ -899,7 +981,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             <div class="empty" style="color:var(--err)" x-text="overviewV2GroupsError"></div>
           </template>
           <template x-if="!overviewV2GroupsError">
-            <table class="rep-table">
+            <div class="tbl-scroll"><table class="rep-table">
               <thead><tr>
                 <th>Группа</th>
                 <th class="num">P сейчас, кВт</th>
@@ -943,7 +1025,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   </tr>
                 </template>
               </tbody>
-            </table>
+            </table></div>
           </template>
 
           <!-- Разбор подтверждённых электрических пересечений — относится
@@ -1027,7 +1109,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
       <template x-if="overviewV2Snapshot && overviewV2Snapshot.points.length>0">
         <div>
         <div class="section-title">Все точки учёта</div>
-        <table class="rep-table">
+        <div class="tbl-scroll"><table class="rep-table">
           <thead><tr>
             <th>Код</th>
             <th>Имя</th>
@@ -1059,7 +1141,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               </tr>
             </template>
           </tbody>
-        </table>
+        </table></div>
         </div>
       </template>
     </div>
@@ -1074,7 +1156,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
       <div class="section-title">Отчёты (§8.4)</div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
         <label class="muted" style="font-size:12px;display:block">Срез
-          <select x-model="rv2Dimension" @change="rv2ScopeIds=[]; rv2Result=null; rv2Error=null"
+          <select x-model="rv2Dimension" @change="rv2ResetResult()"
                   style="display:block;background:var(--bg2);border:1px solid var(--line);color:var(--txt);
                          border-radius:6px;padding:6px 10px;font-size:13px;margin-top:2px">
             <option value="point">Точка</option>
@@ -1138,17 +1220,33 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         <button class="btn" @click="downloadRv2Csv()" :disabled="!rv2Result">⬇ Скачать CSV</button>
       </div>
 
-      <template x-if="rv2Loading">
-        <div class="empty"><span class="spin"></span> считаем…</div>
+      <template x-if="rv2Loading && !rv2Result">
+        <div class="empty" data-testid="rv2-loading"><span class="spin"></span> считаем…</div>
       </template>
       <template x-if="rv2Error">
-        <div class="empty" style="color:var(--err)" x-text="rv2Error"></div>
+        <div data-testid="rv2-error" :class="rv2Result?'warn-item':'empty'"
+             :style="rv2Result?'':'color:var(--err)'" x-text="rv2Error"></div>
+      </template>
+      <div class="feed-note" data-testid="rv2-state" role="status" x-show="rv2Result">
+        <span class="feed-stale" data-testid="rv2-stale" x-show="feedStale('rv2-query')" x-text="feedStaleText('rv2-query')"></span>
+        <span data-testid="rv2-partial" x-show="feedStatus('rv2-query')==='partial'"
+              x-text="'Данные неполные: у '+rv2IncompleteRows(rv2Result)+' из '+((rv2R().rows||[]).length)+' строк нет полной истории или есть конфликт — подробности в колонках «Доступность» и «Флаги / конфликт».'"></span>
+      </div>
+      <template x-if="!rv2Loading && !rv2Error && !rv2Result">
+        <div class="empty" data-testid="rv2-empty" style="text-align:left;line-height:1.5">
+          Отчёт ещё не построен. Выберите срез и период и нажмите «Показать».
+        </div>
       </template>
       <!-- rv2R() — результат или пустой объект: при смене среза результат обнуляется, и Alpine
            успевает вычислить выражения внутри уже убираемого блока (в консоль сыпалось «Cannot
            read properties of null»). Через rv2R() обращение к null невозможно. -->
-      <template x-if="!rv2Loading && rv2Result">
-        <div>
+      <template x-if="rv2Result">
+        <div :class="{'is-stale':feedStale('rv2-query'), 'is-loading':rv2Loading}">
+          <div class="empty" data-testid="rv2-no-rows" style="text-align:left;line-height:1.5"
+               x-show="(rv2R().rows||[]).length===0">
+            За выбранный период по этому срезу строк нет. Измените срез или период; если точек учёта ещё нет —
+            заведите их в «Плане v3» или на «Структуре».
+          </div>
           <div class="muted" style="font-size:11px;margin-bottom:8px">
             Ревизия конфигурации: <span x-text="rv2R().configuration_revision_id"></span> ·
             режим состава: <span x-text="rv2R().composition_mode==='as_was'?'как было на начало периода':'текущий'"></span> ·
@@ -1163,7 +1261,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               x-text="' (с '+new Date(rv2R().journal_started_at*1000).toLocaleDateString('ru-RU')+')'"></span></template>.
             Для части периода до этого момента принята схема на начало журнала — это допущение, а не подтверждённая история.
           </div>
-          <table class="rep-table">
+          <div class="tbl-scroll"><table class="rep-table">
             <thead><tr>
               <th>Название</th><th class="num">Значение</th><th>Ед.</th><th>Доступность</th>
               <th>Флаги / конфликт</th><th>Состав</th>
@@ -1210,7 +1308,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 </tr>
               </template>
             </tbody>
-          </table>
+          </table></div>
           <div class="muted" style="font-size:11px;margin-top:8px">
             Числа взяты как есть из accounting_service (та же формула, что и в Обзоре и metrics/query) —
             округление на экране (3 знака) и в CSV (тоже 3 знака) согласовано.
@@ -1245,9 +1343,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
              «Плане v3» (те же узлы и линии из structNodes/structEdges), без «мест».
              Сверху — «Не на схеме»; под схемой — учётные группы отдельным разделом.
              Поиск (A02, structure/points?q=) — по элементам схемы и точкам. -->
-        <div class="structure-col structure-search" data-testid="struct-left">
-          <input type="text" placeholder="Поиск: имя, код, MQTT ID, серийник"
-                 x-model="structQuery" @input="structureSearch()">
+        <div class="structure-col structure-search" data-testid="struct-left" data-focus-home tabindex="-1">
+          <input type="text" placeholder="Поиск: имя, код, MQTT ID, серийник" aria-label="Поиск по структуре"
+                 data-testid="struct-search-input" x-model="structQuery" @input="structureSearch()">
 
           <template x-if="structQuery.trim()!==''">
             <div data-testid="struct-search-results">
@@ -1264,6 +1362,13 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <span class="muted mono" style="font-size:11px" x-text="p.meter_device_id||'нет прибора'"></span>
                 </div>
               </template>
+              <div class="feed-note" data-testid="struct-search-state" role="status">
+                <span data-testid="struct-search-loading" x-show="feedLoading('struct-search')">Ищем…</span>
+                <span class="feed-stale" data-testid="struct-search-error" x-show="feedStatus('struct-search')==='error' && !feedLoading('struct-search')"
+                      x-text="'Поиск не ответил ('+feedError('struct-search')+') — выше результаты прошлого запроса, они могут не совпадать с набранным.'"></span>
+                <span data-testid="struct-search-empty" x-show="feedStatus('struct-search')==='empty' && !feedLoading('struct-search')">
+                  Ничего не найдено. Проверьте написание или введите MQTT ID либо серийный номер прибора.</span>
+              </div>
             </div>
           </template>
 
@@ -1404,17 +1509,34 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
              имя/код → статус/свежесть → расход за период → фазные напряжения/токи →
              чем питается/что питает → группы → текущий прибор → история замен.
              Карточка элемента схемы — та же, что в «Плане v3» (NODE-CARD ниже). -->
-        <div class="structure-col" data-testid="struct-right">
+        <div class="structure-col drawer" data-testid="struct-right" data-drawer="struct"
+             tabindex="-1" role="complementary" aria-label="Карточка выбранного"
+             :class="{open: layoutDrawerShown()}">
+          <div class="drawer-head">
+            <button class="ico-btn" data-testid="drawer-close" aria-label="Закрыть карточку"
+                    @click="layoutCloseDrawer()">✕ Закрыть</button>
+          </div>
+          <div class="feed-note" data-testid="card-state" role="status"
+               x-show="structInspector && !structInspectorLoading && !structInspectorError && (feedStale('card-live') || structInspectorPartial)">
+            <span class="feed-stale" data-testid="card-stale" x-show="feedStale('card-live')"
+                  x-text="'Мощность и ток: '+feedStaleText('card-live')"></span>
+            <span class="feed-stale" data-testid="card-partial" x-show="structInspectorPartial"
+                  x-text="structInspectorPartial"></span>
+          </div>
           <template x-if="!structInspector">
             <div class="muted" style="font-size:12px">
               Выберите элемент схемы или точку слева, чтобы увидеть карточку.
             </div>
           </template>
           <template x-if="structInspector && structInspectorLoading">
-            <div class="empty"><span class="spin"></span> загрузка…</div>
+            <div class="empty" role="status" data-testid="card-loading"><span class="spin"></span> загрузка…</div>
           </template>
           <template x-if="structInspector && !structInspectorLoading && structInspectorError">
-            <div style="color:var(--err);font-size:13px" x-text="structInspectorError"></div>
+            <div data-testid="card-error" role="alert">
+              <div style="color:var(--err);font-size:13px;margin-bottom:6px" x-text="structInspectorError"></div>
+              <button class="btn-sm" data-testid="card-retry"
+                      @click="openInspectorInPlace(structInspector.kind, structInspector.id)">Повторить</button>
+            </div>
           </template>
 
           <!-- точка -->
@@ -2649,6 +2771,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         <button class="ico-btn" x-show="planV3Tool" @click="planV3CancelTool()">✕ Отменить инструмент</button>
         <button class="btn btn-sm btn-danger" x-show="planV3Current" data-testid="plan-delete"
                 @click="askDeletePlan()">Удалить план</button>
+        <button class="btn btn-sm only-narrow" data-testid="planv3-panel-toggle"
+                aria-controls="planv3-panel" :aria-expanded="layoutDrawerShown()"
+                @click="planV3PanelOpen=!planV3PanelOpen">☰ Панель</button>
       </div>
 
       <template x-if="planV3NewPlanOpen">
@@ -2728,13 +2853,32 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         </div>
       </template>
 
-      <div class="plan-layout plan-edit-open">
-        <div id="site-plan-v3-map" x-ref="planV3Map"
+      <div class="plan-layout plan-layout-v3 plan-edit-open">
+        <div id="site-plan-v3-map" x-ref="planV3Map" data-focus-home
              :class="{'planv3-placing': planV3Tool=='node' || planV3Tool=='node-existing' || planV3Tool=='edge'}"></div>
 
-        <div class="plan-side">
-          <template x-if="structInspectorLoading"><div class="muted">Загрузка…</div></template>
-          <template x-if="structInspectorError"><div class="warn-item" x-text="structInspectorError"></div></template>
+        <div class="plan-side drawer" id="planv3-panel" data-testid="planv3-panel" data-drawer="plan"
+             tabindex="-1" role="complementary" aria-label="Карточка и список элементов плана"
+             :class="{open: layoutDrawerShown()}">
+          <div class="drawer-head">
+            <button class="ico-btn" data-testid="drawer-close" aria-label="Закрыть панель"
+                    @click="layoutCloseDrawer()">✕ Закрыть</button>
+          </div>
+          <div class="feed-note" data-testid="card-state" role="status"
+               x-show="structInspector && !structInspectorLoading && !structInspectorError && (feedStale('card-live') || structInspectorPartial)">
+            <span class="feed-stale" data-testid="card-stale" x-show="feedStale('card-live')"
+                  x-text="'Мощность и ток: '+feedStaleText('card-live')"></span>
+            <span class="feed-stale" data-testid="card-partial" x-show="structInspectorPartial"
+                  x-text="structInspectorPartial"></span>
+          </div>
+          <template x-if="structInspectorLoading"><div class="muted" role="status" data-testid="card-loading">Загрузка…</div></template>
+          <template x-if="structInspectorError">
+            <div data-testid="card-error" role="alert">
+              <div class="warn-item" x-text="structInspectorError"></div>
+              <button class="btn-sm" data-testid="card-retry"
+                      @click="openInspectorInPlace(structInspector.kind, structInspector.id)">Повторить</button>
+            </div>
+          </template>
 
           <template x-if="!structInspector && !structInspectorLoading">
             <div>
@@ -3517,6 +3661,10 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         </template>
       </div>
 
+      <!-- Партия 13, 13.2: разделы старой структуры (перенос легаси, зоны, реестр
+           счётчиков) — только в классическом наборе; в v2 группы живут в «Структуре». -->
+      <template x-if="uiSet=='classic'">
+      <div>
       <!-- Перенос легаси-данных в новую модель точек учёта -->
       <div class="settings-section">
         <h2>Перенос легаси-данных</h2>
@@ -3789,6 +3937,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         </template>
       </div>
 
+      </div>
+      </template>
+
       <!-- Опрос канала Uptime (ТЗ v0.10.0) -->
       <div class="settings-section">
         <h2>Опрос канала Uptime</h2>
@@ -3828,7 +3979,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           </div>
         </template>
 
-        <table class="reg-table" style="margin-top:12px">
+        <div class="tbl-scroll"><table class="reg-table" style="margin-top:12px">
           <thead><tr>
             <th>Счётчик</th><th style="width:130px">Состояние</th>
             <th>Пояснение</th><th style="width:140px">Действие</th>
@@ -3862,10 +4013,32 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               </td></tr>
             </template>
           </tbody>
-        </table>
+        </table></div>
       </div>
 
-      <!-- Незарегистрированные счётчики -->
+      <!-- Партия 13, 13.2: тема и сведения о версии — раздел набора v2 -->
+      <template x-if="uiSet=='v2'">
+        <div class="settings-section" data-testid="settings-v2-about">
+          <h2>Интерфейс и версия</h2>
+          <div class="wbs-intro" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+            <span>Тема:</span>
+            <button class="btn btn-secondary" data-testid="settings-theme-toggle" @click="toggleTheme()"
+                    x-text="theme=='dark'?'Тёмная — переключить на светлую':'Светлая — переключить на тёмную'"></button>
+          </div>
+          <div class="wbs-intro" style="display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px"
+               data-testid="settings-version-info">
+            <span class="muted">Версия</span><span class="mono" x-text="version?('v'+version):'—'"></span>
+            <span class="muted">Работает</span><span class="mono" x-text="uptimeStr||'—'"></span>
+            <span class="muted">MQTT</span><span x-text="mqtt.connected?'подключено':'нет связи с брокером'"></span>
+          </div>
+          <div style="margin-top:12px">
+            <button class="btn btn-secondary" @click="toggleUiSet()" data-testid="settings-to-classic">Вернуться в классический интерфейс</button>
+          </div>
+        </div>
+      </template>
+
+      <!-- Незарегистрированные счётчики: реестр старой структуры, только классический набор -->
+      <template x-if="uiSet=='classic'">
       <div class="settings-section">
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
           <h2 style="margin:0;border:none;padding:0">Найдены в MQTT, не в реестре</h2>
@@ -3934,6 +4107,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           </template>
         </div>
       </div>
+      </template>
     </div>
   </template>
 
@@ -4887,6 +5061,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 <script src="/static/vendor/leaflet.js"></script>
 <script src="/static/vendor/leaflet-geoman.min.js"></script>
 <script src="/static/js/core.js"></script>
+<script src="/static/js/layout.js"></script>
 <script src="/static/js/plan-v3.js"></script>
 <script src="/static/js/reports-v2.js"></script>
 <script src="/static/js/overview-v2.js"></script>

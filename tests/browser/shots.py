@@ -50,6 +50,7 @@ def main() -> int:
     ap.add_argument("--set", default="v2", choices=["v2", "classic"])
     ap.add_argument("--widths", nargs="+", type=int, default=[1280])
     ap.add_argument("--themes", nargs="+", default=["dark", "light"])
+    ap.add_argument("--full", action="store_true", help="снимок всей страницы (для отладки вёрстки)")
     ap.add_argument("--screens", nargs="+", default=[
         "overview", "reports", "structure", "planv3", "planv3-node", "planv3-edge", "settings"])
     args = ap.parse_args()
@@ -90,7 +91,7 @@ def main() -> int:
                         page.evaluate(f"{APP}.runRv2Query && {APP}.runRv2Query()")
                         page.wait_for_timeout(1500)
                     path = os.path.join(args.out, f"{screen}_{theme}_{width}.png")
-                    page.screenshot(path=path)
+                    page.screenshot(path=path, full_page=args.full)
                     size = os.path.getsize(path)
                     flag = "" if size <= MAX_BYTES else "  !!> 300 КБ"
                     print(f"{path}  {size // 1024} КБ{flag}")

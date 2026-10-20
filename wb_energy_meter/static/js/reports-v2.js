@@ -80,9 +80,14 @@
       async runRv2Query(){
           if(!this.rv2From || !this.rv2To) return;
           if(this.rv2Dimension!=='branch' && this.rv2ScopeIds.length===0){
+            this.feedReset('rv2-query'); this.rv2Loading=false;
             this.rv2Error='Выберите хотя бы один элемент состава'; this.rv2Result=null; return;
           }
+          // Партия 13, 13.4 (A33): новый запрос обесценивает предыдущий — запоздавший ответ
+          // старого периода не перетирает новый (лента 'rv2-query'); идущий запрос отменяется.
+          const t=this.feedStart('rv2-query');
           this.rv2Loading=true; this.rv2Error=null;
+          let key='';
           try{
             const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
             const body={
@@ -96,17 +101,47 @@
             if(this.rv2CompareEnabled && this.rv2CompareFrom && this.rv2CompareTo){
               body.compare={from:this.rv2CompareFrom, to:this.rv2CompareTo};
             }
+            key=JSON.stringify(body);
             const r=await fetch('/api/v2/reports/query', {
-              method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+              method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
+              signal:t.signal});
             const d=await r.json();
+            if(!this.feedLive(t)) return;
             if(!r.ok) throw new Error(d.message||`HTTP ${r.status}`);
             this.rv2Result=d;
+            this._rv2ResultKey=key;
+            this.feedDone(t, this.rv2Kind(d));
           }catch(e){
+            if(this.feedAborted(e) || !this.feedLive(t)) return;
             this.rv2Error=`Не удалось получить отчёт: ${e.message}`;
-            this.rv2Result=null;
+            // Прежний отчёт ТОГО ЖЕ запроса остаётся с признаком «устарело»; отчёт на другой
+            // срез/период выдавать за текущий нельзя.
+            if(this._rv2ResultKey!==key) this.rv2Result=null;
+            this.feedFail(t, e.message);
           }finally{
-            this.rv2Loading=false;
+            if(this.feedLive(t)) this.rv2Loading=false;
           }
+        },
+
+      _rv2ResultKey:null,
+
+      // Состояние отчёта (§8.5): empty — строк нет; partial — у части строк данные неполные
+      // (availability ≠ complete) или есть конфликт; ready — всё посчитано.
+      rv2Kind(d){
+          const rows=(d&&d.rows)||[];
+          if(rows.length===0) return 'empty';
+          return this.rv2IncompleteRows(d)>0 ? 'partial' : 'ready';
+        },
+
+      rv2IncompleteRows(d){
+          return ((d&&d.rows)||[]).filter(row=>row.conflict_reason ||
+            !row.result || (row.result.availability && row.result.availability!=='complete')).length;
+        },
+
+      // Смена среза/состава: результат прежнего среза убирается, идущий запрос отменяется.
+      rv2ResetResult(){
+          this.feedReset('rv2-query');
+          this.rv2Loading=false; this.rv2ScopeIds=[]; this.rv2Result=null; this.rv2Error=null;
         },
 
       // Пояснения к строке (A14: «расход за 03:00–07:00 известен только целиком»

@@ -465,11 +465,13 @@ function _planLinkColor(state){
           }catch(e){ this.showToast('Ошибка: '+e,false); }
         },
 
-      async _planEdgeLiveMetrics(edge){
+      // signal — AbortSignal ленты (партия 13, 13.4); failed:true — запрос не удался (в отличие
+      // от «точка не привязана / токов нет»), чтобы опрос карточки пометил данные устаревшими.
+      async _planEdgeLiveMetrics(edge, signal){
           if(!edge || edge.primary_point_id==null) return {currentA:null, loadPct:null, phases:null};
           try{
-            const sr=await fetch('/api/v2/snapshot?point_ids='+edge.primary_point_id);
-            if(!sr.ok) return {currentA:null, loadPct:null, phases:null};
+            const sr=await fetch('/api/v2/snapshot?point_ids='+edge.primary_point_id, {signal});
+            if(!sr.ok) return {currentA:null, loadPct:null, phases:null, failed:true};
             const snap=(await sr.json()).points||[];
             const point=snap[0]||null;
             const cur=point && point.current_a;
@@ -479,7 +481,8 @@ function _planLinkColor(state){
             const currentA=Math.max(...vals);
             const loadPct=edge.rated_current_a ? Math.round(currentA/edge.rated_current_a*100) : null;
             return {currentA, loadPct, phases:cur, power_w: point.power_w};
-          }catch(e){ return {currentA:null, loadPct:null, phases:null}; }
+          }catch(e){ return {currentA:null, loadPct:null, phases:null, failed:true,
+                             aborted:!!(e&&e.name==='AbortError')}; }
         }
     };
   });

@@ -11,8 +11,15 @@ const DEFAULT_UI_SET = 'classic';
 // прямые переходы _planV2GoToItem его не используют, но и не удалены).
 const UI_SET_TABS = {
   classic: ['dash', 'plan', 'consumption', 'settings', 'reports'],
-  v2: ['overviewv2', 'reportsv2', 'structurev2', 'planv3'],
+  // Партия 13, 13.2: «Настройки» (id 'settings') живут и в наборе v2.
+  v2: ['overviewv2', 'reportsv2', 'structurev2', 'planv3', 'settings'],
 };
+
+// Партия 13, 13.4/13.5 (ТЗ §8.5, §10): запрос, не отвеченный за FEED_TIMEOUT_MS, считается
+// потерянным (следующий тик начинает новый); живые данные, не обновлявшиеся дольше
+// FEED_STALE_MS, на экране помечаются «устарело, обновлено ЧЧ:ММ».
+const FEED_TIMEOUT_MS = 15000;
+const FEED_STALE_MS = 30000;
 
 // Партия 13, П2: ЕДИНЫЙ словарь типов элементов схемы. Одно слово — одно
 // значение везде («Плана v3», «Структуры», «Обзора», отчётов); три копии подписей
@@ -111,6 +118,8 @@ function fmtHour(ts){
           // Заглушка "интерфейс не запустился" (ТЗ v0.11.1, §3): раз init()
           // вообще выполнился — значит Alpine стартовал, заглушка не нужна.
           if(window.__wbemBootOk) window.__wbemBootOk();
+          // Партия 13, 13.1: брейкпоинты, viewport, панель карточки (layout.js).
+          if(typeof this.initLayout==='function') this.initLayout();
           this.refresh();
           this.loadChannelDictionary();
           this.reloadGroups();
@@ -122,25 +131,10 @@ function fmtHour(ts){
           if(this.tab=='planv2') this.openPlanV2Tab();
           if(this.tab=='structurev2') this.openStructureTab();
           if(this.tab=='planv3') this.openPlanV3Tab();
-          this._timer=setInterval(()=>{
-            if(this.tab=='dash') this.loadStatus();
-            // План (ТЗ v0.11.0): та же частота 5с, что и дашборд. Обновляем
-            // только стили/попапы (_planApplyLiveStyles), слои не пересоздаём —
-            // иначе открытый попап зоны закрывался бы на каждый тик.
-            if(this.tab=='plan') this.loadPlanLive();
-            if(this.tab=='overviewv2') this.loadOverviewV2Snapshot();
-            // Партия 7, Этап 3, Э3/B7: "новый таймер не заводить" — P-now по
-            // линиям открытой карточки узла/тока-загрузки открытой карточки
-            // линии на «Плане v3» обновляются тем же тиком.
-            if(this.tab=='planv3') this._planV3PollLiveCard();
-            // Партия 13, П6: «Структура» — дерево схемы с текущей мощностью
-            // из того же снимка, что и «Обзор»; тот же тик (5с), карточка
-            // узла обновляет P-now линий так же, как на «Плане v3».
-            if(this.tab=='structurev2'){
-              this._loadStructureSnapshot();
-              this._planV3PollLiveCard();
-            }
-          },5000);
+          // Партия 13, 13.5 (§10): ОДИН общий тик 5 с; скрытая вкладка не опрашивает
+          // сервер, а при возвращении делает ровно одно обновление (_pollTick).
+          this._timer=setInterval(()=>{ if(!document.hidden) this._pollTick(); },5000);
+          document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) this._pollTick(); });
           // Партия 6, баг из браузера (§5: "рисование линии/контура никогда не
           // завершается" — режим рисования оставался включённым). Escape —
           // безусловный аварийный выход из ЛЮБОГО активного режима рисования
@@ -150,6 +144,10 @@ function fmtHour(ts){
           // doubleClickZoom на время рисования, см. те же места).
           document.addEventListener('keydown', (ev)=>{
             if(ev.key!=='Escape') return;
+            // Партия 13, 13.6: если Escape отменил режим рисования/инструмент
+            // карты — это всё, что он делает; иначе закрывает карточку/панель.
+            const wasBusy=!!(this.planDrawingGroupId!==null || this.planV2DrawingEdgeKey!==null ||
+                             this.planV2PlacingPolygon || this.planV3Tool);
             if(this.planDrawingGroupId!==null) this.cancelZoneDraw();
             if(this.planV2DrawingEdgeKey!==null) this.planV2CancelDrawWaypoints();
             if(this.planV2PlacingPolygon) this.planV2CancelPlacePolygon();
@@ -158,6 +156,7 @@ function fmtHour(ts){
             // инструмента карты (узел/линия/зона), включая рисование контура
             // зоны geoman.
             if(this.planV3Tool) this.planV3CancelTool();
+            if(!wasBusy && typeof this.layoutEscape==='function') this.layoutEscape(ev);
           });
         },
 
@@ -291,6 +290,126 @@ function fmtHour(ts){
                    'ничего не перезаписано. Обновите форму и повторите: '+(d.message||'');
           }
           return (d && d.message) || ('HTTP '+status);
+        },
+
+      // Тело общего тика (setInterval в init() и возврат на видимую вкладку): что обновлять на
+      // текущем экране. Новых таймеров не заводить (§10); каждый загрузчик ниже сам не
+      // начинает запрос, пока предыдущий того же типа не завершён (feedStart skipIfBusy).
+      _pollTick(){
+          this.feedNow=Date.now();
+          this._pollN=(this._pollN||0)+1;
+          if(this.tab=='dash') this.loadStatus();
+          // Шапка нового набора (MQTT, версия) обновляется реже — раз в 30 с.
+          else if(this.uiSet=='v2' && this._pollN%6===0) this.loadStatus();
+          // План (ТЗ v0.11.0): та же частота 5с, что и дашборд. Обновляем
+          // только стили/попапы (_planApplyLiveStyles), слои не пересоздаём —
+          // иначе открытый попап зоны закрывался бы на каждый тик.
+          if(this.tab=='plan') this.loadPlanLive();
+          if(this.tab=='overviewv2') this.loadOverviewV2Snapshot();
+          // Партия 7, Этап 3, Э3/B7: "новый таймер не заводить" — P-now по
+          // линиям открытой карточки узла/тока-загрузки открытой карточки
+          // линии на «Плане v3» обновляются тем же тиком.
+          if(this.tab=='planv3') this._planV3PollLiveCard();
+          // Партия 13, П6: «Структура» — дерево схемы с текущей мощностью
+          // из того же снимка, что и «Обзор»; тот же тик (5с), карточка
+          // узла обновляет P-now линий так же, как на «Плане v3».
+          if(this.tab=='structurev2'){
+            this._loadStructureSnapshot();
+            this._planV3PollLiveCard();
+          }
+        },
+
+      _pollN:0,
+
+      // ===== Партия 13, 13.4: «ленты» данных — общий хелпер последовательности запросов =====
+      // Одна лента — один тип запроса экрана (ключ: 'ov-snap', 'rv2-query', 'inspector', …).
+      // feedStart(key) обесценивает предыдущий запрос ленты (A33): его ответ, пришедший позже,
+      // экран не перетирает (feedLive(token) === false), а сам запрос отменяется (AbortController),
+      // поэтому на клиента приходится ОДИН незавершённый запрос каждого типа (§10). Для
+      // периодического опроса feedStart(key,{live:true,skipIfBusy:true}): пока предыдущий запрос
+      // ленты не завершён (и не просрочен), новый не начинается. Образец, который обобщён, —
+      // _structSearchSeq поиска «Структуры».
+      // Состояние для экрана: feeds[key] = {loading, status:'ready'|'empty'|'partial'|'error'|null,
+      // updatedAt (мс последнего успешного ответа), error, hasData}; feedStale(key)/feedStaleText(key)
+      // дают признак «устарело, обновлено ЧЧ:ММ»: ответ не пришёл (error) либо у живой ленты
+      // нет свежего ответа дольше FEED_STALE_MS. Прежние данные при этом остаются на экране.
+      feeds:{},
+
+      feedNow:Date.now(),
+
+      _feedSeq:{},
+
+      _feedAbort:{},
+
+      _feedStartedAt:{},
+
+      _feedLiveKeys:{},
+
+      feedStart(key, opts){
+          opts=opts||{};
+          const cur=this.feeds[key]||{};
+          if(opts.skipIfBusy && cur.loading &&
+             (Date.now()-(this._feedStartedAt[key]||0))<FEED_TIMEOUT_MS) return null;
+          const prev=this._feedAbort[key];
+          if(prev){ try{ prev.abort(); }catch(e){ /* уже завершён */ } }
+          const ctl=(typeof AbortController==='function') ? new AbortController() : null;
+          this._feedAbort[key]=ctl;
+          const n=(this._feedSeq[key]||0)+1;
+          this._feedSeq[key]=n;
+          this._feedStartedAt[key]=Date.now();
+          if(opts.live) this._feedLiveKeys[key]=true;
+          this.feeds={...this.feeds, [key]:{loading:true, status:cur.status||null,
+            updatedAt:cur.updatedAt||null, error:cur.error||null, hasData:!!cur.hasData}};
+          return {key, n, signal:ctl?ctl.signal:undefined};
+        },
+
+      feedLive(t){ return !!t && this._feedSeq[t.key]===t.n; },
+
+      feedAborted(e){ return !!e && (e.name==='AbortError'); },
+
+      feedDone(t, kind){
+          if(!this.feedLive(t)) return false;
+          kind=kind||'ready';
+          this.feeds={...this.feeds, [t.key]:{loading:false, status:kind, updatedAt:Date.now(),
+            error:null, hasData:kind!=='empty'}};
+          return true;
+        },
+
+      feedFail(t, message){
+          if(!this.feedLive(t)) return false;
+          const cur=this.feeds[t.key]||{};
+          this.feeds={...this.feeds, [t.key]:{loading:false, status:'error',
+            updatedAt:cur.updatedAt||null, error:message||'нет ответа', hasData:!!cur.hasData}};
+          return true;
+        },
+
+      // Забыть данные ленты (например, сменился запрос, и прежние данные — про другое):
+      // идущий запрос обесценивается, признак устаревания и «обновлено» сбрасываются.
+      feedReset(key){
+          const prev=this._feedAbort[key];
+          if(prev){ try{ prev.abort(); }catch(e){ /* уже завершён */ } }
+          this._feedSeq[key]=(this._feedSeq[key]||0)+1;
+          const f={...this.feeds}; delete f[key]; this.feeds=f;
+        },
+
+      feedLoading(key){ return !!(this.feeds[key]||{}).loading; },
+
+      feedStatus(key){ return (this.feeds[key]||{}).status||null; },
+
+      feedError(key){ return (this.feeds[key]||{}).error||null; },
+
+      feedStale(key){
+          const f=this.feeds[key];
+          if(!f || !f.updatedAt || !f.hasData) return false;
+          if(f.error) return true;
+          return !!this._feedLiveKeys[key] && (this.feedNow-f.updatedAt)>FEED_STALE_MS;
+        },
+
+      feedStaleText(key){
+          const f=this.feeds[key];
+          if(!f || !f.updatedAt) return '';
+          const t=new Date(f.updatedAt).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+          return 'устарело, обновлено '+t;
         },
 
       showToast(msg, ok=true){
