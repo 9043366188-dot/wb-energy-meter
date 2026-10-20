@@ -224,7 +224,7 @@ def main() -> int:
                   "среди записей — «состав группы … создано» (членство, подчинённая сущность)")
 
             # правка описания в интерфейсе → новая запись сверху
-            ta = page.locator("textarea[x-model='structInspector.data.description']")
+            ta = page.locator("textarea[data-testid=point-description]")
             ta.fill("Щитовая, 2 этаж")
             ta.blur()
             page.wait_for_function(

@@ -1643,7 +1643,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
 
               <div class="structure-field">
                 <div class="sf-lbl">Описание</div>
-                <textarea x-model="((structInspector||{}).data||{}).description" @blur="submitPointDescription()"
+                <textarea data-testid="point-description" x-model="((structInspector||{}).data||{}).description" @blur="submitPointDescription()"
                           rows="2" style="width:100%;resize:vertical" placeholder="Например: розетки цеха 2, освещение склада"></textarea>
               </div>
 

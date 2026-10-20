@@ -117,14 +117,16 @@ function fmtHour(ts){
       _initDone:false,
 
       init(){
+          // Заглушка "интерфейс не запустился" (ТЗ v0.11.1, §3): раз init()
+          // вообще выполнился — значит Alpine стартовал, заглушка не нужна.
+          // Первым делом и до защиты от повторного вызова (повтор безвреден:
+          // __wbemBootOk идемпотентен) — это проверяет test_step12_selfcheck.
+          if(window.__wbemBootOk) window.__wbemBootOk();
           // Партия 13, 13.5 (§10): init() вызывается дважды — Alpine запускает его сам, а
           // x-init="init()" на <html> (нужен заглушке запуска) вызывает ещё раз; без защиты
           // заводились два таймера опроса, два обработчика Escape и т. д.
           if(this._initDone) return;
           this._initDone=true;
-          // Заглушка "интерфейс не запустился" (ТЗ v0.11.1, §3): раз init()
-          // вообще выполнился — значит Alpine стартовал, заглушка не нужна.
-          if(window.__wbemBootOk) window.__wbemBootOk();
           // Партия 13, 13.1: брейкпоинты, viewport, панель карточки (layout.js).
           if(typeof this.initLayout==='function') this.initLayout();
           this.refresh();

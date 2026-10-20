@@ -8,6 +8,9 @@
   4. Цифры не мигают: пока идут обновления, плитки «Обзора» не пустеют и не прыгают
      по высоте, а прежние значения остаются до прихода новых.
   5. Вкладка «Настройки» набора v2 не опрашивает снимок (только статус раз в 30 с).
+  6. ТЗ 13.7 (A33/A34): 20 переключений «План v3 → Обзор → План v3» — ровно один
+     `.leaflet-container`, число слоёв карты и живых таймеров не растёт, открытая карточка
+     и зум сохраняются; скрытая вкладка 12 с — ни одного запроса `/api/status`.
 
 Запуск: python tests/browser/test_b15_polling.py
 """
@@ -20,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import Harness, open_browser  # noqa: E402
 from demo_seed import seed_demo  # noqa: E402
+from waits import wait_map_v3_ready, wait_card_open  # noqa: E402
 from fetch_tools import FETCH_WRAP  # noqa: E402
 
 APP = "document.querySelector('[x-data]')._x_dataStack[0]"
@@ -163,6 +167,49 @@ def main() -> int:
         page.wait_for_timeout(300)
         check(calls(page, SNAP, since) == 0, "«Настройки» v2: снимок не запрашивается")
         check(live_timers(page) == [5000], f"в конце сценария по-прежнему один таймер ({live_timers(page)})")
+
+        # ===== 6. ТЗ 13.7: 20 переключений «План v3 → Обзор → План v3» =====
+        page.locator("nav button:visible", has_text="План v3").click()
+        wait_map_v3_ready(page)
+        js(page, "%s.openInspectorInPlace('node', %d)" % (APP, shr1))
+        wait_card_open(page)
+        js(page, "_planV3Map.setZoom(-1.5, {animate: false})")
+        zoom0 = js(page, "_planV3Map.getZoom()")
+        layers0 = js(page, "Object.keys(_planV3Map._layers).length")
+        timers0 = js(page, "window.__intervals.filter(i => !i.cleared).length")
+        # контейнер карты «Плана v3» — #site-plan-v3-map; у классического «Плана» и «Плана v2»
+        # свои карты на странице, их число тоже не должно меняться
+        V3C = "document.querySelectorAll('#site-plan-v3-map.leaflet-container, #site-plan-v3-map .leaflet-container').length"
+        ALLC = "document.querySelectorAll('.leaflet-container').length"
+        containers0, all0 = js(page, V3C), js(page, ALLC)
+        check(containers0 == 1, f"«План v3»: один .leaflet-container до переключений ({containers0})")
+        for _ in range(20):
+            page.locator("nav button:visible", has_text="Обзор").click()
+            page.wait_for_function("() => !!document.querySelector('.tiles') && document.querySelector('.tiles').offsetHeight > 0")
+            page.locator("nav button:visible", has_text="План v3").click()
+            wait_map_v3_ready(page)
+        containers, all_c = js(page, V3C), js(page, ALLC)
+        layers = js(page, "Object.keys(_planV3Map._layers).length")
+        timers = js(page, "window.__intervals.filter(i => !i.cleared).length")
+        zoom = js(page, "_planV3Map.getZoom()")
+        card = js(page, "(%s.structInspector ? [%s.structInspector.kind, %s.structInspector.id] : null)" % (APP, APP, APP))
+        check(containers == 1, f"после 20 переключений у «Плана v3» ровно один .leaflet-container ({containers})")
+        check(all_c == all0, f"число .leaflet-container на странице не растёт ({all0} → {all_c})")
+        check(layers == layers0, f"число слоёв карты не растёт: было {layers0}, стало {layers}")
+        check(timers == timers0, f"число живых таймеров не растёт: было {timers0}, стало {timers}")
+        check(abs(zoom - zoom0) < 1e-6, f"зум сохранился ({zoom0} → {zoom})")
+        check(card == ["node", shr1], f"открытая карточка элемента сохранилась ({card})")
+
+        # скрытая вкладка 12 с: ни одного запроса /api/status (и вообще ни одного /api/)
+        set_hidden(page, True)
+        page.wait_for_timeout(300)
+        since = log_len(page)
+        page.wait_for_timeout(12000)
+        n_status = calls(page, "/api/status", since)
+        n_all = calls(page, "/api/", since)
+        check(n_status == 0 and n_all == 0,
+              f"скрытая вкладка 12 с: /api/status — {n_status}, всех запросов /api/ — {n_all}")
+        set_hidden(page, False)
 
         check(not bp.errors, f"консоль без ошибок ({bp.errors[:3]})")
         bp.close()
