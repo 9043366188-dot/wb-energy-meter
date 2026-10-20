@@ -289,12 +289,19 @@ class BrowserPage:
         self._playwright.stop()
 
 
-def open_browser(url: str, viewport=None, timezone_id=None) -> BrowserPage:
+def open_browser(url: str, viewport=None, timezone_id=None,
+                 init_script=None) -> BrowserPage:
     """Открыть страницу url в Chromium (PLAYWRIGHT_BROWSERS_PATH из
     окружения — см. docs/agent-guides/browser-testing-linux.md;
     playwright install не запускать). `timezone_id` (например "UTC") —
     часовой пояс браузера: отчёты берут его из Intl, и сценарий с границами
-    суток не должен зависеть от пояса песочницы."""
+    суток не должен зависеть от пояса песочницы.
+
+    `init_script` (партия 13, 13.7) — JavaScript, который выполняется в КАЖДОМ
+    документе ДО его собственных скриптов (`page.add_init_script`). Нужен,
+    чтобы обернуть `setInterval`/`setTimeout` и посчитать живые таймеры до
+    того, как приложение заведёт свои (test_b15_polling.py); после загрузки
+    страницы такую обёртку уже не поставить."""
     from playwright.sync_api import sync_playwright
 
     pw = sync_playwright().start()
@@ -303,6 +310,8 @@ def open_browser(url: str, viewport=None, timezone_id=None) -> BrowserPage:
     if timezone_id:
         kwargs["timezone_id"] = timezone_id
     page = browser.new_page(**kwargs)
+    if init_script:
+        page.add_init_script(init_script)
     bp = BrowserPage(pw, browser, page)
     # Замедление процессора браузера (WBEM_BROWSER_CPU_THROTTLE=4 — в 4 раза):
     # ловит гонки, которые на быстрой машине не видны, а на медленном CI
