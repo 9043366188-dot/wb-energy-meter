@@ -35,6 +35,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import Harness, open_browser, HOUR  # noqa: E402
+from waits import wait_map_v3_ready, wait_card_open, close_card  # noqa: E402
 
 fails: list[str] = []
 
@@ -93,9 +94,12 @@ def main() -> int:
               "панель «ничего не выбрано» видит все 4 узла (пока не размещены)")
 
         # --- B4: "Разместить на карте" для всех 4 узлов ---
-        box = page.locator(".leaflet-container:visible").first.bounding_box()
         positions = [(0.2, 0.2), (0.5, 0.2), (0.2, 0.6), (0.8, 0.6)]
         for (name, (fx, fy)) in zip(["Ввод", "ЩР-1", "Станок", "Свет"], positions):
+            # Партия 13, 13.8: ждём готовности карты (вписана, размер = размеру контейнера),
+            # а не фиксированную паузу — клик раньше этого даёт «Точка вне границ плана».
+            wait_map_v3_ready(page)
+            box = page.locator(".leaflet-container:visible").first.bounding_box()
             # Кнопка «Разместить на карте» в ТОЙ ЖЕ строке, что и имя узла
             # (structure-field -> div со span-именем и кнопкой рядом,
             # см. разметку в index.html, Э3/B4).
@@ -103,15 +107,16 @@ def main() -> int:
                 has=page.locator("button", has_text="Разместить на карте")
             ).last
             row.locator("button", has_text="Разместить на карте").click()
-            page.wait_for_timeout(200)
+            page.wait_for_selector("#site-plan-v3-map.planv3-placing")
             page.mouse.click(box["x"] + box["width"] * fx, box["y"] + box["height"] * fy)
-            page.wait_for_timeout(600)
             # planV3PlaceExistingNode() открывает карточку размещённого
             # узла (openInspectorInPlace) — закрываем её, иначе на
             # следующей итерации панель "ничего не выбрано" со списком
             # "Узлы"/кнопками "Разместить на карте" не видна вообще.
-            page.evaluate("document.querySelector('[x-data]')._x_dataStack[0].closeInspector()")
-            page.wait_for_timeout(200)
+            # Карточка открывается ПОСЛЕ ответа сервера: сначала дождаться, потом закрыть (на
+            # медленном процессоре закрытие по паузе приходило раньше, и карточка открывалась
+            # уже после него — список «Разместить на карте» исчезал).
+            close_card(page)
 
         n_items = page.evaluate(
             f"fetch('/api/v2/plans/{plan['id']}').then(r=>r.json()).then(p=>p.items.length)"
@@ -120,7 +125,7 @@ def main() -> int:
 
         # --- B5/B8: карточка линии + "+ новая точка из прибора" (входящая) ---
         page.locator("text=Ввод → ЩР-1").first.click()
-        page.wait_for_timeout(500)
+        wait_card_open(page)
         page.click("text=＋ новая точка из прибора…")
         page.select_option("[data-testid=edge-attach-device]", "dev-vvod")
         page.click("text=Подключить")
@@ -134,10 +139,9 @@ def main() -> int:
         # после открытия карточки предыдущей линии её нужно закрыть,
         # иначе "text=ЩР-1 → Станок" не найти (тот же нюанс, что и в
         # цикле "Разместить на карте" выше).
-        page.evaluate("document.querySelector('[x-data]')._x_dataStack[0].closeInspector()")
-        page.wait_for_timeout(300)
+        close_card(page)
         page.locator("text=ЩР-1 → Станок").first.click()
-        page.wait_for_timeout(500)
+        wait_card_open(page)
         page.click("text=＋ новая точка из прибора…")
         page.select_option("[data-testid=edge-attach-device]", "dev-stanok")
         page.click("text=Подключить")
@@ -152,8 +156,7 @@ def main() -> int:
         # Закрываем карточку линии — иначе после возврата с "Обзора" на
         # "План v3" будет всё ещё открыта карточка "ЩР-1 -> Станок", а не
         # панель "ничего не выбрано" со строкой "ЩР-1 (Щит)".
-        page.evaluate("document.querySelector('[x-data]')._x_dataStack[0].closeInspector()")
-        page.wait_for_timeout(200)
+        close_card(page)
 
         # --- засеять агрегаты (harness, как test_step39/test_step40) ---
         # ВАЖНО (найдено при написании этого теста): "+ новая точка из

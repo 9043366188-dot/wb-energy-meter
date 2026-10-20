@@ -206,10 +206,13 @@
           // опубликованной схеме сети (черновики сюда не попадают — они ещё не
           // прошли проверку леса, см. topology/publish).
           const measuredEdges = (this.structEdges||[]).filter(e=>e.primary_point_id===pointId).map(edge=>{
+            // Партия 13, 13.3 (найдено автопроходом чек-листа, шаг 54): «Питается от» и «Питает»
+            // называем УЗЛАМИ схемы («Ввод», «Тест-ветка»), а не линиями: у линии, заведённой
+            // «Планом v3», нет имени, и на экран попадал служебный код вида pv3-e-1-2-1792…
             const fedBy = (this.structEdges||[]).filter(e2=>e2.to_node_id===edge.from_node_id)
-              .map(e2=>({name: e2.name, code: e2.code}));
+              .map(e2=>({name: this.structNodeName(e2.from_node_id)}));
             const feeds = (this.structEdges||[]).filter(e2=>e2.from_node_id===edge.to_node_id)
-              .map(e2=>({name: e2.name, code: e2.code}));
+              .map(e2=>({name: this.structNodeName(e2.to_node_id)}));
             return {edge, fedBy, feeds};
           });
           return {measuredEdges};

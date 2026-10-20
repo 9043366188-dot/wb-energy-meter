@@ -769,7 +769,9 @@ function _planV2KindColor(kind){
           // Перетаскивание — через leaflet-geoman (см. комментарий у секции
           // "План v2" выше): L.circleMarker не умеет draggable:true нативно.
           if(this.planV2EditMode && layer.pm){
-            layer.pm.enableLayerDrag();
+            // Партия 13, 13.8: Geoman включает перетаскивание только у слоя, уже стоящего
+            // на карте (см. «План v3»), — включаем по событию 'add'.
+            layer.on('add', ()=>{ if(layer.pm) layer.pm.enableLayerDrag(); });
             layer.on('pm:dragend', ()=>{
               this._planV2OnItemDragEnd(item, layer.getLatLng(), height);
             });

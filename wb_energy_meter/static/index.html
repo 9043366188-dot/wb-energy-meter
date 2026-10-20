@@ -1610,40 +1610,40 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                 <div class="sf-lbl">Статус / свежесть</div>
                 <div class="sf-val">
                   <span class="badge"
-                        :style="badgeStyle(!structInspector.snapshot?'unknown':(structInspector.snapshot.binding_status==='unbound'?'unknown':structInspector.snapshot.device_status))"
-                        x-text="!structInspector.snapshot?'—':(structInspector.snapshot.binding_status==='unbound'?'не привязана':statusLabel(structInspector.snapshot.device_status))"></span>
+                        :style="badgeStyle(!(structInspector||{}).snapshot?'unknown':((structInspector||{}).snapshot.binding_status==='unbound'?'unknown':(structInspector||{}).snapshot.device_status))"
+                        x-text="!(structInspector||{}).snapshot?'—':((structInspector||{}).snapshot.binding_status==='unbound'?'не привязана':statusLabel((structInspector||{}).snapshot.device_status))"></span>
                   <span class="muted" style="font-size:11px;margin-left:8px"
-                        x-text="structInspector.snapshot?fmtAge(structInspector.snapshot.last_update_age_s):''"></span>
+                        x-text="(structInspector||{}).snapshot?fmtAge((structInspector||{}).snapshot.last_update_age_s):''"></span>
                 </div>
               </div>
 
               <div class="structure-field">
                 <div class="sf-lbl">Расход за период</div>
                 <div class="sf-val"
-                     x-text="!structInspector.consumption?'—':(structInspector.consumption.value!=null?fmt(structInspector.consumption.value,2)+' '+structInspector.consumption.unit:'нет данных ('+structInspector.consumption.availability+')')"></div>
+                     x-text="!(structInspector||{}).consumption?'—':((structInspector||{}).consumption.value!=null?fmt((structInspector||{}).consumption.value,2)+' '+(structInspector||{}).consumption.unit:'нет данных ('+(structInspector||{}).consumption.availability+')')"></div>
                 <div class="muted" style="font-size:11px" x-text="structPeriodLabel()"></div>
               </div>
 
-              <div class="structure-field" x-show="structInspector.snapshot && structInspector.snapshot.voltage_v">
+              <div class="structure-field" x-show="((structInspector||{}).snapshot||{}).voltage_v">
                 <div class="sf-lbl">Напряжение по фазам, В</div>
                 <div class="sf-val mono">
-                  L1: <span x-text="structInspector.snapshot && structInspector.snapshot.voltage_v?fmt(structInspector.snapshot.voltage_v.L1,0):'—'"></span> ·
-                  L2: <span x-text="structInspector.snapshot && structInspector.snapshot.voltage_v?fmt(structInspector.snapshot.voltage_v.L2,0):'—'"></span> ·
-                  L3: <span x-text="structInspector.snapshot && structInspector.snapshot.voltage_v?fmt(structInspector.snapshot.voltage_v.L3,0):'—'"></span>
+                  L1: <span x-text="((structInspector||{}).snapshot||{}).voltage_v?fmt((structInspector||{}).snapshot.voltage_v.L1,0):'—'"></span> ·
+                  L2: <span x-text="((structInspector||{}).snapshot||{}).voltage_v?fmt((structInspector||{}).snapshot.voltage_v.L2,0):'—'"></span> ·
+                  L3: <span x-text="((structInspector||{}).snapshot||{}).voltage_v?fmt((structInspector||{}).snapshot.voltage_v.L3,0):'—'"></span>
                 </div>
               </div>
-              <div class="structure-field" x-show="structInspector.snapshot && structInspector.snapshot.current_a">
+              <div class="structure-field" x-show="((structInspector||{}).snapshot||{}).current_a">
                 <div class="sf-lbl">Ток по фазам, А</div>
                 <div class="sf-val mono">
-                  L1: <span x-text="structInspector.snapshot && structInspector.snapshot.current_a?fmt(structInspector.snapshot.current_a.L1,2):'—'"></span> ·
-                  L2: <span x-text="structInspector.snapshot && structInspector.snapshot.current_a?fmt(structInspector.snapshot.current_a.L2,2):'—'"></span> ·
-                  L3: <span x-text="structInspector.snapshot && structInspector.snapshot.current_a?fmt(structInspector.snapshot.current_a.L3,2):'—'"></span>
+                  L1: <span x-text="((structInspector||{}).snapshot||{}).current_a?fmt((structInspector||{}).snapshot.current_a.L1,2):'—'"></span> ·
+                  L2: <span x-text="((structInspector||{}).snapshot||{}).current_a?fmt((structInspector||{}).snapshot.current_a.L2,2):'—'"></span> ·
+                  L3: <span x-text="((structInspector||{}).snapshot||{}).current_a?fmt((structInspector||{}).snapshot.current_a.L3,2):'—'"></span>
                 </div>
               </div>
 
               <div class="structure-field">
                 <div class="sf-lbl">Описание</div>
-                <textarea x-model="structInspector.data.description" @blur="submitPointDescription()"
+                <textarea x-model="((structInspector||{}).data||{}).description" @blur="submitPointDescription()"
                           rows="2" style="width:100%;resize:vertical" placeholder="Например: розетки цеха 2, освещение склада"></textarea>
               </div>
 
@@ -1658,7 +1658,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                 </template>
                 <template x-for="f in structFeed((structInspector||{}).id).measuredEdges" :key="f.edge.id">
                   <div class="sf-val" style="margin-bottom:6px">
-                    <div class="muted" style="font-size:11px" x-text="'Измеряет связь: '+(f.edge.name||f.edge.code||('#'+f.edge.id))"></div>
+                    <div class="muted" style="font-size:11px" x-text="'Измеряет связь: '+(f.edge.name||(structNodeName(f.edge.from_node_id)+' → '+structNodeName(f.edge.to_node_id)))"></div>
                     <div x-text="'Питается от: '+(f.fedBy.length?f.fedBy.map(x=>x.name||x.code).join(', '):'— (ввод / верхний узел схемы)')"></div>
                     <div x-text="'Питает: '+(f.feeds.length?f.feeds.map(x=>x.name||x.code).join(', '):'— (конечных потребителей на схеме нет)')"></div>
                   </div>
@@ -1667,10 +1667,10 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
 
               <div class="structure-field">
                 <div class="sf-lbl">Группа</div>
-                <template x-if="structInspector.groups.length===0">
+                <template x-if="((structInspector||{}).groups||[]).length===0">
                   <div class="sf-val muted">Ни в одной группе</div>
                 </template>
-                <template x-for="g in structInspector.groups" :key="g.id">
+                <template x-for="g in ((structInspector||{}).groups||[])" :key="g.id">
                   <div style="display:inline-flex;align-items:center;gap:4px;margin:0 6px 4px 0">
                     <span class="structure-chip" @click="openInspector('group', g.id)"
                           x-text="g.name" style="cursor:pointer"></span>
@@ -1678,13 +1678,13 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                   </div>
                 </template>
                 <div style="display:flex;gap:6px;margin-top:6px">
-                  <select aria-label="Добавить точку в группу" x-model.number="structInspector.simpleGroupPick" style="flex:1">
+                  <select aria-label="Добавить точку в группу" x-model.number="(structInspector||{}).simpleGroupPick" style="flex:1">
                     <option value="">— добавить в группу —</option>
                     <template x-for="g in structGroups" :key="g.id">
                       <option :value="g.id" x-text="g.name"></option>
                     </template>
                   </select>
-                  <button class="btn btn-secondary btn-sm" @click="simpleAddToGroup(structInspector.simpleGroupPick)" aria-label="Добавить в группу">+</button>
+                  <button class="btn btn-secondary btn-sm" @click="simpleAddToGroup((structInspector||{}).simpleGroupPick)" aria-label="Добавить в группу">+</button>
                 </div>
               </div>
 
@@ -1700,10 +1700,10 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
 
               <div class="structure-field">
                 <div class="sf-lbl">История замен</div>
-                <template x-if="structInspector.bindings.length===0">
+                <template x-if="((structInspector||{}).bindings||[]).length===0">
                   <div class="sf-val muted">Записей нет</div>
                 </template>
-                <template x-for="b in structInspector.bindings" :key="b.id">
+                <template x-for="b in ((structInspector||{}).bindings||[])" :key="b.id">
                   <div class="sf-val muted" style="font-size:11px;margin-bottom:4px">
                     <span x-text="fmtTime(b.valid_from)"></span> — <span x-text="b.valid_to?fmtTime(b.valid_to):'по н.в.'"></span>
                     · источник #<span x-text="b.meter_source_id"></span>
@@ -1726,21 +1726,21 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
               </div>
               <div class="structure-field" style="margin-top:14px">
                 <div class="sf-lbl">Состав (рекурсивно, дедуплицирован, с происхождением)</div>
-                <template x-for="m in structInspector.members" :key="m.point_id">
+                <template x-for="m in ((structInspector||{}).members||[])" :key="m.point_id">
                   <div class="sf-val" style="font-size:12px;margin-bottom:3px;cursor:pointer"
                        @click="openInspector('point', m.point_id)">
                     <span x-text="m.name||m.code"></span>
                     <span class="muted" x-show="m.via && m.via.length>1" x-text="' (через: '+m.via.join(', ')+')'"></span>
                   </div>
                 </template>
-                <div class="muted" style="font-size:11px" x-show="structInspector.members.length===0">Пусто</div>
+                <div class="muted" style="font-size:11px" x-show="((structInspector||{}).members||[]).length===0">Пусто</div>
               </div>
               <div class="structure-field">
                 <div class="sf-lbl">Сумма за период</div>
                 <div class="sf-val"
-                     x-text="!structInspector.sum?'—':(structInspector.sum.value!=null?fmt(structInspector.sum.value,2)+' '+structInspector.sum.unit:'нет данных ('+structInspector.sum.availability+')')"></div>
-                <div class="muted" style="font-size:11px" x-show="structInspector.sum && (structInspector.sum.quality_flags||[]).length"
-                     x-text="(structInspector.sum.quality_flags||[]).join(', ')"></div>
+                     x-text="!(structInspector||{}).sum?'—':((structInspector||{}).sum.value!=null?fmt((structInspector||{}).sum.value,2)+' '+(structInspector||{}).sum.unit:'нет данных ('+(structInspector||{}).sum.availability+')')"></div>
+                <div class="muted" style="font-size:11px" x-show="(structInspector||{}).sum && (((structInspector||{}).sum||{}).quality_flags||[]).length"
+                     x-text="(((structInspector||{}).sum||{}).quality_flags||[]).join(', ')"></div>
                 <div class="muted" style="font-size:11px" x-text="structPeriodLabel()"></div>
               </div>
             </div>

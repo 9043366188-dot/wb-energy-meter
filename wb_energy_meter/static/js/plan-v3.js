@@ -371,10 +371,12 @@ function _planV3FreeSpot(o){
           if(!this.structInspector) return;
           if(this.structInspector.kind==='edge'){
             const edgeId=this.structInspector.id;
-            if(this.structInspector.data.primary_point_id==null) return;
+            // Партия 13, 13.8: у карточки линии, которая ещё грузится, data может быть null.
+            const edgeData=this.structInspector.data;
+            if(!edgeData || edgeData.primary_point_id==null) return;
             const t=this.feedStart('card-live', {live:true, skipIfBusy:true});
             if(!t) return;
-            const m=await this._planEdgeLiveMetrics(this.structInspector.data, t.signal);
+            const m=await this._planEdgeLiveMetrics(edgeData, t.signal);
             if(m.aborted || !this.feedLive(t)) return;
             if(m.failed){ this.feedFail(t, 'нет ответа'); return; }
             if(this.structInspector && this.structInspector.kind==='edge' && this.structInspector.id===edgeId){
@@ -922,7 +924,11 @@ function _planV3FreeSpot(o){
           // Перетаскивание — как у Плана v2, всегда включено (нет отдельного
           // режима редактирования — все действия здесь прямые).
           if(layer.pm){
-            layer.pm.enableLayerDrag();
+            // Партия 13, 13.8 (найдено автопроходом чек-листа, шаг 20): Leaflet-Geoman 2.20
+            // включает перетаскивание, только если слой УЖЕ на карте (иначе enableLayerDrag
+            // тихо ничего не делает, и мышь двигает карту, а не значок). Слой добавляется
+            // на карту позже, в _planV3RenderItems, — включаем по событию 'add'.
+            layer.on('add', ()=>{ if(layer.pm) layer.pm.enableLayerDrag(); });
             layer.on('pm:dragend', ()=>{ this._planV3OnItemDragEnd(item, layer.getLatLng(), height); });
           }
           return layer;
@@ -969,6 +975,16 @@ function _planV3FreeSpot(o){
             });
             line.addTo(_planV3Map);
             _planV3EdgeLayers.set(String(v.id), line);
+          });
+          // Партия 13, 13.8 (найдено автопроходом чек-листа, шаги 33–38): порядок отрисовки
+          // «зоны → линии → значки узлов». Линия заканчивается ровно в центре значка и рисуется
+          // ПОЗЖЕ него, поэтому клик в центр значка попадал в линию и открывал карточку линии вместо
+          // карточки узла. Значки поднимаем наверх, зоны (залитые полигоны) опускаем вниз.
+          _planV3ItemLayers.forEach(l=>{
+            try{
+              if(l instanceof L.CircleMarker) l.bringToFront();
+              else if(l.bringToBack) l.bringToBack();
+            }catch(e){}
           });
         },
 
@@ -1022,7 +1038,10 @@ function _planV3FreeSpot(o){
           const bounds=_planV3NeedsFit;
           _planV3NeedsFit=null;
           _planV3Map.invalidateSize();
-          _planV3Map.fitBounds(bounds);
+          // Партия 13, 13.8 (плавающие b02/b03): без анимации. Анимированный зум идёт ~250 мс,
+          // и клик по карте посреди него пересчитывается в координаты ещё не вписанного вида —
+          // «Точка вне границ плана» сразу после создания плана, чаще на медленном процессоре.
+          _planV3Map.fitBounds(bounds, {animate:false});
           return true;
         }
     };
