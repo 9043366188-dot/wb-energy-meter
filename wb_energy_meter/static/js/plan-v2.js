@@ -515,6 +515,40 @@ function _planV2KindColor(kind){
           this.planV2Saving=false;
         },
 
+      // Партия 13, 13.8 (A35): после 409 чужая версия подгружается, а черновик остаётся поверх неё —
+      // его можно проверить и сохранить повторно уже с новой ревизией (раньше было только
+      // «закрыть» или «обновить с потерей черновика»). Правки черновика к элементам и линиям,
+      // которые чужая версия убрала, в черновике не остаются: их применять не к чему.
+      async planV2ReloadKeepDraft(){
+          if(!this.planV2Current) return;
+          const id=this.planV2Current.id;
+          let fresh;
+          try{
+            const r=await fetch('/api/v2/plans/'+id);
+            if(!r.ok){ this.showToast('Не удалось загрузить чужую версию плана — черновик не тронут', false); return; }
+            fresh=await r.json();
+          }catch(e){ this.showToast('Ошибка сети: '+e+' — черновик не тронут', false); return; }
+          const itemIds=new Set((fresh.items||[]).map(it=>String(it.id)));
+          const edgeIds=new Set((fresh.edges||[]).map(v=>String(v.id)));
+          let dropped=0;
+          Object.keys(this.planV2Draft.items).forEach(key=>{
+            if(!key.startsWith('new:') && !itemIds.has(key)){ delete this.planV2Draft.items[key]; dropped++; }
+          });
+          Object.keys(this.planV2Draft.edges).forEach(key=>{
+            if(!key.startsWith('newedge:') && !edgeIds.has(key)){ delete this.planV2Draft.edges[key]; dropped++; }
+          });
+          this.planV2History=[]; this.planV2Future=[];
+          this.planV2Current=fresh;
+          this.planV2RevisionConflict=false;
+          this.planV2SelectedItem=null; this.planV2SelectedEdgeView=null;
+          this._planV2RenderItems();   // масштаб и центр карты не трогаем
+          const left=this.planV2PendingCount();
+          this.showToast('Загружена чужая версия плана. '+(left>0
+            ? 'Ваш черновик ('+left+') остался поверх неё — проверьте и нажмите «Сохранить».'
+            : 'От вашего черновика ничего не осталось.')+
+            (dropped>0 ? ' Правок к убранным чужой версией элементам: '+dropped+' — отброшены.' : ''), true);
+        },
+
       planV2ConfirmDiscardReload(){
           this.planV2RevisionConflict=false;
           const id=this.planV2Current.id;

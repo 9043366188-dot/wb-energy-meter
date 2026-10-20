@@ -396,6 +396,7 @@
  "planV2Plans",
  "planV2Points",
  "planV2Redo",
+ "planV2ReloadKeepDraft",
  "planV2RemoveEdgeView",
  "planV2RemoveItem",
  "planV2RequestDiscard",

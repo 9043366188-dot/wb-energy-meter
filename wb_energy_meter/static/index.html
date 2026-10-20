@@ -1352,7 +1352,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
              Сверху — «Не на схеме»; под схемой — учётные группы отдельным разделом.
              Поиск (A02, structure/points?q=) — по элементам схемы и точкам. -->
         <div class="structure-col structure-search" data-testid="struct-left" data-focus-home data-kb-list tabindex="-1">
-          <input type="text" placeholder="Поиск: имя, код, MQTT ID, серийник" aria-label="Поиск по структуре"
+          <input type="text" placeholder="Поиск: имя, код, MQTT ID, серийник, группа, питание" aria-label="Поиск по структуре"
                  data-testid="struct-search-input" x-model="structQuery" @input="structureSearch()">
 
           <template x-if="structQuery.trim()!==''">
@@ -1771,7 +1771,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
               <div class="structure-field" style="margin-top:14px">
                 <div class="sf-lbl">Название</div>
                 <div style="display:flex;gap:6px">
-                  <input type="text" x-model="structInspector.nameDraft" style="flex:1" aria-label="Название элемента">
+                  <input type="text" x-model="(structInspector||{}).nameDraft" style="flex:1" aria-label="Название элемента">
                   <button class="btn btn-sm" @click="planV3SaveNodeCard()">Сохранить</button>
                 </div>
               </div>
@@ -1783,7 +1783,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
               <div class="structure-field">
                 <div class="sf-lbl">Тип</div>
                 <div style="display:flex;gap:6px">
-                  <select aria-label="Тип элемента" x-model="structInspector.kindDraft" style="flex:1" data-testid="node-card-kind-select">
+                  <select aria-label="Тип элемента" x-model="(structInspector||{}).kindDraft" style="flex:1" data-testid="node-card-kind-select">
                     <template x-for="k in nodeKinds" :key="k.value">
                       <option :value="k.value" :selected="k.value===(structInspector||{}).kindDraft" x-text="k.label"></option>
                     </template>
@@ -1795,7 +1795,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
               <div class="structure-field">
                 <div class="sf-lbl">Где стоит</div>
                 <div style="display:flex;gap:6px">
-                  <input type="text" x-model="structInspector.locationTextDraft"
+                  <input type="text" x-model="(structInspector||{}).locationTextDraft"
                          placeholder="например, ЩР-1, эт. 2" style="flex:1">
                   <button class="btn btn-sm" @click="planV3SaveNodeCard()">Сохранить</button>
                 </div>
@@ -2504,7 +2504,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                     title="Вернуть отменённое" aria-label="Вернуть отменённое">↻</button>
             <span class="muted mono" x-text="'изменений: '+planV2PendingCount()"></span>
             <button class="btn btn-sm btn-secondary" @click="planV2RequestDiscard()">Отменить черновик</button>
-            <button class="btn btn-sm btn-primary" :disabled="planV2Saving" @click="planV2SaveLayout()">
+            <button class="btn btn-sm btn-primary" data-testid="planv2-save" :disabled="planV2Saving" @click="planV2SaveLayout()">
               <span x-show="!planV2Saving">Сохранить</span>
               <span x-show="planV2Saving"><span class="spin" style="width:12px;height:12px"></span> Сохранение…</span>
             </button>
@@ -3028,7 +3028,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
               <div class="structure-field" style="margin-top:14px">
                 <div class="sf-lbl">Название</div>
                 <div style="display:flex;gap:6px">
-                  <input type="text" x-model="structInspector.nameDraft" style="flex:1" aria-label="Название элемента">
+                  <input type="text" x-model="(structInspector||{}).nameDraft" style="flex:1" aria-label="Название элемента">
                   <button class="btn btn-sm" @click="planV3SaveNodeCard()">Сохранить</button>
                 </div>
               </div>
@@ -3040,7 +3040,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
               <div class="structure-field">
                 <div class="sf-lbl">Тип</div>
                 <div style="display:flex;gap:6px">
-                  <select aria-label="Тип элемента" x-model="structInspector.kindDraft" style="flex:1" data-testid="node-card-kind-select">
+                  <select aria-label="Тип элемента" x-model="(structInspector||{}).kindDraft" style="flex:1" data-testid="node-card-kind-select">
                     <template x-for="k in nodeKinds" :key="k.value">
                       <option :value="k.value" :selected="k.value===(structInspector||{}).kindDraft" x-text="k.label"></option>
                     </template>
@@ -3052,7 +3052,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
               <div class="structure-field">
                 <div class="sf-lbl">Где стоит</div>
                 <div style="display:flex;gap:6px">
-                  <input type="text" x-model="structInspector.locationTextDraft"
+                  <input type="text" x-model="(structInspector||{}).locationTextDraft"
                          placeholder="например, ЩР-1, эт. 2" style="flex:1">
                   <button class="btn btn-sm" @click="planV3SaveNodeCard()">Сохранить</button>
                 </div>
@@ -5016,15 +5016,19 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
 
   <!-- REVISION CONFLICT PLAN V2 (A35, ТЗ §13) -->
   <template x-if="planV2RevisionConflict">
-    <div class="confirm-overlay">
+    <div class="confirm-overlay" data-testid="planv2-conflict" role="alertdialog" aria-labelledby="planv2-conflict-title">
       <div class="confirm-box">
-        <h3>План изменён в другом месте</h3>
+        <h3 id="planv2-conflict-title">План изменён в другом месте</h3>
         <p>Кто-то ещё сохранил изменения этого плана, пока вы редактировали.
            Чтобы не потерять чужие правки, сохранение отменено — ваш
            черновик изменений НЕ записан на сервер.</p>
         <div class="actions">
-          <button class="btn btn-secondary" @click="planV2RevisionConflict=false">Закрыть (черновик останется)</button>
-          <button class="btn btn-danger" @click="planV2ConfirmDiscardReload()">Обновить план (черновик будет потерян)</button>
+          <button class="btn btn-secondary" data-testid="planv2-conflict-close"
+                  @click="planV2RevisionConflict=false">Закрыть (черновик останется)</button>
+          <button class="btn btn-primary" data-testid="planv2-conflict-keep"
+                  @click="planV2ReloadKeepDraft()">Загрузить чужую версию, мой черновик оставить</button>
+          <button class="btn btn-danger" data-testid="planv2-conflict-discard"
+                  @click="planV2ConfirmDiscardReload()">Обновить план (черновик будет потерян)</button>
         </div>
       </div>
     </div>

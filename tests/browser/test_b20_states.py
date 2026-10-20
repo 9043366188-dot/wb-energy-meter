@@ -55,6 +55,16 @@ def fire(page, code: str) -> None:
     page.evaluate("(()=>{ " + code + "; })()")
 
 
+def wait_for(page, expr: str, ms: int = 6000) -> bool:
+    """Дождаться условия в странице (вместо фиксированной паузы: на медленной машине ответ
+    приходит позже, а общий опрос раз в 5 с может перетереть подставленное значение)."""
+    try:
+        page.wait_for_function(expr, timeout=ms)
+        return True
+    except Exception:
+        return False
+
+
 def pw_errors(bp) -> list[str]:
     """Исключения приложения (pageerror) и ошибки консоли, кроме сетевых сообщений Chromium."""
     return [e for e in bp.errors if "Failed to load resource" not in e]
@@ -109,11 +119,14 @@ def main() -> int:
         page.wait_for_timeout(500)
 
         # частично: у точки нет мощности
-        partial = js(page, """(()=>{ const a=%s; const s=JSON.parse(JSON.stringify(a.overviewV2Snapshot));
-            s.points[0].power_w=null; a.overviewV2Snapshot=s; return a.overviewV2PartialText(); })()""" % APP)
-        page.wait_for_timeout(200)
-        check(bool(partial) and vis(page, "ov-partial") and "неполные" in text(page, "ov-partial"),
-              f"Обзор: partial — «{partial}»")
+        # подмена и проверка — в одном тике страницы: общий опрос (раз в 5 с) не успевает её перетереть
+        partial = js(page, """(async()=>{ const a=%s; const s=JSON.parse(JSON.stringify(a.overviewV2Snapshot));
+            s.points[0].power_w=null; a.overviewV2Snapshot=s; await a.$nextTick();
+            const el=document.querySelector('[data-testid=ov-partial]');
+            return {text:a.overviewV2PartialText(), shown:!!el && el.offsetParent!==null,
+                    dom: el ? el.textContent.trim() : ''}; })()""" % APP)
+        check(bool(partial["text"]) and partial["shown"] and "неполные" in partial["dom"],
+              f"Обзор: partial — «{partial['text']}»")
         js(page, APP + ".loadOverviewV2Snapshot()")
         page.wait_for_timeout(500)
 
@@ -185,7 +198,8 @@ def main() -> int:
 
         js(page, "window.__fail=['/api/v2/snapshot']")
         js(page, APP + "._pollTick()")
-        page.wait_for_timeout(500)
+        wait_for(page, "()=>{ const e=document.querySelector('[data-drawer=struct] [data-testid=card-stale]');"
+                       " return !!e && e.offsetParent!==null; }")
         check(vis(page, "card-stale", S) and STALE_RE.search(text(page, "card-stale", S)) is not None,
               f"Структура: живые числа карточки не обновились — «устарело, обновлено ЧЧ:ММ» ({text(page, 'card-stale', S)!r})")
         js(page, "window.__fail=[]")
