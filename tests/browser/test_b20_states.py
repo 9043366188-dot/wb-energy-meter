@@ -6,11 +6,10 @@ Chromium, настоящее Flask-приложение.
 остаются ПРЕЖНИЕ данные с признаком «устарело, обновлено ЧЧ:ММ»; запоздавший ответ
 прежнего запроса не перетирает новый (A33).
 
-Обрывы и задержки — обёртка над fetch, поставленная ДО скриптов приложения (init_script):
-`window.__fail` (подстроки адресов, которые «не отвечают»), `window.__delay` (адрес
-оканчивается на ключ → ответ позже на N мс), `window.__delayOnce` (то же, но один раз).
-Это не `page.route`: обрыв через сеть Chromium пишет «Failed to load resource» в консоль, а
-сценарий проверяет, что приложение само не бросает исключений.
+Обрывы и задержки — обёртка над fetch из fetch_tools.py (ставится ДО скриптов приложения):
+`window.__fail`, `window.__delay`, `window.__delayOnce`. Это не `page.route`: обрыв через сеть
+Chromium пишет «Failed to load resource» в консоль, а сценарий проверяет, что приложение само
+не бросает исключений.
 
 Запуск: python tests/browser/test_b20_states.py
 """
@@ -24,31 +23,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import Harness, open_browser  # noqa: E402
 from demo_seed import seed_demo  # noqa: E402
+from fetch_tools import FETCH_WRAP  # noqa: E402
 
 APP = "document.querySelector('[x-data]')._x_dataStack[0]"
 STALE_RE = re.compile(r"устарело, обновлено \d\d:\d\d")
 fails: list[str] = []
-
-FETCH_WRAP = """
-(function(){
-  const of = window.fetch.bind(window);
-  window.__fail = []; window.__delay = {}; window.__delayOnce = {};
-  window.fetch = function(u, o){
-    const url = String((u && u.url) || u);
-    if (window.__fail.some(p => url.includes(p))) return Promise.reject(new TypeError('Failed to fetch'));
-    let ms = null;
-    const once = Object.keys(window.__delayOnce).find(p => url.endsWith(p));
-    if (once !== undefined) { ms = window.__delayOnce[once]; delete window.__delayOnce[once]; }
-    else { const d = Object.keys(window.__delay).find(p => url.endsWith(p)); if (d !== undefined) ms = window.__delay[d]; }
-    if (ms === null) return of(u, o);
-    const sig = o && o.signal;
-    return new Promise((res, rej) => {
-      const tm = setTimeout(() => of(u, o).then(res, rej), ms);
-      if (sig) sig.addEventListener('abort', () => { clearTimeout(tm); rej(new DOMException('Aborted', 'AbortError')); });
-    });
-  };
-})();
-"""
 
 
 def check(cond: bool, msg: str) -> None:

@@ -114,7 +114,14 @@ function fmtHour(ts){
 
       _timer:null,
 
+      _initDone:false,
+
       init(){
+          // Партия 13, 13.5 (§10): init() вызывается дважды — Alpine запускает его сам, а
+          // x-init="init()" на <html> (нужен заглушке запуска) вызывает ещё раз; без защиты
+          // заводились два таймера опроса, два обработчика Escape и т. д.
+          if(this._initDone) return;
+          this._initDone=true;
           // Заглушка "интерфейс не запустился" (ТЗ v0.11.1, §3): раз init()
           // вообще выполнился — значит Alpine стартовал, заглушка не нужна.
           if(window.__wbemBootOk) window.__wbemBootOk();
@@ -203,13 +210,23 @@ function fmtHour(ts){
           if(this.tab=='settings'){ this.loadSettings(); this.initUpdatePanel(); }
         },
 
-      async loadStatus(){
+      async loadStatus(poll){
+          // Партия 13, 13.5 (§10): poll=true — вызов общего тика: пока предыдущий запрос
+          // «/api/status» не завершён, новый не начинается. Явный вызов (после действия
+          // пользователя) обесценивает идущий запрос и берёт свежее состояние.
+          const t=this.feedStart('status', {live:true, skipIfBusy:poll===true});
+          if(!t) return;
           try{
-            const r=await fetch('/api/status'); const d=await r.json();
+            const r=await fetch('/api/status', {signal:t.signal}); const d=await r.json();
+            if(!this.feedLive(t)) return;
             this.meters=d.meters||[]; this.byStatus=d.meters_by_status||{};
             this.mqtt=d.mqtt||this.mqtt; this.version=d.version; this.uptime=d.uptime_s||0;
-          }catch(e){ console.error(e); }
-          this.loading=false;
+            this.feedDone(t,'ready');
+          }catch(e){
+            if(this.feedAborted(e) || !this.feedLive(t)) return;
+            console.error(e); this.feedFail(t, e.message);
+          }
+          if(this.feedLive(t)) this.loading=false;
         },
 
       zoneColor(zone){
@@ -298,13 +315,13 @@ function fmtHour(ts){
       _pollTick(){
           this.feedNow=Date.now();
           this._pollN=(this._pollN||0)+1;
-          if(this.tab=='dash') this.loadStatus();
+          if(this.tab=='dash') this.loadStatus(true);
           // Шапка нового набора (MQTT, версия) обновляется реже — раз в 30 с.
-          else if(this.uiSet=='v2' && this._pollN%6===0) this.loadStatus();
+          else if(this.uiSet=='v2' && this._pollN%6===0) this.loadStatus(true);
           // План (ТЗ v0.11.0): та же частота 5с, что и дашборд. Обновляем
           // только стили/попапы (_planApplyLiveStyles), слои не пересоздаём —
           // иначе открытый попап зоны закрывался бы на каждый тик.
-          if(this.tab=='plan') this.loadPlanLive();
+          if(this.tab=='plan') this.loadPlanLive(true);
           if(this.tab=='overviewv2') this.loadOverviewV2Snapshot();
           // Партия 7, Этап 3, Э3/B7: "новый таймер не заводить" — P-now по
           // линиям открытой карточки узла/тока-загрузки открытой карточки

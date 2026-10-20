@@ -10,6 +10,7 @@
  "_feedLiveKeys",
  "_feedSeq",
  "_feedStartedAt",
+ "_initDone",
  "_inspTok",
  "_inspectorIs",
  "_layoutFocusHome",

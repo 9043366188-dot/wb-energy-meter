@@ -114,13 +114,24 @@ function _planLinkColor(state){
           await this.loadPlanLive();
         },
 
-      async loadPlanLive(){
+      async loadPlanLive(poll){
           if(!this.planCurrentId) return;
+          // Партия 13, 13.5: лента 'plan-live' — один запрос за раз; смена периода или плана
+          // обесценивает идущий (его ответ не перетрёт новый).
+          const t=this.feedStart('plan-live', {live:true, skipIfBusy:poll===true});
+          if(!t) return;
           try{
-            const r=await fetch(`/api/plans/${this.planCurrentId}/live?period=${encodeURIComponent(this.planPeriod)}`);
-            if(!r.ok) return;
-            this.planLive=await r.json();
-          }catch(e){ console.error(e); return; }
+            const r=await fetch(`/api/plans/${this.planCurrentId}/live?period=${encodeURIComponent(this.planPeriod)}`,
+                                {signal:t.signal});
+            if(!r.ok){ this.feedFail(t, 'HTTP '+r.status); return; }
+            const d=await r.json();
+            if(!this.feedLive(t)) return;
+            this.planLive=d;
+            this.feedDone(t,'ready');
+          }catch(e){
+            if(this.feedAborted(e) || !this.feedLive(t)) return;
+            console.error(e); this.feedFail(t, e.message); return;
+          }
           this._planApplyLiveStyles();
         },
 
