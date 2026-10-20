@@ -723,6 +723,12 @@ function _planV3FreeSpot(o){
         },
 
       async planV3ConnectNodes(fromItem, toItem){
+          // Инструмент «+ Линия» расходуется вторым кликом — выключаем его сразу, а не после
+          // ответа сервера и перечитывания схемы. Раньше он выключался в finally: на медленном
+          // экране человек (или тест) успевал снова нажать «+ Линия» или «+ Зона», и запоздавший
+          // finally отключал уже новый инструмент — следующий клик по значку открывал карточку
+          // вместо начала линии (найдено прогоном test_b17 под нагрузкой).
+          this.planV3Tool=null;
           try{
             const rev=await this._structCurrentRev();
             const r=await fetch('/api/v2/topology/edges/connect', {
@@ -739,7 +745,6 @@ function _planV3FreeSpot(o){
             await this._loadStructureLists();
             await this.reloadPlanV3Items();
           }catch(e){ this.showToast('Ошибка сети: '+e, false); }
-          finally{ this.planV3Tool=null; }
         },
 
       async planV3CreateGroupInline(){

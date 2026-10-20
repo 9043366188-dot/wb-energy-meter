@@ -143,7 +143,15 @@ function fmtHour(ts){
           // Партия 13, 13.5 (§10): ОДИН общий тик 5 с; скрытая вкладка не опрашивает
           // сервер, а при возвращении делает ровно одно обновление (_pollTick).
           this._timer=setInterval(()=>{ if(!document.hidden) this._pollTick(); },5000);
-          document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) this._pollTick(); });
+          // При возврате: одно обновление сразу, а таймер заводится заново (всё равно один
+          // живой таймер 5 с) — иначе очередной «обычный» тик мог прийти сразу вслед за
+          // возвратным и дать второй запрос снимка подряд.
+          document.addEventListener('visibilitychange', ()=>{
+            if(document.hidden) return;
+            clearInterval(this._timer);
+            this._timer=setInterval(()=>{ if(!document.hidden) this._pollTick(); },5000);
+            this._pollTick();
+          });
           // Партия 6, баг из браузера (§5: "рисование линии/контура никогда не
           // завершается" — режим рисования оставался включённым). Escape —
           // безусловный аварийный выход из ЛЮБОГО активного режима рисования

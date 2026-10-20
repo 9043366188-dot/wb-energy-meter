@@ -154,7 +154,7 @@ def toast_text(page) -> str:
     return loc.first.inner_text().strip() if loc.count() else ""
 
 
-def wait_toast(page, sub: str, timeout: int = 8000) -> str:
+def wait_toast(page, sub: str, timeout: int = 15000) -> str:
     try:
         page.wait_for_function(
             "(s)=>[...document.querySelectorAll('.toast')].some(t=>t.textContent.includes(s))",
@@ -284,6 +284,12 @@ def make_point_with_meter(h, code: str, name: str, device_id: str):
 
 
 def reload_app(page, base_url: str) -> None:
+    # запросы предыдущего шага (перечитывание плана, схемы) должны успеть завершиться: F5 посреди них
+    # даёт в консоли «Failed to fetch» — человеку не мешает, но тест следит за консолью
+    try:
+        page.wait_for_load_state("networkidle", timeout=6000)
+    except Exception:
+        pass
     page.goto(base_url)
     page.wait_for_function("()=>!!document.querySelector('[x-data]') && !!document.querySelector('[x-data]')._x_dataStack")
     page.wait_for_timeout(900)
@@ -680,6 +686,13 @@ def section4() -> None:
         page.wait_for_timeout(150)
     check(item_after["geometry"] != item_before["geometry"],
           f"позиция изменилась и сохранена на сервере: {item_before['geometry']} → {item_after['geometry']}")
+    # после сохранения экран сам перечитывает план (reloadPlanV3Items) — дождаться, пока он закончит;
+    # иначе F5 прервёт этот запрос и в консоль попадёт «Failed to fetch» (человеку это не мешает, тесту — да)
+    page.wait_for_function(
+        "(a)=>{const p=%s.planV3Current; const it=p&&p.items.find(i=>i.id===a.id); "
+        "return !!it && Math.abs(it.geometry.x-a.x)<0.01 && Math.abs(it.geometry.y-a.y)<0.01;}" % APP,
+        arg={"id": item_before["id"], "x": item_after["geometry"]["x"], "y": item_after["geometry"]["y"]}, timeout=15000)
+    wait_map_v3_ready(page)
     reload_app(page, h.base_url)
     to_plan_v3(page)
     wait_map_v3_ready(page)
@@ -873,6 +886,26 @@ def save_kind(card) -> None:
     card.locator("[data-testid=node-card-kind-select]").locator("xpath=following-sibling::button").click()
 
 
+def pick_kind_and_save(page, label: str) -> None:
+    """Выбрать тип в карточке элемента и нажать «Сохранить».
+
+    После действия в карточке (например «Добавить» отходящую линию) её данные перечитываются
+    и черновик типа сбрасывается на сохранённый. Если выбор попал в этот промежуток, «Сохранить»
+    отправило бы прежний тип — поэтому перед нажатием проверяем, что черновик на странице
+    действительно равен выбранному, иначе выбираем заново (человек увидел бы, что список
+    «откатился», и выбрал бы снова)."""
+    code = page.evaluate("(l)=>NODE_KINDS.find(x=>x.label===l).value", label)
+    for _ in range(5):
+        wait_card_open(page)
+        card = node_card(page)
+        card.locator("[data-testid=node-card-kind-select]").select_option(label=label)
+        if page.evaluate("(c)=>{const i=%s.structInspector; return !!i && i.kindDraft===c;}" % APP, code):
+            save_kind(card)
+            return
+        page.wait_for_timeout(300)
+    raise AssertionError("черновик типа «%s» не удержался в карточке: она перечитывается снова и снова" % label)
+
+
 def open_node_card(page, h, name: str) -> None:
     n = node_by_name(h, name)
     click_marker(page, name)
@@ -902,8 +935,7 @@ def section6() -> None:
 
     step(34, "[БЫЛО ИНАЧЕ] тип «Щит» → «Сохранено», «(Щит)» в списке; цвет маркера зависит от типа")
     color_before = marker_color(page, "Розетки")
-    ksel.select_option(label="Щит")
-    save_kind(card)
+    pick_kind_and_save(page, "Щит")
     check("Сохранено" in wait_toast(page, "Сохранено"), f"уведомление ({toast_text(page)!r})")
     page.wait_for_function("(n)=>{const x=%s.structNodes.find(q=>q.name===n); return !!x && x.kind==='panel';}" % APP, arg="Розетки")
     check((node_by_name(h, "Розетки") or {}).get("kind") == "panel", "в API тип «panel»")
@@ -931,14 +963,16 @@ def section6() -> None:
     page.wait_for_function("(n)=>%s.structNodes.some(x=>x.name===n)" % APP, arg="Тест-ветка")
     check(edge_between(h, "Розетки", "Тест-ветка") is not None, "линия «Розетки → Тест-ветка» создана")
     check((node_by_name(h, "Тест-ветка") or {}).get("kind") == "load", "«Тест-ветка» — «Нагрузка»")
+    # карточка перечитывается после добавления линии — дождаться (в ней появляется новая линия)
+    page.wait_for_function("()=>{const c=document.querySelector('[data-testid=planv3-panel] [data-testid=node-card]'); return !!c && c.innerText.includes('Тест-ветка');}", timeout=15000)
+    wait_card_open(page)
 
     step(37, "«Ввод» для узла с входящей линией → отказ с именем узла и причиной; тип прежний")
     card = node_card(page)
     ksel = card.locator("[data-testid=node-card-kind-select]")
-    ksel.select_option(label="Ввод")
-    save_kind(card)
+    pick_kind_and_save(page, "Ввод")
     want = "«Розетки» нельзя сделать вводом: в него уже входит линия. Сначала удалите входящую линию."
-    page.wait_for_function("(s)=>document.querySelector('[data-testid=planv3-panel]').innerText.includes(s)", arg=want, timeout=8000)
+    page.wait_for_function("(s)=>document.querySelector('[data-testid=planv3-panel]').innerText.includes(s)", arg=want, timeout=15000)
     check(want in node_card(page).inner_text(), "предупреждение с именем узла и причиной (не код ошибки)")
     check((node_by_name(h, "Розетки") or {}).get("kind") == "panel", "тип узла на сервере прежний («Щит»)")
     check(edge_between(h, "ЩР-1 (главный)", "Розетки") is not None, "линия «ЩР-1 → Розетки» на месте")
@@ -955,10 +989,9 @@ def section6() -> None:
     # правило шага 37 к нему применяется так же. Проверяем и это, и настоящий парный случай — «Склад».
     open_node_card(page, h, "Освещение")
     card = node_card(page)
-    card.locator("[data-testid=node-card-kind-select]").select_option(label="Ввод")
-    save_kind(card)
+    pick_kind_and_save(page, "Ввод")
     want2 = "«Освещение» нельзя сделать вводом: в него уже входит линия."
-    page.wait_for_function("(s)=>document.querySelector('[data-testid=planv3-panel]').innerText.includes(s)", arg=want2, timeout=8000)
+    page.wait_for_function("(s)=>document.querySelector('[data-testid=planv3-panel]').innerText.includes(s)", arg=want2, timeout=15000)
     check(want2 in node_card(page).inner_text(), "«Освещение» (входящая линия есть) — отказ, как в шаге 37")
     check((node_by_name(h, "Освещение") or {}).get("kind") == "load", "тип «Освещения» прежний")
     card.locator("[data-testid=node-card-kind-select]").select_option(label="Нагрузка")
@@ -968,8 +1001,7 @@ def section6() -> None:
           "«Склад» — узел без входящей линии")
     open_node_card(page, h, "Склад")
     card = node_card(page)
-    card.locator("[data-testid=node-card-kind-select]").select_option(label="Ввод")
-    save_kind(card)
+    pick_kind_and_save(page, "Ввод")
     check("Сохранено" in wait_toast(page, "Сохранено"), f"уведомление ({toast_text(page)!r})")
     page.wait_for_function("(n)=>{const x=%s.structNodes.find(q=>q.name===n); return !!x && x.kind==='source';}" % APP, arg="Склад")
     check((node_by_name(h, "Склад") or {}).get("kind") == "source", "«Склад» сохранён как «Ввод»")
@@ -1069,7 +1101,7 @@ def section7() -> None:
     gtxt = page.locator("[data-testid=planv3-panel]").inner_text()
     check("зона освещения" in gtxt.lower(), "открыта карточка группы «Зона освещения»")
     check("состав (рекурсивно" in gtxt.lower(), "блок «Состав (рекурсивно…)»")
-    page.wait_for_function("()=>/Счётчик-розетки/.test(document.querySelector('[data-testid=planv3-panel]').innerText)", timeout=8000)
+    page.wait_for_function("()=>/Счётчик-розетки/.test(document.querySelector('[data-testid=planv3-panel]').innerText)", timeout=15000)
     check("Счётчик-розетки" in page.locator("[data-testid=planv3-panel]").inner_text(), "в составе — точка учёта «Счётчик-розетки»")
     check("расход за период" in gtxt.lower(), "блок «Расход за период»")
     check("Небаланс у зоны не показывается: баланс считается по щитам — выберите узел." in gtxt,
@@ -1211,7 +1243,15 @@ def struct_open_point(page, name: str) -> None:
     row = page.locator("[data-testid=off-scheme-point], [data-testid=scheme-meter]", has_text=name).first
     row.click()
     page.wait_for_function("(n)=>{const i=%s.structInspector; return !!i && i.kind==='point' && !!i.data && (i.data.name===n);}" % APP,
-                           arg=name, timeout=10000)
+                           arg=name, timeout=15000)
+    # карточка дорисовывается после загрузки данных (блок «Измеряет связь» / «не назначена», поле «Описание»):
+    # без этого текст читается раньше, чем он появился на экране
+    page.wait_for_function(
+        "()=>{const t=document.querySelector('main').innerText; "
+        "return (t.includes('Точка не назначена измерением') || t.includes('Измеряет связь: ')) "
+        "&& !!document.querySelector(\"textarea[placeholder^='Например: розетки цеха 2']\");}",
+        timeout=15000)
+    wait_card_open(page)
 
 
 def struct_card_text(page) -> str:
@@ -1348,6 +1388,11 @@ def section10() -> None:
     page.locator("button", has_text="Отменить инструмент").click()
 
     def draw_edge(a: str, b: str) -> None:
+        # прежняя операция (линия, отказ) могла ещё перечитывать схему: ждём, пока слои линий на карте
+        # сравняются с планом на сервере и карта успокоится, — иначе клик по значку попадёт в пустоту
+        n_plan_edges = len((api(h, "get", f"/api/v2/plans/{S.plan1['id']}")[1] or {}).get("edges", []))
+        page.wait_for_function("(n)=>_planV3EdgeLayers.size>=n", arg=n_plan_edges, timeout=15000)
+        wait_map_v3_ready(page)
         page.locator("button.btn-sm", has_text="+ Линия").click()
         click_marker(page, a)
         page.wait_for_function("()=>!!%s.planV3EdgeFirstItem" % APP)
@@ -1362,7 +1407,7 @@ def section10() -> None:
     check(edge_between(h, "A", "B") is not None, "цепочка A → B построена")
     n_edges = len(edges(h))
     draw_edge("B", "A")
-    page.wait_for_function("()=>[...document.querySelectorAll('.toast')].some(t=>/циклическое питание/.test(t.textContent))", timeout=8000)
+    page.wait_for_function("()=>[...document.querySelectorAll('.toast')].some(t=>/циклическое питание/.test(t.textContent))", timeout=15000)
     t58 = toast_text(page)
     check("циклическое питание" in t58 and "A" in t58 and "B" in t58, f"отказ с понятным текстом и именами узлов ({t58!r})")
     check(len(edges(h)) == n_edges and edge_between(h, "B", "A") is None, "новая линия не появилась")
@@ -1372,7 +1417,7 @@ def section10() -> None:
     n_edges = len(edges(h))
     page.wait_for_function("()=>!document.querySelector('.toast')", timeout=12000)
     draw_edge("C", "B")
-    page.wait_for_function("()=>[...document.querySelectorAll('.toast')].some(t=>/только один источник/.test(t.textContent))", timeout=8000)
+    page.wait_for_function("()=>[...document.querySelectorAll('.toast')].some(t=>/только один источник/.test(t.textContent))", timeout=15000)
     t59 = toast_text(page)
     check("«B» уже получает питание от" in t59 and "A" in t59 and "C" in t59, f"отказ называет узлы ({t59!r})")
     check(len(edges(h)) == n_edges and edge_between(h, "C", "B") is None, "линия C → B не создана")
