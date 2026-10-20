@@ -543,6 +543,7 @@
           // Э3/B7: живые P-now/E-за-период по линиям и «Баланс щита». С партии 13
           // (П6) карточка элемента на «Структуре» — та же, что на «Плане v3»,
           // поэтому живые числа считаются и там.
+          if(this.tab==='planv3') this.planV3XyLoad();
           if(this.tab==='planv3' || this.tab==='structurev2'){
             this._planV3RefreshNodeLiveNow();
             this._planV3LoadNodeLineEnergy();

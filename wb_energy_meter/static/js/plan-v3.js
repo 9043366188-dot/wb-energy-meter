@@ -179,6 +179,56 @@ function _planV3FreeSpot(o){
             .find(it=>it.kind==='node' && it.node_id===nodeId);
         },
 
+      // Партия 13, 13.6 (§8.5): положение элемента на плане числами X/Y — альтернатива
+      // перетаскиванию значка (клавиатура, тачскрин).
+      planV3XyDraft:{x:'', y:''},
+
+      planV3XyError:null,
+
+      planV3XyBusy:false,
+
+      planV3NodeItem(nodeId){
+          return ((this.planV3Current||{}).items||[]).find(it=>it.kind==='node' && it.node_id===nodeId) || null;
+        },
+
+      planV3PlanDimsText(){
+          if(!this.planV3Current) return '—';
+          const [w,h]=this._planV3EffectiveDims(this.planV3Current);
+          return w+' × '+h;
+        },
+
+      // Поля X/Y берутся из положения открытого элемента (вызывается при загрузке его карточки).
+      planV3XyLoad(){
+          const i=this.structInspector;
+          const it=(i && i.kind==='node') ? this.planV3NodeItem(i.id) : null;
+          this.planV3XyDraft = (it && it.geometry && typeof it.geometry.x==='number')
+            ? {x:String(Math.round(it.geometry.x)), y:String(Math.round(it.geometry.y))} : {x:'', y:''};
+          this.planV3XyError=null;
+        },
+
+      async planV3XyApply(){
+          const i=this.structInspector;
+          if(!i || i.kind!=='node' || !this.planV3Current) return;
+          const it=this.planV3NodeItem(i.id);
+          if(!it) return;
+          const [W,H]=this._planV3EffectiveDims(this.planV3Current);
+          const rx=String(this.planV3XyDraft.x).trim(), ry=String(this.planV3XyDraft.y).trim();
+          const x=Number(rx), y=Number(ry);
+          if(rx==='' || ry==='' || !isFinite(x) || !isFinite(y) || x<0 || x>W || y<0 || y>H){
+            this.planV3XyError='Введите X от 0 до '+W+' и Y от 0 до '+H+'.'; return;
+          }
+          this.planV3XyBusy=true; this.planV3XyError=null;
+          try{
+            const r=await fetch('/api/v2/plans/'+this.planV3Current.id+'/items/'+it.id, {
+              method:'PATCH', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({geometry:{x:Math.round(x),y:Math.round(y)}, coord_space:it.coord_space})});
+            if(!r.ok){ const d=await r.json(); this.planV3XyError=this._apiErrorMessage(d, r.status); return; }
+            this.showToast('Положение сохранено');
+            await this.reloadPlanV3Items();
+          }catch(e){ this.planV3XyError='Ошибка сети: '+e; }
+          finally{ this.planV3XyBusy=false; }
+        },
+
       planV3PointOnLine(pointId){
           return (this.structEdges||[]).some(e=>e.primary_point_id===pointId);
         },

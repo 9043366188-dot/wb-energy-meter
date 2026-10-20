@@ -60,6 +60,10 @@
           if (hdr && window.ResizeObserver) new ResizeObserver(() => this.layoutMeasureHeader()).observe(hdr);
         } catch (e) { /* не критично */ }
 
+        // Строки списков «Структуры» и панели «Плана v3» (data-kb-row, tabindex=0): Enter/Пробел
+        // открывают карточку, стрелки/Home/End двигают фокус по строкам своего списка.
+        document.addEventListener('keydown', (ev) => this.layoutRowKey(ev));
+
         // Открытие/закрытие панели: фокус внутрь и обратно, карта подстраивается.
         this.$watch(() => this.layoutDrawerShown(), (open, was) => this._layoutOnDrawerChange(!!open, !!was));
         this.$watch('tab', () => { this.planV3PanelOpen = false; });
@@ -150,6 +154,24 @@
         // Карта подстраивается под новую ширину (на ≥1280 колонка в сетке, на
         // узких панель поверх): зум и центр не трогаем.
         if (typeof this.planV3InvalidateMap === 'function') this.planV3InvalidateMap();
+      },
+
+      // Клавиатура в списках: строка — элемент с data-kb-row, список — ближайший data-kb-list.
+      layoutRowKey(ev) {
+        const el = ev.target;
+        if (!el || !el.matches || !el.matches('[data-kb-row]')) return;
+        if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
+        const k = ev.key;
+        if (k === 'Enter' || k === ' ' || k === 'Spacebar') { ev.preventDefault(); el.click(); return; }
+        if (k !== 'ArrowDown' && k !== 'ArrowUp' && k !== 'Home' && k !== 'End') return;
+        const list = el.closest('[data-kb-list]') || document;
+        const rows = Array.from(list.querySelectorAll('[data-kb-row]')).filter(r => r.offsetParent !== null);
+        const i = rows.indexOf(el);
+        if (i < 0) return;
+        let j = k === 'ArrowDown' ? i + 1 : k === 'ArrowUp' ? i - 1 : k === 'Home' ? 0 : rows.length - 1;
+        j = Math.max(0, Math.min(rows.length - 1, j));
+        ev.preventDefault();
+        rows[j].focus();
       },
 
       // Escape (общий обработчик в core.js вызывает это, когда ни один
