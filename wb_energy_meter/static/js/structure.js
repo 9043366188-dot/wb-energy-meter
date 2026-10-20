@@ -44,9 +44,13 @@
       structHistory:{open:false, loading:false, error:null, items:[], next:null,
                      startedAt:null, key:null},
 
-      _structSearchSeq:0,
-
       _structSearchResults:null,
+
+      // Партия 13, 13.4: токен последней загрузки карточки (лента 'inspector', core.js) и
+      // пометка «карточка загружена не целиком» (часть необязательных запросов не ответила).
+      _inspTok:null,
+
+      structInspectorPartial:null,
 
       structCreatePanel:null,
 
@@ -121,12 +125,24 @@
           // Метрики центра/списка (мощность, статус) — из общего снимка,
           // ничего не пересчитывается здесь (см. модульный докстринг
           // v2_snapshot в api_v2.py).
+          // Партия 13, 13.4/13.5: лента 'struct-snap' — один запрос за раз; при обрыве
+          // прежние числа остаются с признаком «устарело, обновлено ЧЧ:ММ».
+          const t=this.feedStart('struct-snap', {live:true, skipIfBusy:true});
+          if(!t) return;
           try{
-            const r=await fetch('/api/v2/snapshot');
+            const r=await fetch('/api/v2/snapshot', {signal:t.signal});
+            if(!r.ok) throw new Error('HTTP '+r.status);
             const d=await r.json();
-            this._structSnapshotById = {};
-            (d.points||[]).forEach(p=>{ this._structSnapshotById[p.point_id]=p; });
-          }catch(e){ this._structSnapshotById = this._structSnapshotById||{}; }
+            if(!this.feedLive(t)) return;
+            const byId = {};
+            (d.points||[]).forEach(p=>{ byId[p.point_id]=p; });
+            this._structSnapshotById = byId;
+            this.feedDone(t, (d.points||[]).length ? 'ready' : 'empty');
+          }catch(e){
+            if(this.feedAborted(e) || !this.feedLive(t)) return;
+            this._structSnapshotById = this._structSnapshotById||{};
+            this.feedFail(t, e.message);
+          }
         },
 
       structSnapshotFor(pointId){
@@ -138,12 +154,16 @@
           // /api/v2/structure/points?q= — сервер уже фильтрует и не прячет
           // непривязанные/неразмещённые точки. _structSearchSeq защищает от
           // устаревшего ответа, если пользователь печатает быстро.
-          const seq = ++this._structSearchSeq;
+          // Партия 13, 13.4: последовательность запросов — общий хелпер core.js
+          // (лента 'struct-search'; бывший _structSearchSeq обобщён, а не продублирован).
           const q = this.structQuery.trim();
+          const t = this.feedStart('struct-search');
           try{
-            const r = await fetch('/api/v2/structure/points'+(q?('?q='+encodeURIComponent(q)):''));
+            const r = await fetch('/api/v2/structure/points'+(q?('?q='+encodeURIComponent(q)):''),
+                                  {signal:t.signal});
+            if(!r.ok) throw new Error('HTTP '+r.status);
             const d = await r.json();
-            if(seq !== this._structSearchSeq) return;
+            if(!this.feedLive(t)) return;
             if(q){
               this._structSearchResults = d.points||[];
             }else{
@@ -151,7 +171,11 @@
               this._structSearchResults = null;
               await this._loadStructureSnapshot();
             }
-          }catch(e){ /* поиск best-effort, не валим экран */ }
+            this.feedDone(t, (q && (d.points||[]).length===0 && this.structSearchNodes().length===0) ? 'empty' : 'ready');
+          }catch(e){
+            if(this.feedAborted(e) || !this.feedLive(t)) return;
+            this.feedFail(t, e.message);   // экран показывает «Поиск не ответил», остальное не валим
+          }
         },
 
       structPeriodLabel(){
@@ -182,10 +206,13 @@
           // опубликованной схеме сети (черновики сюда не попадают — они ещё не
           // прошли проверку леса, см. topology/publish).
           const measuredEdges = (this.structEdges||[]).filter(e=>e.primary_point_id===pointId).map(edge=>{
+            // Партия 13, 13.3 (найдено автопроходом чек-листа, шаг 54): «Питается от» и «Питает»
+            // называем УЗЛАМИ схемы («Ввод», «Тест-ветка»), а не линиями: у линии, заведённой
+            // «Планом v3», нет имени, и на экран попадал служебный код вида pv3-e-1-2-1792…
             const fedBy = (this.structEdges||[]).filter(e2=>e2.to_node_id===edge.from_node_id)
-              .map(e2=>({name: e2.name, code: e2.code}));
+              .map(e2=>({name: this.structNodeName(e2.from_node_id)}));
             const feeds = (this.structEdges||[]).filter(e2=>e2.from_node_id===edge.to_node_id)
-              .map(e2=>({name: e2.name, code: e2.code}));
+              .map(e2=>({name: this.structNodeName(e2.to_node_id)}));
             return {edge, fedBy, feeds};
           });
           return {measuredEdges};
@@ -257,22 +284,44 @@
           // историю каждой без повторного клика (грузится в конце загрузчика).
           this.structHistory = {open:!!(this.structHistory&&this.structHistory.open),
             loading:false, error:null, items:[], next:null, startedAt:null, key:null};
+          // Партия 13, 13.4 (A33): последняя запрошенная карточка побеждает — ответ
+          // ранее выбранной не перетирает новую, её запросы отменяются (лента 'inspector').
+          const t = this.feedStart('inspector');
+          this._inspTok = t;
+          this.feedReset('card-live');   // «устарело» прежней карточки к новой не относится
           this.structInspector = {kind, id, data:null};
           this.structInspectorLoading = true; this.structInspectorError = null;
+          this.structInspectorPartial = null;
           try{
             if(kind==='point') await this._loadPointInspector(id);
             else if(kind==='group') await this._loadGroupInspector(id);
             else if(kind==='node') await this._loadNodeInspector(id);
             else if(kind==='edge') await this._loadEdgeInspector(id);
             else throw new Error('неизвестный тип объекта: '+kind);
+            this.feedDone(t, this.structInspectorPartial ? 'partial' : 'ready');
+            // Живые числа карточки узла/линии (лента 'card-live', опрос в общем тике): точка
+            // отсчёта «обновлено» — момент загрузки карточки.
+            if(this.feedLive(t) && this.structInspector && (kind==='node'||kind==='edge') &&
+               !this.feeds['card-live']){
+              const lt = this.feedStart('card-live', {live:true});
+              this.feedDone(lt, 'ready');
+            }
           }catch(e){
+            if(this.feedAborted(e) || !this.feedLive(t)) return;
             this.structInspectorError = 'Не удалось загрузить карточку: '+e.message;
+            this.feedFail(t, e.message);
           }finally{
-            this.structInspectorLoading = false;
+            if(this.feedLive(t)) this.structInspectorLoading = false;
           }
         },
 
-      closeInspector(){ this.structInspector=null; this.structInspectorError=null; },
+      closeInspector(){
+          // Партия 13, 13.4: загрузка закрываемой карточки обесценивается — её запоздалый
+          // ответ карточку заново не откроет.
+          this.feedReset('inspector'); this.feedReset('card-live');
+          this.structInspector=null; this.structInspectorError=null;
+          this.structInspectorLoading=false; this.structInspectorPartial=null;
+        },
 
       _structHistoryEntity(){
           const i=this.structInspector; if(!i) return null;
@@ -374,11 +423,12 @@
       async _loadPointInspector(id){
           const period=this._ovDefaultDates();
           const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
+          const t=this._inspTok, sig={signal:t&&t.signal};
           const [pointR, snapR, bindingsR, groupsR] = await Promise.all([
-            fetch('/api/v2/points/'+id),
-            fetch('/api/v2/snapshot?point_ids='+id),
-            fetch('/api/v2/points/'+id+'/bindings'),
-            fetch('/api/v2/points/'+id+'/groups'),
+            fetch('/api/v2/points/'+id, sig),
+            fetch('/api/v2/snapshot?point_ids='+id, sig),
+            fetch('/api/v2/points/'+id+'/bindings', sig),
+            fetch('/api/v2/points/'+id+'/groups', sig),
           ]);
           if(!pointR.ok) throw new Error('точка не найдена (HTTP '+pointR.status+')');
           const point = await pointR.json();
@@ -399,6 +449,7 @@
             const g=(this.structGroups||[]).find(x=>x.id===m.group_id);
             return {id: m.group_id, name: g?g.name:('#'+m.group_id)};
           });
+          if(!this.feedLive(t)) return;
           this.structInspector = {
             kind:'point', id, data,
             snapshot: (snap&&snap[0]) || null,
@@ -416,23 +467,31 @@
             const r = await fetch('/api/v2/metrics/query', {
               method:'POST', headers:{'Content-Type':'application/json'},
               body: JSON.stringify({mode:'measured', point_ids:[id], from:period.from, to:period.to, timezone:tz}),
+              signal: t&&t.signal,
             });
+            if(!this.feedLive(t)) return;
             if(r.ok) this.structInspector.consumption = await r.json();
-          }catch(e){ /* не критично для остальной карточки */ }
+            else this.structInspectorPartial = 'Расход за период не загрузился — остальное в карточке актуально.';
+          }catch(e){
+            if(this.feedAborted(e) || !this.feedLive(t)) return;
+            this.structInspectorPartial = 'Расход за период не загрузился — остальное в карточке актуально.';
+          }
         },
 
       async _loadGroupInspector(id){
           // §8.3: у группы вместо атрибутов прибора — состав и сумма/качество.
           const period=this._ovDefaultDates();
           const tz=(Intl.DateTimeFormat().resolvedOptions().timeZone)||'UTC';
+          const t=this._inspTok, sig={signal:t&&t.signal};
           const [groupR, membersR] = await Promise.all([
-            fetch('/api/v2/groups/'+id),
-            fetch('/api/v2/groups/'+id+'/effective-members'),
+            fetch('/api/v2/groups/'+id, sig),
+            fetch('/api/v2/groups/'+id+'/effective-members', sig),
           ]);
           if(!groupR.ok) throw new Error('группа не найдена (HTTP '+groupR.status+')');
           const data = await groupR.json();
           const membersResp = membersR.ok ? await membersR.json() : {points:[]};
           const members = membersResp.points || [];
+          if(!this.feedLive(t)) return;
           this.structInspector = {kind:'group', id, data, members, sum:null};
           this._refreshStructHistoryIfOpen();
           if(members.length>0){
@@ -440,14 +499,21 @@
               const r = await fetch('/api/v2/metrics/query', {
                 method:'POST', headers:{'Content-Type':'application/json'},
                 body: JSON.stringify({mode:'sum', point_ids:members.map(m=>m.point_id), from:period.from, to:period.to, timezone:tz}),
+                signal: t&&t.signal,
               });
+              if(!this.feedLive(t)) return;
               if(r.ok) this.structInspector.sum = await r.json();
-            }catch(e){ /* сумма необязательна для остальной карточки */ }
+              else this.structInspectorPartial = 'Сумма по составу не загрузилась — остальное в карточке актуально.';
+            }catch(e){
+              if(this.feedAborted(e) || !this.feedLive(t)) return;
+              this.structInspectorPartial = 'Сумма по составу не загрузилась — остальное в карточке актуально.';
+            }
           }
         },
 
       async _loadNodeInspector(id){
-          const r = await fetch('/api/v2/topology/nodes/'+id);
+          const t=this._inspTok, sig={signal:t&&t.signal};
+          const r = await fetch('/api/v2/topology/nodes/'+id, sig);
           if(!r.ok) throw new Error('элемент схемы не найден (HTTP '+r.status+')');
           const data = await r.json();
           // «План v3», §1/§2: список линий узла (входящая+отходящие, каждая со
@@ -456,9 +522,14 @@
           // запрос), чтобы карточка сразу показывала и то, и другое.
           let lines = [];
           try{
-            const lr = await fetch('/api/v2/topology/nodes/'+id+'/lines');
+            const lr = await fetch('/api/v2/topology/nodes/'+id+'/lines', sig);
             if(lr.ok) lines = (await lr.json()).lines || [];
-          }catch(e){ /* необязательно для остальной карточки */ }
+            else this.structInspectorPartial = 'Линии элемента не загрузились — список может быть неполным.';
+          }catch(e){
+            if(this.feedAborted(e) || !this.feedLive(t)) return;
+            this.structInspectorPartial = 'Линии элемента не загрузились — список может быть неполным.';
+          }
+          if(!this.feedLive(t)) return;
           let locationText = '';
           if(data.location_id!=null){
             const loc = (this.structLocations||[]).find(l=>l.id===data.location_id);
@@ -475,6 +546,7 @@
           // Э3/B7: живые P-now/E-за-период по линиям и «Баланс щита». С партии 13
           // (П6) карточка элемента на «Структуре» — та же, что на «Плане v3»,
           // поэтому живые числа считаются и там.
+          if(this.tab==='planv3') this.planV3XyLoad();
           if(this.tab==='planv3' || this.tab==='structurev2'){
             this._planV3RefreshNodeLiveNow();
             this._planV3LoadNodeLineEnergy();
@@ -483,14 +555,17 @@
         },
 
       async _loadEdgeInspector(id){
-          const r = await fetch('/api/v2/topology/edges/'+id);
+          const t=this._inspTok;
+          const r = await fetch('/api/v2/topology/edges/'+id, {signal:t&&t.signal});
           if(!r.ok) throw new Error('связь не найдена (HTTP '+r.status+')');
           const data = await r.json();
           // Партия 7, Этап 3, Э3/B5: карточка линии «Плана v3» переиспользует
           // этот же loader (общий structInspector) — «Структура» показывает
           // его read-only (см. HTML ниже), «План v3» добавляет редактирование
           // и живые числа поверх тех же данных.
-          const {currentA, loadPct, phases, power_w}=await this._planEdgeLiveMetrics(data);
+          const {currentA, loadPct, phases, power_w, failed}=await this._planEdgeLiveMetrics(data, t&&t.signal);
+          if(!this.feedLive(t)) return;
+          if(failed) this.structInspectorPartial = 'Ток и загрузка линии не получены — остальное в карточке актуально.';
           this.structInspector = {
             kind:'edge', id, data, currentA, loadPct, phases, power_w,
             nameDraft: data.name||'',

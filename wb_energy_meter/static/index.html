@@ -3,22 +3,27 @@
 <head>
 <meta charset="utf-8">
 <title>wb-energy-meter</title>
-<meta name="viewport" content="width=1100">
+<!-- Партия 13, 13.1: адаптивный viewport (ТЗ §8.5). Классический набор на телефоне
+     остаётся страницей шириной 1100 — JS (js/layout.js) возвращает ему прежний viewport. -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Вендорено локально (ТЗ v0.11.0) — см. wb_energy_meter/static/vendor/VENDOR.md -->
 <link rel="stylesheet" href="/static/vendor/leaflet.css">
 <link rel="stylesheet" href="/static/vendor/leaflet-geoman.css">
 <style>
 :root[data-theme="dark"]{
-  --bg:#0d1117;--bg2:#161b22;--bg3:#1c2330;--line:#2d3543;
-  --txt:#e6edf3;--txt2:#9aa7b6;--txt3:#6b7886;
-  --accent:#2f9e8f;--accent2:#3dd6c0;
-  --ok:#3fb950;--warn:#d29922;--idle:#7d8590;--err:#f85149;--info:#58a6ff;
+  /* Партия 13, 13.6: значения проверяет tests/test_contrast_tokens.py (WCAG: текст ≥ 4,5:1,
+     границы управляющих элементов и значки ≥ 3:1). --line — декоративные разделители (карточки,
+     строки таблиц), --line-ctl — границы полей и кнопок; нарушения правятся здесь, в токенах. */
+  --bg:#0d1117;--bg2:#161b22;--bg3:#1c2330;--line:#2d3543;--line-ctl:#6b7886;
+  --txt:#e6edf3;--txt2:#9aa7b6;--txt3:#7f8b99;
+  --accent:#278478;--accent2:#3dd6c0;
+  --ok:#3fb950;--warn:#d29922;--idle:#7d8590;--err:#f85149;--err-fill:#d4312b;--info:#58a6ff;
 }
 :root[data-theme="light"]{
-  --bg:#f4f6f9;--bg2:#ffffff;--bg3:#eef1f5;--line:#d6dde6;
-  --txt:#1a2027;--txt2:#5a6675;--txt3:#8a96a3;
-  --accent:#1a7d70;--accent2:#149484;
-  --ok:#1a7f37;--warn:#9a6700;--idle:#8a96a3;--err:#cf222e;--info:#0969da;
+  --bg:#f4f6f9;--bg2:#ffffff;--bg3:#eef1f5;--line:#d6dde6;--line-ctl:#7f8c9a;
+  --txt:#1a2027;--txt2:#5a6675;--txt3:#626e7c;
+  --accent:#1a7d70;--accent2:#117b6e;
+  --ok:#1a7d36;--warn:#956400;--idle:#7f8c9a;--err:#cf222e;--err-fill:#cf222e;--info:#0969da;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--txt);
@@ -191,7 +196,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 .btn:hover{opacity:.8}
 .btn-sm{padding:4px 10px;font-size:11px}
 .btn-primary{background:var(--accent);color:#fff}
-.btn-danger{background:var(--err);color:#fff}
+.btn-danger{background:var(--err-fill);color:#fff}
 .btn-secondary{background:var(--bg3);border:1px solid var(--line);color:var(--txt)}
 .btn-success{background:var(--ok);color:#fff}
 /* inline edit inputs */
@@ -232,7 +237,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   box-shadow:0 4px 16px rgba(0,0,0,.3);animation:fadein .2s ease}
 @keyframes fadein{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 .toast-ok{background:var(--ok);color:#fff}
-.toast-err{background:var(--err);color:#fff}
+.toast-err{background:var(--err-fill);color:#fff}
 /* reports */
 .report-tabs{display:flex;gap:4px;margin-bottom:20px;background:var(--bg2);
   border:1px solid var(--line);border-radius:8px;padding:4px}
@@ -297,6 +302,8 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 #site-plan-v3-map{height:calc(100vh - 220px);min-height:420px;
   border-radius:10px;border:1px solid var(--line);background:var(--bg3)}
 #site-plan-v3-map.planv3-placing{cursor:crosshair}
+/* 13.1: панели Leaflet (z-index до 1000) не должны всплывать над выдвижной панелью */
+#site-plan-v3-map{isolation:isolate}
 .leaflet-container{background:var(--bg3);font-family:inherit;outline:none}
 .leaflet-popup-content-wrapper{background:var(--bg2);color:var(--txt);
   border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.4)}
@@ -387,6 +394,74 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 .structure-chip{display:inline-block;background:var(--bg3);border:1px solid var(--line);
   border-radius:12px;padding:3px 10px;font-size:12px;margin:2px 4px 2px 0;cursor:pointer}
 .structure-chip:hover{border-color:var(--accent2)}
+
+/* ===== Партия 13, 13.1 — адаптивность (ТЗ §8.5; брейкпоинты синхронны с js/layout.js) =====
+   ≥1280 — дерево/холст и карточка рядом, как раньше; 768–1279 — карточка выдвижная
+   справа (.drawer); 360–767 — одна рабочая область, карточка — нижняя панель.
+   Классический набор при ширине 1100+ не меняется: правила ниже 1280 касаются
+   только элементов набора v2 (.drawer, .tbl-scroll, .plan-layout-v3, .structure-layout),
+   а шапка перестраивается ниже 1100. */
+:root{--hdr-h:56px}
+:focus-visible{outline:2px solid var(--accent2);outline-offset:2px}
+.tbl-scroll{overflow-x:auto;max-width:100%}
+.plan-layout>*,.structure-layout>*{min-width:0}
+.only-narrow,.drawer-head{display:none}
+.drawer:focus{outline:none}
+@media (max-width:1279px){
+  main{padding:20px 16px}
+  .only-narrow{display:inline-block}
+  .structure-layout,.plan-layout-v3.plan-edit-open{grid-template-columns:minmax(0,1fr)}
+  .structure-layout>.structure-col:not(.drawer){max-height:none;overflow:visible}
+  .drawer{position:fixed;z-index:40;top:var(--hdr-h);right:0;bottom:0;left:auto;
+    width:min(440px,100vw);max-height:none;margin:0;border-radius:0;border-width:0 0 0 1px;
+    box-shadow:-10px 0 28px rgba(0,0,0,.35);overflow:auto;
+    transform:translateX(105%);visibility:hidden;
+    transition:transform .18s ease,visibility 0s linear .18s}
+  .drawer.open{transform:none;visibility:visible;transition:transform .18s ease}
+  .drawer-head{display:flex;justify-content:flex-end;margin:0 0 8px;padding:2px 0;
+    position:sticky;top:0;z-index:1;background:var(--bg2)}
+}
+@media (max-width:1099px){
+  header{height:auto;min-height:56px;flex-wrap:wrap;padding:8px 16px;gap:8px 12px}
+  nav{order:10;flex:1 1 100%;margin-left:0;overflow-x:auto;padding-bottom:2px}
+  nav button{flex:0 0 auto;white-space:nowrap}
+}
+@media (max-width:767px){
+  header{position:static;padding:8px 12px}
+  .spacer{display:none}
+  header .ico-btn{flex:1 1 auto;text-align:center}
+  main{padding:12px}
+  .tiles{grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+  .drawer{top:auto;left:0;right:0;width:auto;max-height:62vh;
+    border-width:1px 0 0;border-radius:14px 14px 0 0;
+    box-shadow:0 -10px 28px rgba(0,0,0,.35);transform:translateY(105%)}
+  .drawer.open{transform:none}
+  #site-plan-v3-map{height:calc(100vh - 200px);min-height:360px}
+  /* зоны касания 44×44 (ТЗ §8.5) */
+  button,.btn,.btn-sm,.ico-btn,select,input[type=text],input[type=date],input[type=number],
+  input[type=search],nav button{min-height:44px}
+  .btn,.btn-sm,.ico-btn{min-width:44px}
+  input[type=checkbox],input[type=radio]{width:22px;height:22px}
+  .structure-tree-row,.structure-tree-meter,.structure-list-row{min-height:44px}
+  [data-testid=off-scheme-device] select{max-width:60%!important;flex:1 1 auto}
+  input,select,textarea{font-size:16px}
+  .leaflet-touch .leaflet-bar a{width:44px;height:44px;line-height:44px}
+}
+/* границы управляющих элементов (13.6): не декоративные линии, а различимая граница поля/кнопки
+   (≥ 3:1 к фону, WCAG 1.4.11). Подменяем сам токен на элементе: все `border:1px solid var(--line)`
+   (в стилях и inline) у полей и кнопок берут --line-ctl, а :hover/:active/:focus по-прежнему
+   задают border-color напрямую. */
+button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
+/* состояния и признак устаревания (13.4): прежние данные остаются, но не выдаются за свежие */
+.feed-stale{color:var(--warn);font-size:12px;font-weight:600}
+.feed-note{font-size:12px;color:var(--txt2);margin:0 0 10px}
+.feed-note .feed-stale{margin-right:10px}
+.is-stale{opacity:.62;transition:opacity .18s ease}
+.is-loading{opacity:.7;transition:opacity .18s ease}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
+    transition-duration:.001ms!important;scroll-behavior:auto!important}
+}
 </style>
 </head>
 <body>
@@ -491,6 +566,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
     <button x-show="uiSet=='v2'" :class="{active:tab=='reportsv2'}" @click="tab='reportsv2';openReportsV2Tab()">Отчёты</button>
     <button x-show="uiSet=='v2'" :class="{active:tab=='structurev2'}" @click="tab='structurev2';openStructureTab()">Структура</button>
     <button x-show="uiSet=='v2'" :class="{active:tab=='planv3'}" @click="tab='planv3';openPlanV3Tab()">План v3</button>
+    <!-- Партия 13, 13.2: «Настройки» в наборе v2 — обновление, Uptime, тема и версия;
+         разделы старой структуры (зоны, реестр, перенос) здесь не показываются. -->
+    <button x-show="uiSet=='v2'" data-testid="nav-settings-v2" :class="{active:tab=='settings'}" @click="tab='settings';loadSettings();initUpdatePanel()">Настройки</button>
   </nav>
   <div class="spacer"></div>
   <span class="muted mono" x-text="version?'v'+version:''"></span>
@@ -611,7 +689,13 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
   <!-- ОБЗОР v2 (ТЗ §8.2) -->
   <template x-if="tab=='overviewv2'">
     <div>
-      <div class="tiles">
+      <!-- Партия 13, 13.4: состояние снимка — «устарело, обновлено ЧЧ:ММ» (прежние числа
+           остаются на экране, но затемнены), неполные суммы, ошибка. -->
+      <div class="feed-note" data-testid="ov-state" role="status">
+        <span class="feed-stale" data-testid="ov-stale" x-show="feedStale('ov-snap')" x-text="feedStaleText('ov-snap')"></span>
+        <span data-testid="ov-partial" x-show="overviewV2PartialText()!==''" x-text="overviewV2PartialText()"></span>
+      </div>
+      <div class="tiles" :class="{'is-stale':feedStale('ov-snap')}">
         <div class="tile">
           <div class="lbl">Мощность сейчас</div>
           <div class="val mono"><span x-text="overviewV2TotalPowerKw()!=null?fmt(overviewV2TotalPowerKw(),1):'—'"></span><small> кВт</small></div>
@@ -670,11 +754,16 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           <div class="empty"><span class="spin"></span> считаем…</div>
         </template>
         <template x-if="ovError">
-          <div class="empty" style="color:var(--err)" x-text="ovError"></div>
+          <div data-testid="ov-summary-error" :class="ovSummary?'warn-item':'empty'"
+               :style="ovSummary?'':'color:var(--err)'" x-text="ovError"></div>
         </template>
+        <div class="feed-note" data-testid="ov-summary-state" role="status" x-show="ovSummary">
+          <span class="feed-stale" data-testid="ov-summary-stale" x-show="feedStale('ov-summary')" x-text="feedStaleText('ov-summary')"></span>
+          <span data-testid="ov-summary-partial" x-show="feedStatus('ov-summary')==='partial'">Итог неполный — часть вводов или ветвей не измеряется (ниже указано, каких).</span>
+        </div>
 
-        <template x-if="!ovLoading && ovSummary">
-          <div>
+        <template x-if="ovSummary">
+          <div :class="{'is-stale':feedStale('ov-summary'), 'is-loading':ovLoading}">
             <!-- Партия 7, Э2.8: итог объекта — три исхода: полный (value
                  не null), частичный (объект есть, но value=null — не все
                  вводы измеряются, unmetered_input), и вовсе не посчитан
@@ -761,7 +850,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                  из первого измерения на каждом отходе от вводов, участвуют
                  в небалансе. Неизмеренные ветви — отдельными строками без
                  чисел (нельзя выдумывать значение). -->
-            <table class="rep-table" data-testid="ov-branches" x-show="((ovSummary||{}).network_branches||[]).length>0 || ((ovSummary||{}).unmetered_branches||[]).length>0">
+            <div class="tbl-scroll"><table class="rep-table" data-testid="ov-branches" x-show="((ovSummary||{}).network_branches||[]).length>0 || ((ovSummary||{}).unmetered_branches||[]).length>0">
               <thead><tr>
                 <th>Ветвь сети</th><th class="num">кВт·ч</th><th class="num">% объекта</th>
               </tr></thead>
@@ -781,7 +870,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   </tr>
                 </template>
               </tbody>
-            </table>
+            </table></div>
 
             <div style="display:flex;gap:8px;align-items:baseline;margin-bottom:4px;padding:8px 0;
                         border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
@@ -863,7 +952,8 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         <div class="empty"><span class="spin"></span> загрузка…</div>
       </template>
       <template x-if="overviewV2Error">
-        <div class="empty" style="color:var(--err)" x-text="overviewV2Error"></div>
+        <div data-testid="ov-snap-error" :class="overviewV2Snapshot?'warn-item':'empty'"
+             :style="overviewV2Snapshot?'':'color:var(--err)'" x-text="overviewV2Error"></div>
       </template>
       <template x-if="!overviewV2Loading && overviewV2Snapshot && overviewV2Snapshot.points.length===0">
         <div class="empty" style="text-align:left;line-height:1.5" data-testid="overview-empty">
@@ -899,7 +989,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             <div class="empty" style="color:var(--err)" x-text="overviewV2GroupsError"></div>
           </template>
           <template x-if="!overviewV2GroupsError">
-            <table class="rep-table">
+            <div class="tbl-scroll"><table class="rep-table">
               <thead><tr>
                 <th>Группа</th>
                 <th class="num">P сейчас, кВт</th>
@@ -943,7 +1033,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   </tr>
                 </template>
               </tbody>
-            </table>
+            </table></div>
           </template>
 
           <!-- Разбор подтверждённых электрических пересечений — относится
@@ -1008,7 +1098,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           <template x-for="issue in validationResult.issues" :key="issue.kind+'_'+issue.entity_type+'_'+issue.entity_id">
             <div style="display:flex;align-items:center;gap:12px;padding:10px 14px;
                         background:var(--bg2);border:1px solid var(--line);margin-bottom:8px;
-                        border-radius:6px;cursor:pointer"
+                        border-radius:6px;cursor:pointer" tabindex="0" role="button" data-kb-row
                  @click="openInspector(issue.entity_type, issue.entity_id)">
               <span class="badge" style="background:var(--warn)22;color:var(--warn);border:1px solid var(--warn)55"
                     x-text="validationIssueLabel(issue.kind)"></span>
@@ -1027,7 +1117,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
       <template x-if="overviewV2Snapshot && overviewV2Snapshot.points.length>0">
         <div>
         <div class="section-title">Все точки учёта</div>
-        <table class="rep-table">
+        <div class="tbl-scroll"><table class="rep-table">
           <thead><tr>
             <th>Код</th>
             <th>Имя</th>
@@ -1059,7 +1149,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               </tr>
             </template>
           </tbody>
-        </table>
+        </table></div>
         </div>
       </template>
     </div>
@@ -1074,7 +1164,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
       <div class="section-title">Отчёты (§8.4)</div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-bottom:16px">
         <label class="muted" style="font-size:12px;display:block">Срез
-          <select x-model="rv2Dimension" @change="rv2ScopeIds=[]; rv2Result=null; rv2Error=null"
+          <select x-model="rv2Dimension" @change="rv2ResetResult()"
                   style="display:block;background:var(--bg2);border:1px solid var(--line);color:var(--txt);
                          border-radius:6px;padding:6px 10px;font-size:13px;margin-top:2px">
             <option value="point">Точка</option>
@@ -1138,17 +1228,33 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         <button class="btn" @click="downloadRv2Csv()" :disabled="!rv2Result">⬇ Скачать CSV</button>
       </div>
 
-      <template x-if="rv2Loading">
-        <div class="empty"><span class="spin"></span> считаем…</div>
+      <template x-if="rv2Loading && !rv2Result">
+        <div class="empty" data-testid="rv2-loading"><span class="spin"></span> считаем…</div>
       </template>
       <template x-if="rv2Error">
-        <div class="empty" style="color:var(--err)" x-text="rv2Error"></div>
+        <div data-testid="rv2-error" :class="rv2Result?'warn-item':'empty'"
+             :style="rv2Result?'':'color:var(--err)'" x-text="rv2Error"></div>
+      </template>
+      <div class="feed-note" data-testid="rv2-state" role="status" x-show="rv2Result">
+        <span class="feed-stale" data-testid="rv2-stale" x-show="feedStale('rv2-query')" x-text="feedStaleText('rv2-query')"></span>
+        <span data-testid="rv2-partial" x-show="feedStatus('rv2-query')==='partial'"
+              x-text="'Данные неполные: у '+rv2IncompleteRows(rv2Result)+' из '+((rv2R().rows||[]).length)+' строк нет полной истории или есть конфликт — подробности в колонках «Доступность» и «Флаги / конфликт».'"></span>
+      </div>
+      <template x-if="!rv2Loading && !rv2Error && !rv2Result">
+        <div class="empty" data-testid="rv2-empty" style="text-align:left;line-height:1.5">
+          Отчёт ещё не построен. Выберите срез и период и нажмите «Показать».
+        </div>
       </template>
       <!-- rv2R() — результат или пустой объект: при смене среза результат обнуляется, и Alpine
            успевает вычислить выражения внутри уже убираемого блока (в консоль сыпалось «Cannot
            read properties of null»). Через rv2R() обращение к null невозможно. -->
-      <template x-if="!rv2Loading && rv2Result">
-        <div>
+      <template x-if="rv2Result">
+        <div :class="{'is-stale':feedStale('rv2-query'), 'is-loading':rv2Loading}">
+          <div class="empty" data-testid="rv2-no-rows" style="text-align:left;line-height:1.5"
+               x-show="(rv2R().rows||[]).length===0">
+            За выбранный период по этому срезу строк нет. Измените срез или период; если точек учёта ещё нет —
+            заведите их в «Плане v3» или на «Структуре».
+          </div>
           <div class="muted" style="font-size:11px;margin-bottom:8px">
             Ревизия конфигурации: <span x-text="rv2R().configuration_revision_id"></span> ·
             режим состава: <span x-text="rv2R().composition_mode==='as_was'?'как было на начало периода':'текущий'"></span> ·
@@ -1163,7 +1269,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               x-text="' (с '+new Date(rv2R().journal_started_at*1000).toLocaleDateString('ru-RU')+')'"></span></template>.
             Для части периода до этого момента принята схема на начало журнала — это допущение, а не подтверждённая история.
           </div>
-          <table class="rep-table">
+          <div class="tbl-scroll"><table class="rep-table">
             <thead><tr>
               <th>Название</th><th class="num">Значение</th><th>Ед.</th><th>Доступность</th>
               <th>Флаги / конфликт</th><th>Состав</th>
@@ -1181,7 +1287,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                        открывают карточку по клику. -->
                   <td>
                     <span x-show="row.dimension==='point'||row.dimension==='branch'||row.dimension==='group'"
-                          style="cursor:pointer;text-decoration:underline dotted"
+                          style="cursor:pointer;text-decoration:underline dotted" tabindex="0" role="button" data-kb-row
                           @click="openInspector(row.dimension==='point'?'point':'group', row.id)"
                           x-text="row.name"></span>
                     <span x-show="row.dimension==='balance_scope'" x-text="row.name"></span>
@@ -1210,7 +1316,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 </tr>
               </template>
             </tbody>
-          </table>
+          </table></div>
           <div class="muted" style="font-size:11px;margin-top:8px">
             Числа взяты как есть из accounting_service (та же формула, что и в Обзоре и metrics/query) —
             округление на экране (3 знака) и в CSV (тоже 3 знака) согласовано.
@@ -1245,25 +1351,32 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
              «Плане v3» (те же узлы и линии из structNodes/structEdges), без «мест».
              Сверху — «Не на схеме»; под схемой — учётные группы отдельным разделом.
              Поиск (A02, structure/points?q=) — по элементам схемы и точкам. -->
-        <div class="structure-col structure-search" data-testid="struct-left">
-          <input type="text" placeholder="Поиск: имя, код, MQTT ID, серийник"
-                 x-model="structQuery" @input="structureSearch()">
+        <div class="structure-col structure-search" data-testid="struct-left" data-focus-home data-kb-list tabindex="-1">
+          <input type="text" placeholder="Поиск: имя, код, MQTT ID, серийник, группа, питание" aria-label="Поиск по структуре"
+                 data-testid="struct-search-input" x-model="structQuery" @input="structureSearch()">
 
           <template x-if="structQuery.trim()!==''">
             <div data-testid="struct-search-results">
               <div class="structure-sec-title" x-text="'Элементы схемы ('+structSearchNodes().length+')'"></div>
               <template x-for="n in structSearchNodes()" :key="'sn'+n.id">
-                <div class="structure-tree-row" @click="openInspector('node', n.id)">
+                <div class="structure-tree-row" tabindex="0" role="button" data-kb-row @click="openInspector('node', n.id)">
                   <span><span class="node-kind-chip" x-text="nodeKindLabel(n.kind)"></span> <span x-text="n.name"></span></span>
                 </div>
               </template>
               <div class="structure-sec-title" x-text="'Точки учёта ('+(_structSearchResults||[]).length+')'"></div>
               <template x-for="p in (_structSearchResults||[])" :key="'sp'+p.point_id">
-                <div class="structure-tree-row" @click="openInspector('point', p.point_id)">
+                <div class="structure-tree-row" tabindex="0" role="button" data-kb-row @click="openInspector('point', p.point_id)">
                   <span x-text="p.name||p.code"></span>
                   <span class="muted mono" style="font-size:11px" x-text="p.meter_device_id||'нет прибора'"></span>
                 </div>
               </template>
+              <div class="feed-note" data-testid="struct-search-state" role="status">
+                <span data-testid="struct-search-loading" x-show="feedLoading('struct-search')">Ищем…</span>
+                <span class="feed-stale" data-testid="struct-search-error" x-show="feedStatus('struct-search')==='error' && !feedLoading('struct-search')"
+                      x-text="'Поиск не ответил ('+feedError('struct-search')+') — выше результаты прошлого запроса, они могут не совпадать с набранным.'"></span>
+                <span data-testid="struct-search-empty" x-show="feedStatus('struct-search')==='empty' && !feedLoading('struct-search')">
+                  Ничего не найдено. Проверьте написание или введите MQTT ID либо серийный номер прибора.</span>
+              </div>
             </div>
           </template>
 
@@ -1278,7 +1391,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     <div>
                       <div class="muted" style="font-size:11px;margin:2px 0 4px">Точки учёта без линии:</div>
                       <template x-for="p in structPointsOffScheme()" :key="'op'+p.point_id">
-                        <div class="structure-tree-row" data-testid="off-scheme-point"
+                        <div class="structure-tree-row" data-testid="off-scheme-point" tabindex="0" role="button" data-kb-row
                              :class="{active:structInspector && structInspector.kind==='point' && structInspector.id===p.point_id}"
                              @click="openInspector('point', p.point_id)">
                           <span x-text="p.name||p.code"></span>
@@ -1293,7 +1406,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                       <template x-for="d in structFreeDevices()" :key="'od'+d.device_id">
                         <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px" data-testid="off-scheme-device">
                           <span class="sf-val" style="font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis" x-text="d.name||d.device_id"></span>
-                          <select style="max-width:150px" x-model="structDeviceTarget[d.device_id]"
+                          <select :aria-label="'Куда поставить счётчик: '+(d.name||d.device_id)" style="max-width:150px" x-model="structDeviceTarget[d.device_id]"
                                   @change="structDeviceToNode(d.device_id)">
                             <option value="">+ Счётчик → куда?</option>
                             <template x-for="n in structNodes" :key="'odn'+n.id">
@@ -1318,7 +1431,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               </div>
               <template x-if="structNewNodeOpen">
                 <div class="plan-upload-form" data-testid="struct-new-node" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">
-                  <select x-model="structNewNode.kind">
+                  <select aria-label="Тип нового элемента" x-model="structNewNode.kind">
                     <template x-for="k in nodeKinds" :key="k.value">
                       <option :value="k.value" :selected="k.value===structNewNode.kind" x-text="k.label"></option>
                     </template>
@@ -1345,7 +1458,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               <div data-testid="scheme-tree">
                 <template x-for="row in structTreeRows()" :key="row.node.id">
                   <div>
-                    <div class="structure-tree-row" data-testid="scheme-node"
+                    <div class="structure-tree-row" data-testid="scheme-node" tabindex="0" role="button" data-kb-row
                          :data-node-id="row.node.id" :data-depth="row.depth"
                          :class="{active:structInspector && structInspector.kind==='node' && structInspector.id===row.node.id}"
                          :style="'padding-left:'+(8+row.depth*16)+'px'"
@@ -1356,7 +1469,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                             x-text="structTreeMeters(row.node.id).length"></span>
                     </div>
                     <template x-for="m in structTreeMeters(row.node.id)" :key="m.edge_id+'_'+m.point_id">
-                      <div class="structure-tree-meter" data-testid="scheme-meter"
+                      <div class="structure-tree-meter" data-testid="scheme-meter" tabindex="0" role="button" data-kb-row
                            :style="'padding-left:'+(8+row.depth*16+14)+'px'"
                            @click="openInspector('point', m.point_id)">
                         <span x-text="'● '+structMeterTitle(m)"></span>
@@ -1374,7 +1487,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <div class="muted" style="font-size:11px">Групп нет.</div>
               </template>
               <template x-for="g in structGroups" :key="'g'+g.id">
-                <div class="structure-tree-row" data-testid="struct-group-row"
+                <div class="structure-tree-row" data-testid="struct-group-row" tabindex="0" role="button" data-kb-row
                      :class="{active:structInspector && structInspector.kind==='group' && structInspector.id===g.id}"
                      @click="openInspector('group', g.id)">
                   <span x-text="g.name"></span>
@@ -1391,7 +1504,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <div data-testid="struct-archived">
                   <div class="muted" style="font-size:11px;margin-top:4px" x-show="structArchivedPoints.length===0">Архивных точек нет.</div>
                   <template x-for="p in structArchivedPoints" :key="'ap'+p.id">
-                    <div class="structure-tree-row" data-testid="archived-point" @click="openArchivedPoint(p.id)">
+                    <div class="structure-tree-row" data-testid="archived-point" tabindex="0" role="button" data-kb-row @click="openArchivedPoint(p.id)">
                       <span class="muted" x-text="(p.name||p.code)+' — в архиве'"></span>
                     </div>
                   </template>
@@ -1404,17 +1517,34 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
              имя/код → статус/свежесть → расход за период → фазные напряжения/токи →
              чем питается/что питает → группы → текущий прибор → история замен.
              Карточка элемента схемы — та же, что в «Плане v3» (NODE-CARD ниже). -->
-        <div class="structure-col" data-testid="struct-right">
+        <div class="structure-col drawer" data-testid="struct-right" data-drawer="struct"
+             tabindex="-1" role="complementary" aria-label="Карточка выбранного"
+             :class="{open: layoutDrawerShown()}">
+          <div class="drawer-head">
+            <button class="ico-btn" data-testid="drawer-close" aria-label="Закрыть карточку"
+                    @click="layoutCloseDrawer()">✕ Закрыть</button>
+          </div>
+          <div class="feed-note" data-testid="card-state" role="status"
+               x-show="structInspector && !structInspectorLoading && !structInspectorError && (feedStale('card-live') || structInspectorPartial)">
+            <span class="feed-stale" data-testid="card-stale" x-show="feedStale('card-live')"
+                  x-text="'Мощность и ток: '+feedStaleText('card-live')"></span>
+            <span class="feed-stale" data-testid="card-partial" x-show="structInspectorPartial"
+                  x-text="structInspectorPartial"></span>
+          </div>
           <template x-if="!structInspector">
             <div class="muted" style="font-size:12px">
               Выберите элемент схемы или точку слева, чтобы увидеть карточку.
             </div>
           </template>
           <template x-if="structInspector && structInspectorLoading">
-            <div class="empty"><span class="spin"></span> загрузка…</div>
+            <div class="empty" role="status" data-testid="card-loading"><span class="spin"></span> загрузка…</div>
           </template>
           <template x-if="structInspector && !structInspectorLoading && structInspectorError">
-            <div style="color:var(--err);font-size:13px" x-text="structInspectorError"></div>
+            <div data-testid="card-error" role="alert">
+              <div style="color:var(--err);font-size:13px;margin-bottom:6px" x-text="structInspectorError"></div>
+              <button class="btn-sm" data-testid="card-retry"
+                      @click="openInspectorInPlace(structInspector.kind, structInspector.id)">Повторить</button>
+            </div>
           </template>
 
           <!-- точка -->
@@ -1428,7 +1558,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                        x-show="((structInspector||{}).data||{}).archived_at"
                        x-text="'Точка в архиве с '+(((structInspector||{}).data||{}).archived_at?new Date(((structInspector||{}).data||{}).archived_at*1000).toLocaleString('ru-RU'):'')+'. История сохраняется; в текущий состав, итоги и балансы точка не входит.'"></div>
                 </div>
-                <button class="ico-btn" @click="closeInspector()">✕</button>
+                <button class="ico-btn" @click="closeInspector()" aria-label="Закрыть карточку">✕</button>
               </div>
 
               <!-- Действия карточки (ТЗ §8.3, партия 5, задача 2): показать
@@ -1453,13 +1583,13 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     Текущая привязка закроется в момент замены — история сохраняется,
                     старые агрегаты не переписываются (см. «История замен» ниже).
                   </div>
-                  <select x-model="replaceMeterForm.device_id" data-testid="replace-meter-device">
+                  <select aria-label="Свободный прибор для замены" x-model="replaceMeterForm.device_id" data-testid="replace-meter-device">
                     <option value="">— выберите свободный прибор —</option>
                     <template x-for="d in structDeviceOptions()" :key="d.device_id">
                       <option :value="d.device_id" :disabled="d.disabled" :selected="d.device_id===replaceMeterForm.device_id" x-text="d.label"></option>
                     </template>
                   </select>
-                  <select x-model="replaceMeterForm.channel_profile">
+                  <select aria-label="Профиль канала" x-model="replaceMeterForm.channel_profile">
                     <option value="total_3p">Все фазы суммарно (total_3p)</option>
                     <option value="phase_l1">Фаза L1</option>
                     <option value="phase_l2">Фаза L2</option>
@@ -1480,40 +1610,40 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <div class="sf-lbl">Статус / свежесть</div>
                 <div class="sf-val">
                   <span class="badge"
-                        :style="badgeStyle(!structInspector.snapshot?'unknown':(structInspector.snapshot.binding_status==='unbound'?'unknown':structInspector.snapshot.device_status))"
-                        x-text="!structInspector.snapshot?'—':(structInspector.snapshot.binding_status==='unbound'?'не привязана':statusLabel(structInspector.snapshot.device_status))"></span>
+                        :style="badgeStyle(!(structInspector||{}).snapshot?'unknown':((structInspector||{}).snapshot.binding_status==='unbound'?'unknown':(structInspector||{}).snapshot.device_status))"
+                        x-text="!(structInspector||{}).snapshot?'—':((structInspector||{}).snapshot.binding_status==='unbound'?'не привязана':statusLabel((structInspector||{}).snapshot.device_status))"></span>
                   <span class="muted" style="font-size:11px;margin-left:8px"
-                        x-text="structInspector.snapshot?fmtAge(structInspector.snapshot.last_update_age_s):''"></span>
+                        x-text="(structInspector||{}).snapshot?fmtAge((structInspector||{}).snapshot.last_update_age_s):''"></span>
                 </div>
               </div>
 
               <div class="structure-field">
                 <div class="sf-lbl">Расход за период</div>
                 <div class="sf-val"
-                     x-text="!structInspector.consumption?'—':(structInspector.consumption.value!=null?fmt(structInspector.consumption.value,2)+' '+structInspector.consumption.unit:'нет данных ('+structInspector.consumption.availability+')')"></div>
+                     x-text="!(structInspector||{}).consumption?'—':((structInspector||{}).consumption.value!=null?fmt((structInspector||{}).consumption.value,2)+' '+(structInspector||{}).consumption.unit:'нет данных ('+(structInspector||{}).consumption.availability+')')"></div>
                 <div class="muted" style="font-size:11px" x-text="structPeriodLabel()"></div>
               </div>
 
-              <div class="structure-field" x-show="structInspector.snapshot && structInspector.snapshot.voltage_v">
+              <div class="structure-field" x-show="((structInspector||{}).snapshot||{}).voltage_v">
                 <div class="sf-lbl">Напряжение по фазам, В</div>
                 <div class="sf-val mono">
-                  L1: <span x-text="structInspector.snapshot && structInspector.snapshot.voltage_v?fmt(structInspector.snapshot.voltage_v.L1,0):'—'"></span> ·
-                  L2: <span x-text="structInspector.snapshot && structInspector.snapshot.voltage_v?fmt(structInspector.snapshot.voltage_v.L2,0):'—'"></span> ·
-                  L3: <span x-text="structInspector.snapshot && structInspector.snapshot.voltage_v?fmt(structInspector.snapshot.voltage_v.L3,0):'—'"></span>
+                  L1: <span x-text="((structInspector||{}).snapshot||{}).voltage_v?fmt((structInspector||{}).snapshot.voltage_v.L1,0):'—'"></span> ·
+                  L2: <span x-text="((structInspector||{}).snapshot||{}).voltage_v?fmt((structInspector||{}).snapshot.voltage_v.L2,0):'—'"></span> ·
+                  L3: <span x-text="((structInspector||{}).snapshot||{}).voltage_v?fmt((structInspector||{}).snapshot.voltage_v.L3,0):'—'"></span>
                 </div>
               </div>
-              <div class="structure-field" x-show="structInspector.snapshot && structInspector.snapshot.current_a">
+              <div class="structure-field" x-show="((structInspector||{}).snapshot||{}).current_a">
                 <div class="sf-lbl">Ток по фазам, А</div>
                 <div class="sf-val mono">
-                  L1: <span x-text="structInspector.snapshot && structInspector.snapshot.current_a?fmt(structInspector.snapshot.current_a.L1,2):'—'"></span> ·
-                  L2: <span x-text="structInspector.snapshot && structInspector.snapshot.current_a?fmt(structInspector.snapshot.current_a.L2,2):'—'"></span> ·
-                  L3: <span x-text="structInspector.snapshot && structInspector.snapshot.current_a?fmt(structInspector.snapshot.current_a.L3,2):'—'"></span>
+                  L1: <span x-text="((structInspector||{}).snapshot||{}).current_a?fmt((structInspector||{}).snapshot.current_a.L1,2):'—'"></span> ·
+                  L2: <span x-text="((structInspector||{}).snapshot||{}).current_a?fmt((structInspector||{}).snapshot.current_a.L2,2):'—'"></span> ·
+                  L3: <span x-text="((structInspector||{}).snapshot||{}).current_a?fmt((structInspector||{}).snapshot.current_a.L3,2):'—'"></span>
                 </div>
               </div>
 
               <div class="structure-field">
                 <div class="sf-lbl">Описание</div>
-                <textarea x-model="structInspector.data.description" @blur="submitPointDescription()"
+                <textarea data-testid="point-description" x-model="((structInspector||{}).data||{}).description" @blur="submitPointDescription()"
                           rows="2" style="width:100%;resize:vertical" placeholder="Например: розетки цеха 2, освещение склада"></textarea>
               </div>
 
@@ -1528,7 +1658,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 </template>
                 <template x-for="f in structFeed((structInspector||{}).id).measuredEdges" :key="f.edge.id">
                   <div class="sf-val" style="margin-bottom:6px">
-                    <div class="muted" style="font-size:11px" x-text="'Измеряет связь: '+(f.edge.name||f.edge.code||('#'+f.edge.id))"></div>
+                    <div class="muted" style="font-size:11px" x-text="'Измеряет связь: '+(f.edge.name||(structNodeName(f.edge.from_node_id)+' → '+structNodeName(f.edge.to_node_id)))"></div>
                     <div x-text="'Питается от: '+(f.fedBy.length?f.fedBy.map(x=>x.name||x.code).join(', '):'— (ввод / верхний узел схемы)')"></div>
                     <div x-text="'Питает: '+(f.feeds.length?f.feeds.map(x=>x.name||x.code).join(', '):'— (конечных потребителей на схеме нет)')"></div>
                   </div>
@@ -1537,24 +1667,24 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 
               <div class="structure-field">
                 <div class="sf-lbl">Группа</div>
-                <template x-if="structInspector.groups.length===0">
+                <template x-if="((structInspector||{}).groups||[]).length===0">
                   <div class="sf-val muted">Ни в одной группе</div>
                 </template>
-                <template x-for="g in structInspector.groups" :key="g.id">
+                <template x-for="g in ((structInspector||{}).groups||[])" :key="g.id">
                   <div style="display:inline-flex;align-items:center;gap:4px;margin:0 6px 4px 0">
                     <span class="structure-chip" @click="openInspector('group', g.id)"
                           x-text="g.name" style="cursor:pointer"></span>
-                    <button class="btn btn-sm btn-danger" style="padding:0 6px" @click="simpleRemoveFromGroup(g.id)">✕</button>
+                    <button class="btn btn-sm btn-danger" style="padding:0 6px" @click="simpleRemoveFromGroup(g.id)" aria-label="Убрать из группы">✕</button>
                   </div>
                 </template>
                 <div style="display:flex;gap:6px;margin-top:6px">
-                  <select x-model.number="structInspector.simpleGroupPick" style="flex:1">
+                  <select aria-label="Добавить точку в группу" x-model.number="(structInspector||{}).simpleGroupPick" style="flex:1">
                     <option value="">— добавить в группу —</option>
                     <template x-for="g in structGroups" :key="g.id">
                       <option :value="g.id" x-text="g.name"></option>
                     </template>
                   </select>
-                  <button class="btn btn-secondary btn-sm" @click="simpleAddToGroup(structInspector.simpleGroupPick)">+</button>
+                  <button class="btn btn-secondary btn-sm" @click="simpleAddToGroup((structInspector||{}).simpleGroupPick)" aria-label="Добавить в группу">+</button>
                 </div>
               </div>
 
@@ -1570,10 +1700,10 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 
               <div class="structure-field">
                 <div class="sf-lbl">История замен</div>
-                <template x-if="structInspector.bindings.length===0">
+                <template x-if="((structInspector||{}).bindings||[]).length===0">
                   <div class="sf-val muted">Записей нет</div>
                 </template>
-                <template x-for="b in structInspector.bindings" :key="b.id">
+                <template x-for="b in ((structInspector||{}).bindings||[])" :key="b.id">
                   <div class="sf-val muted" style="font-size:11px;margin-bottom:4px">
                     <span x-text="fmtTime(b.valid_from)"></span> — <span x-text="b.valid_to?fmtTime(b.valid_to):'по н.в.'"></span>
                     · источник #<span x-text="b.meter_source_id"></span>
@@ -1592,25 +1722,25 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <h3 style="margin:0 0 2px" x-text="((structInspector||{}).data||{}).name"></h3>
                   <div class="muted" style="font-size:12px" x-text="((structInspector||{}).data||{}).category||'группа'"></div>
                 </div>
-                <button class="ico-btn" @click="closeInspector()">✕</button>
+                <button class="ico-btn" @click="closeInspector()" aria-label="Закрыть карточку">✕</button>
               </div>
               <div class="structure-field" style="margin-top:14px">
                 <div class="sf-lbl">Состав (рекурсивно, дедуплицирован, с происхождением)</div>
-                <template x-for="m in structInspector.members" :key="m.point_id">
+                <template x-for="m in ((structInspector||{}).members||[])" :key="m.point_id">
                   <div class="sf-val" style="font-size:12px;margin-bottom:3px;cursor:pointer"
                        @click="openInspector('point', m.point_id)">
                     <span x-text="m.name||m.code"></span>
                     <span class="muted" x-show="m.via && m.via.length>1" x-text="' (через: '+m.via.join(', ')+')'"></span>
                   </div>
                 </template>
-                <div class="muted" style="font-size:11px" x-show="structInspector.members.length===0">Пусто</div>
+                <div class="muted" style="font-size:11px" x-show="((structInspector||{}).members||[]).length===0">Пусто</div>
               </div>
               <div class="structure-field">
                 <div class="sf-lbl">Сумма за период</div>
                 <div class="sf-val"
-                     x-text="!structInspector.sum?'—':(structInspector.sum.value!=null?fmt(structInspector.sum.value,2)+' '+structInspector.sum.unit:'нет данных ('+structInspector.sum.availability+')')"></div>
-                <div class="muted" style="font-size:11px" x-show="structInspector.sum && (structInspector.sum.quality_flags||[]).length"
-                     x-text="(structInspector.sum.quality_flags||[]).join(', ')"></div>
+                     x-text="!(structInspector||{}).sum?'—':((structInspector||{}).sum.value!=null?fmt((structInspector||{}).sum.value,2)+' '+(structInspector||{}).sum.unit:'нет данных ('+(structInspector||{}).sum.availability+')')"></div>
+                <div class="muted" style="font-size:11px" x-show="(structInspector||{}).sum && (((structInspector||{}).sum||{}).quality_flags||[]).length"
+                     x-text="(((structInspector||{}).sum||{}).quality_flags||[]).join(', ')"></div>
                 <div class="muted" style="font-size:11px" x-text="structPeriodLabel()"></div>
               </div>
             </div>
@@ -1634,14 +1764,14 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                        x-text="nodeKindHint(((structInspector||{}).data||{}).kind)"></div>
                   <div class="muted" style="font-size:11px" x-text="'код '+((structInspector||{}).data||{}).code"></div>
                 </div>
-                <button class="ico-btn" @click="closeInspector()">✕</button>
+                <button class="ico-btn" @click="closeInspector()" aria-label="Закрыть карточку">✕</button>
               </div>
               <div class="muted" style="font-size:11px;margin-top:6px" data-testid="node-meter-note" x-text="nodeMeterNote"></div>
 
               <div class="structure-field" style="margin-top:14px">
                 <div class="sf-lbl">Название</div>
                 <div style="display:flex;gap:6px">
-                  <input type="text" x-model="structInspector.nameDraft" style="flex:1">
+                  <input type="text" x-model="(structInspector||{}).nameDraft" style="flex:1" aria-label="Название элемента">
                   <button class="btn btn-sm" @click="planV3SaveNodeCard()">Сохранить</button>
                 </div>
               </div>
@@ -1653,7 +1783,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               <div class="structure-field">
                 <div class="sf-lbl">Тип</div>
                 <div style="display:flex;gap:6px">
-                  <select x-model="structInspector.kindDraft" style="flex:1" data-testid="node-card-kind-select">
+                  <select aria-label="Тип элемента" x-model="(structInspector||{}).kindDraft" style="flex:1" data-testid="node-card-kind-select">
                     <template x-for="k in nodeKinds" :key="k.value">
                       <option :value="k.value" :selected="k.value===(structInspector||{}).kindDraft" x-text="k.label"></option>
                     </template>
@@ -1665,7 +1795,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               <div class="structure-field">
                 <div class="sf-lbl">Где стоит</div>
                 <div style="display:flex;gap:6px">
-                  <input type="text" x-model="structInspector.locationTextDraft"
+                  <input type="text" x-model="(structInspector||{}).locationTextDraft"
                          placeholder="например, ЩР-1, эт. 2" style="flex:1">
                   <button class="btn btn-sm" @click="planV3SaveNodeCard()">Сохранить</button>
                 </div>
@@ -1697,7 +1827,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <template x-if="nodeMeterOpen">
                   <div class="plan-upload-form" data-testid="node-meter-form" style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
                     <div class="sf-lbl">Прибор</div>
-                    <select x-model="nodeMeterForm.device_id" @change="nodeMeterDeviceChanged()" data-testid="node-meter-device">
+                    <select aria-label="Прибор" x-model="nodeMeterForm.device_id" @change="nodeMeterDeviceChanged()" data-testid="node-meter-device">
                       <option value="">— выберите свободный прибор —</option>
                       <template x-for="d in structDeviceOptions()" :key="d.device_id">
                         <option :value="d.device_id" :disabled="d.disabled" :selected="d.device_id===nodeMeterForm.device_id" x-text="d.label"></option>
@@ -1730,7 +1860,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     <template x-if="nodeMeterForm.measures==='input' && !nodeMeterInLine()">
                       <div style="display:flex;flex-direction:column;gap:4px">
                         <div class="sf-lbl">Откуда питается?</div>
-                        <select x-model="nodeMeterForm.fed_from_node_id" data-testid="node-meter-fed-from">
+                        <select aria-label="Откуда питается" x-model="nodeMeterForm.fed_from_node_id" data-testid="node-meter-fed-from">
                           <option value="">— выберите ввод или щит —</option>
                           <template x-for="n in nodeMeterFeedSources()" :key="n.id">
                             <option :value="n.id" x-text="n.name+' ('+nodeKindLabel(n.kind)+')'"></option>
@@ -1758,7 +1888,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                         <template x-if="nodeMeterForm.mode==='total'">
                           <div style="display:flex;flex-direction:column;gap:4px">
                             <div class="sf-lbl">Куда идёт линия?</div>
-                            <select x-model="nodeMeterForm.out_target" data-testid="node-meter-out-target">
+                            <select aria-label="Куда идёт линия" x-model="nodeMeterForm.out_target" data-testid="node-meter-out-target">
                               <template x-for="l in nodeMeterOutLines()" :key="'l'+l.edge_id">
                                 <option :value="'line:'+l.edge_id" x-text="'→ к «'+l.other_node_name+'» (линия уже есть)'"></option>
                               </template>
@@ -1787,7 +1917,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                                           x-text="'занята точкой «'+r.busy_name+'»'"></span>
                                   </template>
                                   <template x-if="!r.busy">
-                                    <select x-model="nodeMeterForm.phases[r.phase].target" style="flex:1"
+                                    <select :aria-label="'Куда идёт фаза '+r.phase" x-model="nodeMeterForm.phases[r.phase].target" style="flex:1"
                                             :data-testid="'node-meter-phase-target-'+r.phase">
                                       <option value="skip">не используется</option>
                                       <template x-for="l in nodeMeterOutLines()" :key="'l'+l.edge_id">
@@ -1837,7 +1967,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     <div class="sf-val" x-text="(ln.direction==='in'?'← от ':'→ к ')+ln.other_node_name"></div>
                     <div class="muted" style="font-size:11px" x-show="ln.name" x-text="ln.name"></div>
                     <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
-                      <select style="flex:1"
+                      <select style="flex:1" aria-label="Счётчик на линии"
                               @change="planV3AssignMeter(ln.edge_id, $event.target.value?Number($event.target.value):null)">
                         <option value="">— без счётчика —</option>
                         <template x-for="p in structPoints" :key="p.point_id">
@@ -1972,7 +2102,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <h3 style="margin:0 0 2px" x-text="((structInspector||{}).data||{}).name||((structInspector||{}).data||{}).code||('Связь #'+((structInspector||{}).data||{}).id)"></h3>
                   <div class="muted" style="font-size:12px" x-text="'состояние: '+((structInspector||{}).data||{}).state"></div>
                 </div>
-                <button class="ico-btn" @click="closeInspector()">✕</button>
+                <button class="ico-btn" @click="closeInspector()" aria-label="Закрыть карточку">✕</button>
               </div>
               <div class="structure-field" style="margin-top:14px">
                 <div class="sf-lbl">Концы</div>
@@ -2073,32 +2203,32 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               Нужно минимум два элемента схемы — сначала добавьте их.
             </div>
             <label class="muted" style="font-size:11px">От элемента</label>
-            <select x-model.number="edgeForm.from_node_id">
+            <select aria-label="От элемента" x-model.number="edgeForm.from_node_id">
               <option :value="null">— выберите —</option>
               <template x-for="n in structNodes" :key="n.id">
                 <option :value="n.id" x-text="n.name+' ('+nodeKindLabel(n.kind)+')'"></option>
               </template>
             </select>
             <label class="muted" style="font-size:11px">К элементу</label>
-            <select x-model.number="edgeForm.to_node_id">
+            <select aria-label="К элементу" x-model.number="edgeForm.to_node_id">
               <option :value="null">— выберите —</option>
               <template x-for="n in structNodes" :key="n.id">
                 <option :value="n.id" x-text="n.name+' ('+nodeKindLabel(n.kind)+')'"></option>
               </template>
             </select>
             <label class="muted" style="font-size:11px">Счётчик на этой линии (опционально)</label>
-            <select x-model.number="edgeForm.primary_point_id">
+            <select aria-label="Счётчик на этой линии" x-model.number="edgeForm.primary_point_id">
               <option :value="null">— без измерения —</option>
               <template x-for="p in structPoints" :key="p.point_id">
                 <option :value="p.point_id" x-text="p.name+' ('+p.code+')'"></option>
               </template>
             </select>
             <label class="muted" style="font-size:11px">Название линии (опционально)</label>
-            <input type="text" x-model="edgeForm.name">
+            <input aria-label="Название линии" type="text" x-model="edgeForm.name">
             <label class="muted" style="font-size:11px">Номинальный ток, А (опционально)</label>
-            <input type="number" x-model="edgeForm.rated_current_a" step="0.1" min="0">
+            <input aria-label="Номинальный ток, А" type="number" x-model="edgeForm.rated_current_a" step="0.1" min="0">
             <label class="muted" style="font-size:11px">Кабель / примечание (опционально)</label>
-            <input type="text" x-model="edgeForm.cable_note">
+            <input aria-label="Кабель или примечание" type="text" x-model="edgeForm.cable_note">
             <div class="muted" style="font-size:11px">
               Линия создаётся черновиком и не появляется в действующей схеме, пока не
               опубликована (кнопка «Публикация линий» выше).
@@ -2183,7 +2313,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
          Регрессия закрыта тестом test_plan_upload_form_reachable_when_no_plans. -->
     <div x-show="planPlans.length>0 || planEditMode">
       <div class="plan-toolbar">
-        <select x-model.number="planCurrentId" @change="selectPlan(planCurrentId)"
+        <select aria-label="План" x-model.number="planCurrentId" @change="selectPlan(planCurrentId)"
                 style="background:var(--bg2);border:1px solid var(--line);color:var(--txt);
                        padding:8px 12px;border-radius:7px;font-size:13px;font-family:inherit">
           <template x-for="p in planPlans" :key="p.id">
@@ -2359,7 +2489,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         </div>
       </template>
       <div class="plan-toolbar">
-        <select x-model.number="planV2CurrentId" @change="selectPlanV2(planV2CurrentId)">
+        <select aria-label="План" x-model.number="planV2CurrentId" @change="selectPlanV2(planV2CurrentId)">
           <template x-for="p in planV2Plans" :key="p.id">
             <option :value="p.id"
                     x-text="p.name + (p.plan_kind==='floor' ? ' (помещения)' : ' (однолинейная)')"></option>
@@ -2369,12 +2499,12 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         <template x-if="planV2PendingCount()>0">
           <div style="display:flex;gap:8px;align-items:center">
             <button class="ico-btn" :disabled="!planV2History.length" @click="planV2Undo()"
-                    title="Отменить последнее действие">↺</button>
+                    title="Отменить последнее действие" aria-label="Отменить последнее действие">↺</button>
             <button class="ico-btn" :disabled="!planV2Future.length" @click="planV2Redo()"
-                    title="Вернуть отменённое">↻</button>
+                    title="Вернуть отменённое" aria-label="Вернуть отменённое">↻</button>
             <span class="muted mono" x-text="'изменений: '+planV2PendingCount()"></span>
             <button class="btn btn-sm btn-secondary" @click="planV2RequestDiscard()">Отменить черновик</button>
-            <button class="btn btn-sm btn-primary" :disabled="planV2Saving" @click="planV2SaveLayout()">
+            <button class="btn btn-sm btn-primary" data-testid="planv2-save" :disabled="planV2Saving" @click="planV2SaveLayout()">
               <span x-show="!planV2Saving">Сохранить</span>
               <span x-show="planV2Saving"><span class="spin" style="width:12px;height:12px"></span> Сохранение…</span>
             </button>
@@ -2627,7 +2757,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 
     <div x-show="planV3Plans.length>0">
       <div class="plan-toolbar">
-        <select x-model.number="planV3CurrentId" @change="selectPlanV3(planV3CurrentId)">
+        <select aria-label="План" x-model.number="planV3CurrentId" @change="selectPlanV3(planV3CurrentId)">
           <template x-for="p in planV3Plans" :key="p.id">
             <option :value="p.id" x-text="p.name"></option>
           </template>
@@ -2649,6 +2779,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         <button class="ico-btn" x-show="planV3Tool" @click="planV3CancelTool()">✕ Отменить инструмент</button>
         <button class="btn btn-sm btn-danger" x-show="planV3Current" data-testid="plan-delete"
                 @click="askDeletePlan()">Удалить план</button>
+        <button class="btn btn-sm only-narrow" data-testid="planv3-panel-toggle"
+                aria-controls="planv3-panel" :aria-expanded="layoutDrawerShown()"
+                @click="planV3PanelOpen=!planV3PanelOpen">☰ Панель</button>
       </div>
 
       <template x-if="planV3NewPlanOpen">
@@ -2669,7 +2802,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 
       <template x-if="planV3Tool=='node'">
         <div class="plan-toolbar" style="margin-top:-6px;flex-wrap:wrap" data-testid="planv3-node-form">
-          <select x-model="planV3PendingNodeForm.kind" data-testid="planv3-kind-select">
+          <select aria-label="Тип элемента" x-model="planV3PendingNodeForm.kind" data-testid="planv3-kind-select">
             <template x-for="k in nodeKinds" :key="k.value">
               <option :value="k.value" :selected="k.value===planV3PendingNodeForm.kind" x-text="k.label"></option>
             </template>
@@ -2689,7 +2822,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
       </template>
       <template x-if="planV3Tool=='zone'">
         <div class="plan-toolbar" style="margin-top:-6px;flex-wrap:wrap">
-          <select x-model.number="planV3ZoneGroupId" :disabled="planV3DrawingZone">
+          <select aria-label="Учётная группа для зоны" x-model.number="planV3ZoneGroupId" :disabled="planV3DrawingZone">
             <option value="">— выберите учётную группу —</option>
             <template x-for="g in structGroups" :key="g.id">
               <option :value="g.id" x-text="g.name"></option>
@@ -2728,13 +2861,32 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         </div>
       </template>
 
-      <div class="plan-layout plan-edit-open">
-        <div id="site-plan-v3-map" x-ref="planV3Map"
+      <div class="plan-layout plan-layout-v3 plan-edit-open">
+        <div id="site-plan-v3-map" x-ref="planV3Map" data-focus-home
              :class="{'planv3-placing': planV3Tool=='node' || planV3Tool=='node-existing' || planV3Tool=='edge'}"></div>
 
-        <div class="plan-side">
-          <template x-if="structInspectorLoading"><div class="muted">Загрузка…</div></template>
-          <template x-if="structInspectorError"><div class="warn-item" x-text="structInspectorError"></div></template>
+        <div class="plan-side drawer" id="planv3-panel" data-testid="planv3-panel" data-drawer="plan" data-kb-list
+             tabindex="-1" role="complementary" aria-label="Карточка и список элементов плана"
+             :class="{open: layoutDrawerShown()}">
+          <div class="drawer-head">
+            <button class="ico-btn" data-testid="drawer-close" aria-label="Закрыть панель"
+                    @click="layoutCloseDrawer()">✕ Закрыть</button>
+          </div>
+          <div class="feed-note" data-testid="card-state" role="status"
+               x-show="structInspector && !structInspectorLoading && !structInspectorError && (feedStale('card-live') || structInspectorPartial)">
+            <span class="feed-stale" data-testid="card-stale" x-show="feedStale('card-live')"
+                  x-text="'Мощность и ток: '+feedStaleText('card-live')"></span>
+            <span class="feed-stale" data-testid="card-partial" x-show="structInspectorPartial"
+                  x-text="structInspectorPartial"></span>
+          </div>
+          <template x-if="structInspectorLoading"><div class="muted" role="status" data-testid="card-loading">Загрузка…</div></template>
+          <template x-if="structInspectorError">
+            <div data-testid="card-error" role="alert">
+              <div class="warn-item" x-text="structInspectorError"></div>
+              <button class="btn-sm" data-testid="card-retry"
+                      @click="openInspectorInPlace(structInspector.kind, structInspector.id)">Повторить</button>
+            </div>
+          </template>
 
           <template x-if="!structInspector && !structInspectorLoading">
             <div>
@@ -2758,7 +2910,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <div class="sf-lbl" x-text="'Не размещены на плане ('+structNodes.filter(n=>!planV3NodePlaced(n.id)).length+')'"></div>
                 <template x-for="n in structNodes.filter(n=>!planV3NodePlaced(n.id))" :key="n.id">
                   <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:3px">
-                    <span class="sf-val" style="font-size:12px;cursor:pointer"
+                    <span class="sf-val" style="font-size:12px;cursor:pointer" tabindex="0" role="button" data-kb-row
                           @click="openInspectorInPlace('node', n.id)"
                           x-text="n.name+' ('+nodeKindLabel(n.kind)+')'"></span>
                     <button class="btn btn-sm btn-secondary"
@@ -2774,7 +2926,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <div class="muted" style="font-size:11px">Элементов нет — нажмите «+ Элемент схемы» выше.</div>
                 </template>
                 <template x-for="n in structNodes" :key="n.id">
-                  <div class="sf-val" style="font-size:12px;cursor:pointer;margin-bottom:3px"
+                  <div class="sf-val" style="font-size:12px;cursor:pointer;margin-bottom:3px" tabindex="0" role="button" data-kb-row
                        @click="openInspectorInPlace('node', n.id)">
                     <span data-testid="planv3-node-row" x-text="n.name+' ('+nodeKindLabel(n.kind)+')'"></span>
                     <span class="muted" x-show="structNodeMeterCount(n.id)>0"
@@ -2789,7 +2941,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <div class="muted" style="font-size:11px">Линий нет.</div>
                 </template>
                 <template x-for="e in structEdges" :key="e.id">
-                  <div class="sf-val" style="font-size:12px;cursor:pointer;margin-bottom:3px"
+                  <div class="sf-val" style="font-size:12px;cursor:pointer;margin-bottom:3px" tabindex="0" role="button" data-kb-row
                        @click="openInspectorInPlace('edge', e.id)"
                        x-text="structNodeName(e.from_node_id)+' → '+structNodeName(e.to_node_id)+' — '+
                                (e.primary_point_id!=null ? structPointName(e.primary_point_id) : 'без счётчика')"></div>
@@ -2802,7 +2954,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <div class="muted" style="font-size:11px">Учётных групп нет.</div>
                 </template>
                 <template x-for="g in structGroups" :key="g.id">
-                  <div class="sf-val" style="font-size:12px;cursor:pointer;margin-bottom:3px"
+                  <div class="sf-val" style="font-size:12px;cursor:pointer;margin-bottom:3px" tabindex="0" role="button" data-kb-row
                        @click="openInspectorInPlace('group', g.id)" x-text="g.name"></div>
                 </template>
               </div>
@@ -2815,7 +2967,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <template x-for="p in structPoints" :key="p.point_id">
                   <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:3px"
                        data-testid="planv3-point-row">
-                    <span class="sf-val" style="font-size:12px;cursor:pointer"
+                    <span class="sf-val" style="font-size:12px;cursor:pointer" tabindex="0" role="button" data-kb-row
                           @click="openInspector('point', p.point_id)">
                       <span x-text="p.name||p.code"></span>
                       <span class="muted" x-show="!planV3PointOnLine(p.point_id)"> — не стоит на линии</span>
@@ -2869,14 +3021,14 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                        x-text="nodeKindHint(((structInspector||{}).data||{}).kind)"></div>
                   <div class="muted" style="font-size:11px" x-text="'код '+((structInspector||{}).data||{}).code"></div>
                 </div>
-                <button class="ico-btn" @click="closeInspector()">✕</button>
+                <button class="ico-btn" @click="closeInspector()" aria-label="Закрыть карточку">✕</button>
               </div>
               <div class="muted" style="font-size:11px;margin-top:6px" data-testid="node-meter-note" x-text="nodeMeterNote"></div>
 
               <div class="structure-field" style="margin-top:14px">
                 <div class="sf-lbl">Название</div>
                 <div style="display:flex;gap:6px">
-                  <input type="text" x-model="structInspector.nameDraft" style="flex:1">
+                  <input type="text" x-model="(structInspector||{}).nameDraft" style="flex:1" aria-label="Название элемента">
                   <button class="btn btn-sm" @click="planV3SaveNodeCard()">Сохранить</button>
                 </div>
               </div>
@@ -2888,7 +3040,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               <div class="structure-field">
                 <div class="sf-lbl">Тип</div>
                 <div style="display:flex;gap:6px">
-                  <select x-model="structInspector.kindDraft" style="flex:1" data-testid="node-card-kind-select">
+                  <select aria-label="Тип элемента" x-model="(structInspector||{}).kindDraft" style="flex:1" data-testid="node-card-kind-select">
                     <template x-for="k in nodeKinds" :key="k.value">
                       <option :value="k.value" :selected="k.value===(structInspector||{}).kindDraft" x-text="k.label"></option>
                     </template>
@@ -2900,7 +3052,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               <div class="structure-field">
                 <div class="sf-lbl">Где стоит</div>
                 <div style="display:flex;gap:6px">
-                  <input type="text" x-model="structInspector.locationTextDraft"
+                  <input type="text" x-model="(structInspector||{}).locationTextDraft"
                          placeholder="например, ЩР-1, эт. 2" style="flex:1">
                   <button class="btn btn-sm" @click="planV3SaveNodeCard()">Сохранить</button>
                 </div>
@@ -2932,7 +3084,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <template x-if="nodeMeterOpen">
                   <div class="plan-upload-form" data-testid="node-meter-form" style="margin-top:8px;display:flex;flex-direction:column;gap:6px">
                     <div class="sf-lbl">Прибор</div>
-                    <select x-model="nodeMeterForm.device_id" @change="nodeMeterDeviceChanged()" data-testid="node-meter-device">
+                    <select aria-label="Прибор" x-model="nodeMeterForm.device_id" @change="nodeMeterDeviceChanged()" data-testid="node-meter-device">
                       <option value="">— выберите свободный прибор —</option>
                       <template x-for="d in structDeviceOptions()" :key="d.device_id">
                         <option :value="d.device_id" :disabled="d.disabled" :selected="d.device_id===nodeMeterForm.device_id" x-text="d.label"></option>
@@ -2965,7 +3117,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     <template x-if="nodeMeterForm.measures==='input' && !nodeMeterInLine()">
                       <div style="display:flex;flex-direction:column;gap:4px">
                         <div class="sf-lbl">Откуда питается?</div>
-                        <select x-model="nodeMeterForm.fed_from_node_id" data-testid="node-meter-fed-from">
+                        <select aria-label="Откуда питается" x-model="nodeMeterForm.fed_from_node_id" data-testid="node-meter-fed-from">
                           <option value="">— выберите ввод или щит —</option>
                           <template x-for="n in nodeMeterFeedSources()" :key="n.id">
                             <option :value="n.id" x-text="n.name+' ('+nodeKindLabel(n.kind)+')'"></option>
@@ -2993,7 +3145,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                         <template x-if="nodeMeterForm.mode==='total'">
                           <div style="display:flex;flex-direction:column;gap:4px">
                             <div class="sf-lbl">Куда идёт линия?</div>
-                            <select x-model="nodeMeterForm.out_target" data-testid="node-meter-out-target">
+                            <select aria-label="Куда идёт линия" x-model="nodeMeterForm.out_target" data-testid="node-meter-out-target">
                               <template x-for="l in nodeMeterOutLines()" :key="'l'+l.edge_id">
                                 <option :value="'line:'+l.edge_id" x-text="'→ к «'+l.other_node_name+'» (линия уже есть)'"></option>
                               </template>
@@ -3022,7 +3174,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                                           x-text="'занята точкой «'+r.busy_name+'»'"></span>
                                   </template>
                                   <template x-if="!r.busy">
-                                    <select x-model="nodeMeterForm.phases[r.phase].target" style="flex:1"
+                                    <select :aria-label="'Куда идёт фаза '+r.phase" x-model="nodeMeterForm.phases[r.phase].target" style="flex:1"
                                             :data-testid="'node-meter-phase-target-'+r.phase">
                                       <option value="skip">не используется</option>
                                       <template x-for="l in nodeMeterOutLines()" :key="'l'+l.edge_id">
@@ -3072,7 +3224,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                     <div class="sf-val" x-text="(ln.direction==='in'?'← от ':'→ к ')+ln.other_node_name"></div>
                     <div class="muted" style="font-size:11px" x-show="ln.name" x-text="ln.name"></div>
                     <div style="display:flex;gap:6px;align-items:center;margin-top:4px">
-                      <select style="flex:1"
+                      <select style="flex:1" aria-label="Счётчик на линии"
                               @change="planV3AssignMeter(ln.edge_id, $event.target.value?Number($event.target.value):null)">
                         <option value="">— без счётчика —</option>
                         <template x-for="p in structPoints" :key="p.point_id">
@@ -3199,6 +3351,28 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           </template>
           <!-- NODE-CARD:END -->
 
+          <!-- Партия 13, 13.6 (§8.5): альтернатива перетаскиванию значка — положение на плане
+               числами X/Y (единицы плана; для карты с подложкой — пиксели подложки). -->
+          <template x-if="!structInspectorLoading && !structInspectorError && structInspector && structInspector.kind==='node' && planV3NodeItem(structInspector.id)">
+            <div class="structure-field" data-testid="planv3-xy" style="margin-top:12px">
+              <div class="sf-lbl">Положение на плане (вместо перетаскивания)</div>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <label class="muted" style="font-size:12px">X
+                  <input type="number" min="0" step="1" style="width:88px" data-testid="planv3-xy-x"
+                         x-model="planV3XyDraft.x" @keydown.enter.prevent="planV3XyApply()"></label>
+                <label class="muted" style="font-size:12px">Y
+                  <input type="number" min="0" step="1" style="width:88px" data-testid="planv3-xy-y"
+                         x-model="planV3XyDraft.y" @keydown.enter.prevent="planV3XyApply()"></label>
+                <button class="btn btn-sm" data-testid="planv3-xy-apply" :disabled="planV3XyBusy"
+                        @click="planV3XyApply()">Переместить</button>
+              </div>
+              <div class="muted" style="font-size:11px;margin-top:4px" data-testid="planv3-xy-hint"
+                   x-text="'Размер плана: '+planV3PlanDimsText()+'. Начало координат — левый верхний угол.'"></div>
+              <div class="warn-item" data-testid="planv3-xy-error" role="alert" x-show="planV3XyError"
+                   x-text="planV3XyError"></div>
+            </div>
+          </template>
+
           <!-- карточка линии (Э3/B5): тот же structInspector, что и клик
                по линии на «Структуре»/«Плане v2», но здесь — с
                редактированием (имя/номинал/кабель), живыми числами
@@ -3215,7 +3389,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <div class="muted" style="font-size:12px"
                        x-text="'от: '+structNodeName(((structInspector||{}).data||{}).from_node_id)+' → к: '+structNodeName(((structInspector||{}).data||{}).to_node_id)"></div>
                 </div>
-                <button class="ico-btn" @click="closeInspector()">✕</button>
+                <button class="ico-btn" @click="closeInspector()" aria-label="Закрыть карточку">✕</button>
               </div>
 
               <div class="structure-field" style="margin-top:14px"
@@ -3230,21 +3404,21 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               <div class="structure-field">
                 <div class="sf-lbl">Название</div>
                 <div style="display:flex;gap:6px">
-                  <input type="text" x-model="(structInspector||{}).nameDraft" style="flex:1">
+                  <input type="text" x-model="(structInspector||{}).nameDraft" style="flex:1" aria-label="Название линии">
                   <button class="btn btn-sm" @click="planV3SaveEdgeCard()">Сохранить</button>
                 </div>
               </div>
               <div class="structure-field">
                 <div class="sf-lbl">Номинальный ток, А</div>
                 <div style="display:flex;gap:6px">
-                  <input type="number" step="0.1" min="0" x-model="(structInspector||{}).ratedDraft" style="flex:1">
+                  <input type="number" step="0.1" min="0" x-model="(structInspector||{}).ratedDraft" style="flex:1" aria-label="Номинальный ток, А">
                   <button class="btn btn-sm" @click="planV3SaveEdgeCard()">Сохранить</button>
                 </div>
               </div>
               <div class="structure-field">
                 <div class="sf-lbl">Кабель / примечание</div>
                 <div style="display:flex;gap:6px">
-                  <input type="text" x-model="(structInspector||{}).cableDraft" style="flex:1">
+                  <input type="text" x-model="(structInspector||{}).cableDraft" style="flex:1" aria-label="Кабель или заметка">
                   <button class="btn btn-sm" @click="planV3SaveEdgeCard()">Сохранить</button>
                 </div>
               </div>
@@ -3255,7 +3429,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               <div class="structure-field">
                 <div class="sf-lbl">Точка измерения</div>
                 <div style="display:flex;gap:6px;align-items:center">
-                  <select style="flex:1"
+                  <select style="flex:1" aria-label="Точка измерения линии"
                           @change="planV3AssignMeter((structInspector||{}).id, $event.target.value?Number($event.target.value):null)">
                     <option value="">— без счётчика —</option>
                     <template x-for="p in structPoints" :key="p.point_id">
@@ -3271,7 +3445,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <template x-if="planV3AttachEdgeId===(structInspector||{}).id">
                   <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">
                     <div style="display:flex;gap:6px">
-                      <select x-model="planV3AttachDeviceId" style="flex:1" data-testid="edge-attach-device">
+                      <select aria-label="Свободный прибор" x-model="planV3AttachDeviceId" style="flex:1" data-testid="edge-attach-device">
                         <option value="">— выберите свободный прибор —</option>
                         <template x-for="d in structDeviceOptions()" :key="d.device_id">
                           <option :value="d.device_id" :disabled="d.disabled" :selected="d.device_id===planV3AttachDeviceId" x-text="d.label"></option>
@@ -3317,7 +3491,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <h3 style="margin:0 0 2px" x-text="((structInspector||{}).data||{}).name"></h3>
                   <div class="muted" style="font-size:12px" x-text="((structInspector||{}).data||{}).category||'учётная группа (зона)'"></div>
                 </div>
-                <button class="ico-btn" @click="closeInspector()">✕</button>
+                <button class="ico-btn" @click="closeInspector()" aria-label="Закрыть карточку">✕</button>
               </div>
               <div class="structure-field" style="margin-top:14px">
                 <div class="sf-lbl">Состав (рекурсивно, дедуплицирован)</div>
@@ -3356,9 +3530,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           <button :class="{active:period.preset==p.id}" @click="setPreset(p.id)" x-text="p.label"></button>
         </template>
         <div class="custom">
-          <input type="date" x-model="period.from">
+          <input type="date" x-model="period.from" aria-label="Начало периода">
           <span class="muted">—</span>
-          <input type="date" x-model="period.to">
+          <input type="date" x-model="period.to" aria-label="Конец периода">
           <button @click="setCustom()">Применить</button>
         </div>
       </div>
@@ -3517,6 +3691,10 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
         </template>
       </div>
 
+      <!-- Партия 13, 13.2: разделы старой структуры (перенос легаси, зоны, реестр
+           счётчиков) — только в классическом наборе; в v2 группы живут в «Структуре». -->
+      <template x-if="uiSet=='classic'">
+      <div>
       <!-- Перенос легаси-данных в новую модель точек учёта -->
       <div class="settings-section">
         <h2>Перенос легаси-данных</h2>
@@ -3602,7 +3780,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                   <template x-if="zoneEditId !== z.id">
                     <div style="display:flex;gap:6px">
                       <button class="btn btn-sm btn-secondary" @click="startZoneEdit(z)">✏ Переименовать</button>
-                      <button class="btn btn-sm btn-danger" @click="askDeleteZone(z)">✕</button>
+                      <button class="btn btn-sm btn-danger" @click="askDeleteZone(z)" aria-label="Удалить зону">✕</button>
                     </div>
                   </template>
                   <template x-if="zoneEditId === z.id">
@@ -3655,7 +3833,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
             <table class="reg-table">
               <thead><tr>
                 <th style="width:26px">
-                  <input type="checkbox" :checked="allSelected" @change="toggleSelectAll($event)">
+                  <input type="checkbox" :checked="allSelected" @change="toggleSelectAll($event)" aria-label="Выбрать все счётчики">
                 </th>
                 <th>Имя</th><th>Группа</th><th>Комментарий</th><th>Роль</th><th>device_id</th>
                 <th>Serial</th><th style="width:120px">Uptime</th>
@@ -3665,7 +3843,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 <template x-for="m in regMeters" :key="m.device_id">
                   <tr>
                     <!-- Чекбокс выбора для массового назначения зоны -->
-                    <td><input type="checkbox" :value="m.device_id" x-model="selectedMeters"></td>
+                    <td><input type="checkbox" :value="m.device_id" x-model="selectedMeters" :aria-label="'Выбрать счётчик '+(m.display_name||m.device_id)"></td>
 
                     <!-- Имя -->
                     <td>
@@ -3764,7 +3942,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                           <button class="btn btn-sm btn-secondary"
                             @click="startEdit(m)">✏ Изменить</button>
                           <button class="btn btn-sm btn-danger"
-                            @click="askDelete(m)">✕</button>
+                            @click="askDelete(m)" aria-label="Удалить счётчик">✕</button>
                         </div>
                       </template>
                       <template x-if="editingId === m.device_id">
@@ -3788,6 +3966,9 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           </div>
         </template>
       </div>
+
+      </div>
+      </template>
 
       <!-- Опрос канала Uptime (ТЗ v0.10.0) -->
       <div class="settings-section">
@@ -3828,7 +4009,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           </div>
         </template>
 
-        <table class="reg-table" style="margin-top:12px">
+        <div class="tbl-scroll"><table class="reg-table" style="margin-top:12px">
           <thead><tr>
             <th>Счётчик</th><th style="width:130px">Состояние</th>
             <th>Пояснение</th><th style="width:140px">Действие</th>
@@ -3862,10 +4043,32 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
               </td></tr>
             </template>
           </tbody>
-        </table>
+        </table></div>
       </div>
 
-      <!-- Незарегистрированные счётчики -->
+      <!-- Партия 13, 13.2: тема и сведения о версии — раздел набора v2 -->
+      <template x-if="uiSet=='v2'">
+        <div class="settings-section" data-testid="settings-v2-about">
+          <h2>Интерфейс и версия</h2>
+          <div class="wbs-intro" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+            <span>Тема:</span>
+            <button class="btn btn-secondary" data-testid="settings-theme-toggle" @click="toggleTheme()"
+                    x-text="theme=='dark'?'Тёмная — переключить на светлую':'Светлая — переключить на тёмную'"></button>
+          </div>
+          <div class="wbs-intro" style="display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px"
+               data-testid="settings-version-info">
+            <span class="muted">Версия</span><span class="mono" x-text="version?('v'+version):'—'"></span>
+            <span class="muted">Работает</span><span class="mono" x-text="uptimeStr||'—'"></span>
+            <span class="muted">MQTT</span><span x-text="mqtt.connected?'подключено':'нет связи с брокером'"></span>
+          </div>
+          <div style="margin-top:12px">
+            <button class="btn btn-secondary" @click="toggleUiSet()" data-testid="settings-to-classic">Вернуться в классический интерфейс</button>
+          </div>
+        </div>
+      </template>
+
+      <!-- Незарегистрированные счётчики: реестр старой структуры, только классический набор -->
+      <template x-if="uiSet=='classic'">
       <div class="settings-section">
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
           <h2 style="margin:0;border:none;padding:0">Найдены в MQTT, не в реестре</h2>
@@ -3934,6 +4137,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
           </template>
         </div>
       </div>
+      </template>
     </div>
   </template>
 
@@ -3974,11 +4178,11 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
                 @click="rPeriod=p.id;rFrom='';rTo='';loadVedomost()"
                 x-text="p.label"></button>
             </template>
-            <input type="date" x-model="rFrom"
+            <input type="date" x-model="rFrom" aria-label="Начало периода"
               style="background:var(--bg2);border:1px solid var(--line);color:var(--txt);
                      padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit">
             <span class="muted">—</span>
-            <input type="date" x-model="rTo"
+            <input type="date" x-model="rTo" aria-label="Конец периода"
               style="background:var(--bg2);border:1px solid var(--line);color:var(--txt);
                      padding:7px 9px;border-radius:6px;font-size:13px;font-family:inherit">
             <button style="background:var(--bg3);border:1px solid var(--line);color:var(--txt);
@@ -4812,15 +5016,19 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 
   <!-- REVISION CONFLICT PLAN V2 (A35, ТЗ §13) -->
   <template x-if="planV2RevisionConflict">
-    <div class="confirm-overlay">
+    <div class="confirm-overlay" data-testid="planv2-conflict" role="alertdialog" aria-labelledby="planv2-conflict-title">
       <div class="confirm-box">
-        <h3>План изменён в другом месте</h3>
+        <h3 id="planv2-conflict-title">План изменён в другом месте</h3>
         <p>Кто-то ещё сохранил изменения этого плана, пока вы редактировали.
            Чтобы не потерять чужие правки, сохранение отменено — ваш
            черновик изменений НЕ записан на сервер.</p>
         <div class="actions">
-          <button class="btn btn-secondary" @click="planV2RevisionConflict=false">Закрыть (черновик останется)</button>
-          <button class="btn btn-danger" @click="planV2ConfirmDiscardReload()">Обновить план (черновик будет потерян)</button>
+          <button class="btn btn-secondary" data-testid="planv2-conflict-close"
+                  @click="planV2RevisionConflict=false">Закрыть (черновик останется)</button>
+          <button class="btn btn-primary" data-testid="planv2-conflict-keep"
+                  @click="planV2ReloadKeepDraft()">Загрузить чужую версию, мой черновик оставить</button>
+          <button class="btn btn-danger" data-testid="planv2-conflict-discard"
+                  @click="planV2ConfirmDiscardReload()">Обновить план (черновик будет потерян)</button>
         </div>
       </div>
     </div>
@@ -4887,6 +5095,7 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 <script src="/static/vendor/leaflet.js"></script>
 <script src="/static/vendor/leaflet-geoman.min.js"></script>
 <script src="/static/js/core.js"></script>
+<script src="/static/js/layout.js"></script>
 <script src="/static/js/plan-v3.js"></script>
 <script src="/static/js/reports-v2.js"></script>
 <script src="/static/js/overview-v2.js"></script>

@@ -24,9 +24,9 @@
 
 | Статус | Количество | ID |
 |---|---|---|
-| ✅ | 26 | A01, A03, A04, A05, A06, A07, A08, A09, A11, A12, A13, A14, A15, A16, A17, A18, A19, A21, A22, A23, A24, A25, A28, A38, A39, A43 |
-| 🟡 | 11 | A02, A10, A20, A27, A35, A37, A40, A41, A42, A44, A45 |
-| ❌ | 8 | A26, A29, A30, A31, A32, A33, A34, A36 |
+| ✅ | 32 | A01, A02, A03, A04, A05, A06, A07, A08, A09, A11, A12, A13, A14, A15, A16, A17, A18, A19, A21, A22, A23, A24, A25, A28, A33, A34, A35, A36, A38, A39, A43, A45 |
+| 🟡 | 8 | A10, A20, A27, A37, A40, A41, A42, A44 |
+| ❌ | 5 | A26, A29, A30, A31, A32 |
 
 В партии 11 закрыты тестами `tests/test_step49_acceptance_gaps.py`: A01,
 A04 (объяснение пути перекрытия), A05, A06, A14 (суммарный расход и флаги),
@@ -39,12 +39,18 @@ A15, A25, A38 (вторая половина), A39, A44 (границы суто
 A13 и A16 были найденными ошибками кода; решения Кира от 10.10.2026
 реализованы, строки ниже обновлены.
 
+В партии 13 (0.23.0) закрыты A02, A33, A34, A35, A36 и A45: браузерные сценарии
+`test_b14_responsive.py`, `test_b15_polling.py`, `test_b16_keyboard.py`,
+`test_b20_states.py`, `test_b21_matrix_gaps.py`, тесты `test_step32_structure_search.py`
+и `test_contrast_tokens.py`. По ходу найдены и исправлены ошибки интерфейса (список —
+в `CHANGELOG.md`, 0.23.0); ошибок расчёта партия 13 не нашла.
+
 ## Таблица
 
 | ID | Сценарий (кратко) | Статус | Свидетельство | Пробел → партия |
 |---|---|---|---|---|
 | A01 | Одиночный прибор без групп, планов и сети | ✅ | `test_step49_acceptance_gaps.py::test_a01_single_meter_without_groups_plans_or_topology` — точка 7.5 кВт·ч: `metrics/query` measured = 7.5 (complete), отчёт по точке = 7.5, список групп и планов пуст (200), Обзор отвечает 200 без итога объекта | — |
-| A02 | Одна точка в трёх отношениях (место / питание / группа); поиск находит её | 🟡 | `test_step32_structure_search.py::test_search_by_name_code_mqtt_serial_and_path` — поиск по имени, коду, MQTT ID, серийнику и пути находит свою точку и не находит чужую; `::test_location_path_reflects_full_hierarchy` — путь места | Три отношения собираются карточкой из трёх источников (`location_path`, `fed_from_point_*`, `GET /points/<id>/groups`); одного теста на «три разных отношения у одной точки» нет. Поиск не охватывает название группы и узла питания (только код, имя, MQTT ID, серийник, путь места) → 13 |
+| A02 | Одна точка в трёх отношениях (место / питание / группа); поиск находит её | ✅ | `test_step32_structure_search.py::test_search_by_name_code_mqtt_serial_and_path` — поиск по имени, коду, MQTT ID, серийнику и пути находит свою точку и не находит чужую; `::test_location_path_reflects_full_hierarchy` — путь места; `test_step32_structure_search.py::test_a02_search_finds_point_by_group_and_feed_node` (партия 13) — одна точка в группе «Котельный контур», с местом «Котельная» и линией от узла «Трансформаторная»: поиск находит её по названию группы, по имени узла питания (узел-получатель и закрытое членство ложных совпадений не дают) и по прежним полям; `test_b21_matrix_gaps.py` — в настоящем браузере первый же поиск после загрузки страницы показывает результаты, «цех» находит обе точки группы, «щр-1» — точки, питающиеся от него | — |
 | A03 | Ввод A=100, B=60, C=30, D=20 внутри B | ✅ | `test_step27_overview_summary.py::test_a03_object_total_via_input_not_sum_of_all_meters` (итог 100, B+C=90, небаланс 10, D не задвоен); `test_step40_topology_balance.py::test_t1_object_and_node_balance_with_nested_unbranched_consumer`; `test_step17_accounting_service.py::test_a03_sum_b_c_not_d_double_counted` | — |
 | A04 | Явная сумма A+B или B+D | ✅ | `test_step49_acceptance_gaps.py::test_a04_overlap_409_explains_path_and_comparison_allowed` — A+B и B+D → 409 `double_counting`, в тексте «путь от узла … до узла …»; C+D = 50 разрешено; сравнение A=100, B=60 без общего итога; `test_step17_accounting_service.py::test_a04_sum_a_d_rejected_overlap`; `test_step18_api_v2.py::test_metrics_query_sum_overlap_409`; `test_step27_overview_summary.py::test_a04_branch_sum_overlap_via_group_falls_back_to_comparison` (Обзор переходит в режим сравнения) | — |
 | A05 | D включена в группу и в её дочернюю группу | ✅ | `test_step49_acceptance_gaps.py::test_a05_point_in_group_and_child_group_counted_once_with_provenance` — Объект{D=20}, дочерняя Цех{D, E=5}: отчёт по Объекту = 25, не 45; `via(D) = [Объект, Цех]`, `via(E) = [Цех]`; `test_step24_group_repo_v2.py::test_resolve_effective_members_dedup_and_provenance`; `test_step17_accounting_service.py::test_a04_sum_same_point_measures_same_node_rejected` (дубликат id в сумме учтён один раз) | — |
@@ -75,10 +81,10 @@ A13 и A16 были найденными ошибками кода; решени
 | A30 | Новый фон другого разрешения; обрезанный/повёрнутый фон | ❌ | Теста нет | → 14 |
 | A31 | Токи 10/80/20 А, номинал 100 А → 80 %; пропала фаза → процент неизвестен | ❌ | Теста нет. В v2 расчёта загрузки линии нет: в `api_v2.py` есть только поле `rated_current_a`. Расчёт есть лишь в старом `api.py` (`/api/plans/<id>/live`, строки 1754–1776): берёт максимум по фазам, без правила пропавшей фазы | Реализация в v2 (с правилом пропавшей фазы) и тест → 14 |
 | A32 | Нет тока/номинала, у соседней группы есть мощность | ❌ | Теста нет. В старом расчёте при отсутствии тока или номинала `load_pct=None`, состояние `neutral` (процент по мощности не подставляется), но причины в ответе нет; в v2 расчёта нет | Поле «причина» и тест → 14 |
-| A33 | Поздний старый ответ не меняет выбранный период | ❌ | Теста нет (клиентская логика) | → 13 |
-| A34 | 20 переключений План → Обзор → План | ❌ | Теста нет (браузерный) | → 13 |
-| A35 | Два браузера правят один план | 🟡 | `test_step21_plan_v2.py::test_layout_revision_conflict_a35` — устаревшая `expected_revision` → 409, чужая правка не затёрта (геометрия осталась 111/55, ревизия 2); `test_step26_revision_protocol.py` — 409 для групп, мест, узлов, связей, публикации и границ баланса | «Черновик доступен» (клиентская часть) не проверен → 13 |
-| A36 | 360/768/1280/1920 px, обе темы, клавиатура | ❌ | Теста нет; `tests/browser/test_b01_tabs.py` обходит вкладки в обеих темах без ошибок консоли, но ширины и клавиатуру не проверяет | → 13 |
+| A33 | Поздний старый ответ не меняет выбранный период | ✅ | `test_b20_states.py` (партия 13, 13.4) — задержанный ответ по «Освещению» не перетирает новый по «Розеткам» в «Отчётах»; задержанный ответ по ЩР-1 не перетирает карточку ЩР-2 в «Структуре»; ответ на другой период прежним отчётом не подменяется; `core.js::feedStart/feedLive` — общий механизм | — |
+| A34 | 20 переключений План → Обзор → План | ✅ | `test_b15_polling.py` раздел 6 (партия 13) — 20 переключений «План v3 → Обзор → План v3» настоящим браузером: один `.leaflet-container` у «Плана v3», число слоёв карты и живых таймеров прежнее, открытая карточка и зум сохранились; скрытая вкладка 12 с — ни одного запроса `/api/`; один общий таймер 5 с | — |
+| A35 | Два браузера правят один план | ✅ | `test_step21_plan_v2.py::test_layout_revision_conflict_a35` — устаревшая `expected_revision` → 409, чужая правка не затёрта (геометрия осталась 111/55, ревизия 2); `test_step26_revision_protocol.py` — 409 для групп, мест, узлов, связей, публикации и границ баланса; `test_b21_matrix_gaps.py` (партия 13) — конфликт 409 при сохранении «Плана v2»: черновик остаётся на экране, «Загрузить чужую версию, мой черновик оставить» подгружает чужую ревизию, повторное сохранение проходит, в плане обе правки; «Обновить план» черновик отбрасывает; правка к убранному чужой версией элементу отбрасывается с пояснением | — |
+| A36 | 360/768/1280/1920 px, обе темы, клавиатура | ✅ | `test_b14_responsive.py` (партия 13) — ширины 360/768/1280/1920 × две темы × все экраны набора v2: `scrollWidth ≤ innerWidth`, поиск и карточка достижимы; `test_b16_keyboard.py` — имена у всех кнопок-значков, видимый фокус, клавиатурный выбор в списках, Escape закрывает панель с возвратом фокуса на трёх ширинах, поля X/Y двигают узел (видно в API); `test_contrast_tokens.py` — 100 пар токенов обеих тем без нарушений; `test_b01_tabs.py` — обход вкладок в обеих темах | — |
 | A37 | Без интернета; нет Alpine; нет MQTT | 🟡 | Вендорные файлы лежат локально (`wb_energy_meter/static/vendor/`, внешних URL в `index.html` нет), заглушка при отсутствии Alpine и `/api/selfcheck` покрыты `test_step12_selfcheck.py::test_selfcheck_ok_on_real_static`, `::test_index_html_has_boot_stub_without_alpine_directives`; состав пакета — `test_step45_package_data.py::test_every_static_file_is_covered_by_package_data` | Нет прохода в браузере с заблокированным Alpine и отсутствующим MQTT (проверка статическая) → 15 |
 | A38 | Зарегистрирована, но MQTT не видел / MQTT видит незарегистрированную | ✅ | `test_step23_snapshot.py::test_snapshot_never_seen_device` (`device_status=never_seen`, мощность null); `test_step49_acceptance_gaps.py::test_a38_unregistered_mqtt_device_is_not_part_of_accounting` — устройство `ghost` есть в реестре MQTT, но не в `snapshot` и не в списке точек, учёт зарегистрированной точки (7.5) не меняется | — |
 | A39 | Отключение/архивирование точки и остаточный MQTT-state | ✅ | `test_step49_acceptance_gaps.py::test_a39_archived_point_leaves_current_composition_history_kept` (группы: P архивирована в 5 ч — as_was[0,1 ч) = 13, as_was[10 ч,11 ч) = 4, current[0,1 ч) = 3, история P = 10); сеть — `test_step55_topology_as_was.py::test_a39_net_input_point_deactivated_line_becomes_unmetered` и `::test_a39_net_output_point_deactivated_unmetered_branch_grows_imbalance`: архивная точка и точка с `enabled=0` на линии не входят в итог объекта и баланс щита с даты выбытия, линия «без счётчика», история до неё сохраняется (небаланс 0 → 40) | Закрыто партией 12. В режиме `current` период делится по дате выбытия |
@@ -87,7 +93,7 @@ A13 и A16 были найденными ошибками кода; решени
 | A42 | Откат до и после первой записи v2 | 🟡 | `test_step47_generation_guard.py::test_incompatible_generation_exit_one_with_message` (после первой записи v2 старый код на новой БД не стартует); `test_step22_domain_generation.py::test_mark_v2_domain_write_sets_all_three_keys_atomically` | Откат **до** первой записи v2 (восстановление согласованной тройки код/БД/конфиг через `self-update.sh`) автоматическим тестом не покрыт → 15 |
 | A43 | Один контекст/период на обзоре, плане, инспекторе и CSV; конфигурация меняется во время RPC | ✅ | `test_step26_revision_protocol.py::test_a43_metrics_query_pins_snapshot_against_concurrent_write` (запись проходит посреди расчёта, ответ остаётся на ревизии снимка, следующая ревизия — со следующим запросом); `::test_write_does_not_wait_for_reader_and_reader_snapshot_is_unchanged`; `test_step50_db_read_concurrency.py::test_read_block_sees_one_snapshot_a43` (механизм: один `read()` = одна WAL-транзакция); `test_step40_topology_balance.py::test_t12_node_balance_pins_revision_and_rejects_unknown`; `test_step28_reports_query.py::test_reports_query_pins_revision_and_rejects_unknown` | — |
 | A44 | Сутки в зоне с переводом часов | 🟡 | `test_step49_acceptance_gaps.py::test_a44_dst_days_have_23_and_25_hours_and_boundary_not_counted_twice` — Europe/Berlin 2026: сутки 29.03 = 23 часа (23.0), соседние = 123.0 (граничный час 100.0 учтён один раз), сумма 146.0 = объединённый период; сутки 25.10 = 25 часов (25.0) | Параметр `timezone` в API только возвращается как подпись; границы суток строит клиент (`from`/`to` в unix-секундах), подписи с правильным offset не формируются → 15 |
-| A45 | HTML, кавычки, формульный префикс в названиях | 🟡 | `test_step28_reports_query.py::test_a45_csv_cell_neutralizes_formula_prefixes` — `csvCell` нейтрализует `=`, `+`, `-`, `@`, обычный текст и `null` не искажены | CSV проверен. Всплывающие подсказки и SVG: экранирование HTML не проверено тестом → 13 |
+| A45 | HTML, кавычки, формульный префикс в названиях | ✅ | `test_step28_reports_query.py::test_a45_csv_cell_neutralizes_formula_prefixes` — `csvCell` нейтрализует `=`, `+`, `-`, `@`, обычный текст и `null` не искажены; `test_b21_matrix_gaps.py` (партия 13) — точка, узел, линия, нагрузка и группа с именем `<img src=x onerror=alert(1)>"'=1+1` (и `<svg onload=…>`): в «Обзоре», «Структуре» (поиск и карточка), подсказках и подписях «Плана v3» и «Отчётах» видны как текст; перехвачены `dialog` и ошибки консоли: ни одного окна, ни ошибки, ни «Failed to load resource»; в DOM нет `<img src=x>` | — |
 
 ## Найденные ошибки
 
@@ -124,7 +130,7 @@ A13 и A16 были найденными ошибками кода; решени
 | Партия | Закрывает |
 |---|---|
 | 12 | ✅ закрыто: A07, A13, A14, A16, A21, A23, A39 (сеть) |
-| 13 | A02 (поиск по группе и узлу), A33, A34, A35 (черновик), A36, A45 (подсказки и SVG) |
+| 13 | ✅ закрыто: A02 (поиск по группе и узлу), A33, A34, A35 (черновик), A36, A45 (подсказки и SVG) |
 | 14 | A26, A27 (трасса, план), A29, A30, A31, A32 |
 | 15 | A10 (UI/CSV), A20 (гонка по питанию), A37, A40 (30 минут на контроллере), A41, A42, A44 (подписи offset) |
 

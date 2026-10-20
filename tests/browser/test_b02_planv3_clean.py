@@ -20,6 +20,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from harness import Harness, open_browser  # noqa: E402
+from waits import wait_map_v3_ready  # noqa: E402
 
 fails: list[str] = []
 
@@ -46,34 +47,38 @@ def main() -> int:
         if page.locator("text=Создать план").count():
             page.fill("input[placeholder='Название плана']", "Смоук")
             page.click("text=Создать план")
-            page.wait_for_timeout(1500)
+        # Партия 13, 13.8: ждём готовности карты (вписана, размер = размеру контейнера), а не
+        # фиксированную паузу — клик раньше этого давал «Точка вне границ плана» (плавающий тест).
+        wait_map_v3_ready(page)
 
         zoom = page.evaluate("_planV3Map.getZoom()")
         check(zoom > -4, f"холст пустого плана виден в нормальном масштабе (zoom={zoom})")
         bp.screenshot("b02_after_create")
 
         # Клик в левую верхнюю четверть карты с инструментом «+ Элемент схемы».
-        box = page.locator(".leaflet-container:visible").first.bounding_box()
         page.click("button:has-text('+ Элемент схемы')")
-        page.wait_for_timeout(300)
+        page.wait_for_selector("[data-testid=planv3-node-form]")
         page.fill("input[placeholder='Название']", "Ввод")
         # П11: форма инструмента сдвигает карту вниз — координаты клика берём
-        # из свежего замера, а не из замера до открытия формы.
+        # из свежего замера (после того как карта подогнана под новый размер контейнера).
+        wait_map_v3_ready(page)
         box = page.locator(".leaflet-container:visible").first.bounding_box()
         page.mouse.click(box["x"] + box["width"] * 0.3, box["y"] + box["height"] * 0.3)
-        page.wait_for_timeout(1500)
+        page.wait_for_function("fetch('/api/v2/topology/nodes').then(r=>r.json()).then(n=>n.length>=1)")
         n_nodes = len(page.evaluate("fetch('/api/v2/topology/nodes').then(r=>r.json())"))
         check(n_nodes == 1, f"узел создан кликом по карте (узлов: {n_nodes})")
 
         # Масштаб не должен сбрасываться следующим действием.
-        page.evaluate("_planV3Map.setView([600, 1000], 0)")
-        page.wait_for_timeout(400)
+        page.evaluate("_planV3Map.setView([600, 1000], 0, {animate: false})")
+        wait_map_v3_ready(page)
         z_before = page.evaluate("_planV3Map.getZoom()")
         page.click("button:has-text('+ Элемент схемы')")
+        page.wait_for_selector("[data-testid=planv3-node-form]")
         page.fill("input[placeholder='Название']", "ЩР-1")
+        wait_map_v3_ready(page)
         box = page.locator(".leaflet-container:visible").first.bounding_box()
         page.mouse.click(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5)
-        page.wait_for_timeout(1500)
+        page.wait_for_function("fetch('/api/v2/topology/nodes').then(r=>r.json()).then(n=>n.length>=2)")
         z_after = page.evaluate("_planV3Map.getZoom()")
         check(z_before == z_after, f"масштаб сохраняется после действия ({z_before} -> {z_after})")
         bp.screenshot("b02_after_nodes")

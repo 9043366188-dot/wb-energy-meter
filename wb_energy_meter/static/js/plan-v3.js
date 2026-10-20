@@ -139,6 +139,9 @@ function _planV3FreeSpot(o){
 
       planV3Tool:null,
 
+      // Таймер троттлинга invalidateSize карты (13.1, planV3InvalidateMap).
+      _planV3InvalidateTimer:null,
+
       planV3PendingNodeForm:{kind:'panel', name:''},
 
       planV3EdgeFirstItem:null,
@@ -174,6 +177,56 @@ function _planV3FreeSpot(o){
       planV3NodePlaced(nodeId){
           return !!(this.planV3Current && this.planV3Current.items || [])
             .find(it=>it.kind==='node' && it.node_id===nodeId);
+        },
+
+      // Партия 13, 13.6 (§8.5): положение элемента на плане числами X/Y — альтернатива
+      // перетаскиванию значка (клавиатура, тачскрин).
+      planV3XyDraft:{x:'', y:''},
+
+      planV3XyError:null,
+
+      planV3XyBusy:false,
+
+      planV3NodeItem(nodeId){
+          return ((this.planV3Current||{}).items||[]).find(it=>it.kind==='node' && it.node_id===nodeId) || null;
+        },
+
+      planV3PlanDimsText(){
+          if(!this.planV3Current) return '—';
+          const [w,h]=this._planV3EffectiveDims(this.planV3Current);
+          return w+' × '+h;
+        },
+
+      // Поля X/Y берутся из положения открытого элемента (вызывается при загрузке его карточки).
+      planV3XyLoad(){
+          const i=this.structInspector;
+          const it=(i && i.kind==='node') ? this.planV3NodeItem(i.id) : null;
+          this.planV3XyDraft = (it && it.geometry && typeof it.geometry.x==='number')
+            ? {x:String(Math.round(it.geometry.x)), y:String(Math.round(it.geometry.y))} : {x:'', y:''};
+          this.planV3XyError=null;
+        },
+
+      async planV3XyApply(){
+          const i=this.structInspector;
+          if(!i || i.kind!=='node' || !this.planV3Current) return;
+          const it=this.planV3NodeItem(i.id);
+          if(!it) return;
+          const [W,H]=this._planV3EffectiveDims(this.planV3Current);
+          const rx=String(this.planV3XyDraft.x).trim(), ry=String(this.planV3XyDraft.y).trim();
+          const x=Number(rx), y=Number(ry);
+          if(rx==='' || ry==='' || !isFinite(x) || !isFinite(y) || x<0 || x>W || y<0 || y>H){
+            this.planV3XyError='Введите X от 0 до '+W+' и Y от 0 до '+H+'.'; return;
+          }
+          this.planV3XyBusy=true; this.planV3XyError=null;
+          try{
+            const r=await fetch('/api/v2/plans/'+this.planV3Current.id+'/items/'+it.id, {
+              method:'PATCH', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({geometry:{x:Math.round(x),y:Math.round(y)}, coord_space:it.coord_space})});
+            if(!r.ok){ const d=await r.json(); this.planV3XyError=this._apiErrorMessage(d, r.status); return; }
+            this.showToast('Положение сохранено');
+            await this.reloadPlanV3Items();
+          }catch(e){ this.planV3XyError='Ошибка сети: '+e; }
+          finally{ this.planV3XyBusy=false; }
         },
 
       planV3PointOnLine(pointId){
@@ -247,15 +300,24 @@ function _planV3FreeSpot(o){
           const pointIds=[...new Set((this.structInspector.lines||[])
             .filter(l=>l.primary_point_id!=null).map(l=>l.primary_point_id))];
           if(!pointIds.length) return;
+          // Партия 13, 13.4/13.5: лента 'card-live' — один запрос за раз; при обрыве прежние
+          // P-now остаются на карточке с признаком «устарело, обновлено ЧЧ:ММ».
+          const t=this.feedStart('card-live', {live:true, skipIfBusy:true});
+          if(!t) return;
           try{
-            const r=await fetch('/api/v2/snapshot?point_ids='+pointIds.join(','));
-            if(!r.ok) return;
+            const r=await fetch('/api/v2/snapshot?point_ids='+pointIds.join(','), {signal:t.signal});
+            if(!r.ok) throw new Error('HTTP '+r.status);
             const pts=(await r.json()).points||[];
+            if(!this.feedLive(t)) return;
             if(!this.structInspector || this.structInspector.kind!=='node' || this.structInspector.id!==nodeId) return;
             const live={};
             pts.forEach(p=>{ live[p.point_id]={power_w:p.power_w, current_a:p.current_a}; });
             this.structInspector.lineLive=live;
-          }catch(e){ /* необязательно — просто не покажем P-now */ }
+            this.feedDone(t, 'ready');
+          }catch(e){
+            if(this.feedAborted(e) || !this.feedLive(t)) return;
+            this.feedFail(t, e.message);
+          }
         },
 
       async _planV3LoadNodeLineEnergy(){
@@ -309,10 +371,18 @@ function _planV3FreeSpot(o){
           if(!this.structInspector) return;
           if(this.structInspector.kind==='edge'){
             const edgeId=this.structInspector.id;
-            const {currentA, loadPct, phases, power_w}=await this._planEdgeLiveMetrics(this.structInspector.data);
+            // Партия 13, 13.8: у карточки линии, которая ещё грузится, data может быть null.
+            const edgeData=this.structInspector.data;
+            if(!edgeData || edgeData.primary_point_id==null) return;
+            const t=this.feedStart('card-live', {live:true, skipIfBusy:true});
+            if(!t) return;
+            const m=await this._planEdgeLiveMetrics(edgeData, t.signal);
+            if(m.aborted || !this.feedLive(t)) return;
+            if(m.failed){ this.feedFail(t, 'нет ответа'); return; }
             if(this.structInspector && this.structInspector.kind==='edge' && this.structInspector.id===edgeId){
-              this.structInspector.currentA=currentA; this.structInspector.loadPct=loadPct;
-              this.structInspector.phases=phases; this.structInspector.power_w=power_w;
+              this.structInspector.currentA=m.currentA; this.structInspector.loadPct=m.loadPct;
+              this.structInspector.phases=m.phases; this.structInspector.power_w=m.power_w;
+              this.feedDone(t, 'ready');
             }
           } else if(this.structInspector.kind==='node'){
             await this._planV3RefreshNodeLiveNow();
@@ -359,7 +429,10 @@ function _planV3FreeSpot(o){
           _planV3Map.setView([0,0],0);
           _planV3Map.on('click', (e)=>this._planV3OnMapClick(e));
           _planV3Map.on('pm:create', (e)=>this._planV3OnPmCreate(e));
-          window.addEventListener('resize', ()=>{ if(_planV3Map) _planV3Map.invalidateSize(); });
+          // Партия 13, 13.1: resize/поворот экрана — не чаще раза в 150 мс, зум и
+          // центр не сбрасываются (invalidateSize их не меняет, вписывание
+          // _planV3TryFit срабатывает только пока план ещё не вписан).
+          window.addEventListener('resize', ()=>this.planV3InvalidateMap());
           // Э3/B1, доп. правка (найдено браузерным прогоном test_b02 ПОСЛЕ
           // первой версии фикса выше): $nextTick после смены вкладки/выбора
           // плана НЕ гарантирует, что x-show родительского контейнера
@@ -382,6 +455,17 @@ function _planV3FreeSpot(o){
               if(_planV3Map){ _planV3Map.invalidateSize(); this._planV3TryFit(); }
             }).observe(el);
           }
+        },
+
+      // Партия 13, 13.1: «подстроить карту под контейнер» — с троттлингом;
+      // вызывается на resize окна и при открытии/закрытии панели карточки
+      // (layout.js). Зум, центр и открытая карточка не трогаются.
+      planV3InvalidateMap(){
+          if(!_planV3Map || this._planV3InvalidateTimer) return;
+          this._planV3InvalidateTimer=setTimeout(()=>{
+            this._planV3InvalidateTimer=null;
+            if(_planV3Map){ _planV3Map.invalidateSize({pan:false}); this._planV3TryFit(); }
+          },150);
         },
 
       async loadPlanV3List(){
@@ -639,6 +723,12 @@ function _planV3FreeSpot(o){
         },
 
       async planV3ConnectNodes(fromItem, toItem){
+          // Инструмент «+ Линия» расходуется вторым кликом — выключаем его сразу, а не после
+          // ответа сервера и перечитывания схемы. Раньше он выключался в finally: на медленном
+          // экране человек (или тест) успевал снова нажать «+ Линия» или «+ Зона», и запоздавший
+          // finally отключал уже новый инструмент — следующий клик по значку открывал карточку
+          // вместо начала линии (найдено прогоном test_b17 под нагрузкой).
+          this.planV3Tool=null;
           try{
             const rev=await this._structCurrentRev();
             const r=await fetch('/api/v2/topology/edges/connect', {
@@ -655,7 +745,6 @@ function _planV3FreeSpot(o){
             await this._loadStructureLists();
             await this.reloadPlanV3Items();
           }catch(e){ this.showToast('Ошибка сети: '+e, false); }
-          finally{ this.planV3Tool=null; }
         },
 
       async planV3CreateGroupInline(){
@@ -840,7 +929,11 @@ function _planV3FreeSpot(o){
           // Перетаскивание — как у Плана v2, всегда включено (нет отдельного
           // режима редактирования — все действия здесь прямые).
           if(layer.pm){
-            layer.pm.enableLayerDrag();
+            // Партия 13, 13.8 (найдено автопроходом чек-листа, шаг 20): Leaflet-Geoman 2.20
+            // включает перетаскивание, только если слой УЖЕ на карте (иначе enableLayerDrag
+            // тихо ничего не делает, и мышь двигает карту, а не значок). Слой добавляется
+            // на карту позже, в _planV3RenderItems, — включаем по событию 'add'.
+            layer.on('add', ()=>{ if(layer.pm) layer.pm.enableLayerDrag(); });
             layer.on('pm:dragend', ()=>{ this._planV3OnItemDragEnd(item, layer.getLatLng(), height); });
           }
           return layer;
@@ -887,6 +980,16 @@ function _planV3FreeSpot(o){
             });
             line.addTo(_planV3Map);
             _planV3EdgeLayers.set(String(v.id), line);
+          });
+          // Партия 13, 13.8 (найдено автопроходом чек-листа, шаги 33–38): порядок отрисовки
+          // «зоны → линии → значки узлов». Линия заканчивается ровно в центре значка и рисуется
+          // ПОЗЖЕ него, поэтому клик в центр значка попадал в линию и открывал карточку линии вместо
+          // карточки узла. Значки поднимаем наверх, зоны (залитые полигоны) опускаем вниз.
+          _planV3ItemLayers.forEach(l=>{
+            try{
+              if(l instanceof L.CircleMarker) l.bringToFront();
+              else if(l.bringToBack) l.bringToBack();
+            }catch(e){}
           });
         },
 
@@ -940,7 +1043,10 @@ function _planV3FreeSpot(o){
           const bounds=_planV3NeedsFit;
           _planV3NeedsFit=null;
           _planV3Map.invalidateSize();
-          _planV3Map.fitBounds(bounds);
+          // Партия 13, 13.8 (плавающие b02/b03): без анимации. Анимированный зум идёт ~250 мс,
+          // и клик по карте посреди него пересчитывается в координаты ещё не вписанного вида —
+          // «Точка вне границ плана» сразу после создания плана, чаще на медленном процессоре.
+          _planV3Map.fitBounds(bounds, {animate:false});
           return true;
         }
     };

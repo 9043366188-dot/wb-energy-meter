@@ -113,6 +113,73 @@ def test_search_by_name_code_mqtt_serial_and_path():
         db.close(); os.unlink(path)
 
 
+def test_a02_search_finds_point_by_group_and_feed_node():
+    """A02 (партия 13, 13.8): одна точка — в трёх отношениях (место / питание / группа);
+    поиск находит её и по названию группы, и по имени узла питания — не только по
+    коду, имени, MQTT ID, серийнику и пути места."""
+    from wb_energy_meter.group_repo_v2 import GroupRepoV2
+
+    client, db, path = make_client()
+    try:
+        p1 = _setup_point_with_meter_and_location(
+            db, "p32.a", "Насос отопления", "wb-map3e_71", "SN-1", location_name="Котельная")
+        p2 = _setup_point_with_meter_and_location(
+            db, "p32.b", "Вентиляция цеха", "wb-map3e_72", "SN-2", location_name="Цех 1")
+
+        # питание: Ввод «Трансформаторная» → ЩР «Главный щит» → линии с точками
+        def rev():
+            return client.get("/api/v2/revision").get_json()["configuration_revision"]
+
+        def node(code, name, kind):
+            r = client.post("/api/v2/topology/nodes", json={
+                "code": code, "name": name, "kind": kind, "expected_revision": rev()})
+            assert r.status_code == 201, r.get_json()
+            return r.get_json()
+
+        def connect(a, b, point_id):
+            r = client.post("/api/v2/topology/edges/connect", json={
+                "from_node_id": a["id"], "to_node_id": b["id"], "expected_revision": rev()})
+            assert r.status_code == 201, r.get_json()
+            edge = r.get_json()
+            r = client.patch(f"/api/v2/topology/edges/{edge['id']}", json={
+                "primary_point_id": point_id, "expected_revision": rev()})
+            assert r.status_code == 200, r.get_json()
+
+        src = node("n.src", "Трансформаторная", "source")
+        panel = node("n.pnl", "Главный щит", "panel")
+        load1 = node("n.l1", "Насосная", "load")
+        load2 = node("n.l2", "Вентиляторная", "load")
+        connect(src, panel, p1.id)       # p1 меряет линию от «Трансформаторной»
+        connect(panel, load2, p2.id)     # p2 меряет линию от «Главного щита»
+        connect(panel, load1, None)
+
+        grp = GroupRepoV2(db).add("Котельный контур")
+        GroupRepoV2(db).add_member(grp.id, p1.id, valid_from=0)
+
+        def ids_for(q):
+            r = client.get(f"/api/v2/structure/points?q={q}")
+            assert r.status_code == 200, r.get_json()
+            return {x["point_id"] for x in r.get_json()["points"]}
+
+        assert ids_for("Котельный") == {p1.id}, "поиск по названию группы"
+        assert ids_for("котельный контур") == {p1.id}, "регистронезависимо, несколько слов"
+        assert ids_for("Трансформаторная") == {p1.id}, "поиск по имени узла питания"
+        assert ids_for("Главный щит") == {p2.id}, "узел питания — тот, ОТКУДА идёт линия точки"
+        assert ids_for("Насосная") == set(), "узел-получатель питанием точки не считается"
+        # прежние поля работают как раньше
+        assert ids_for("Насос") == {p1.id}
+        assert ids_for("Котельная") == {p1.id}
+        assert ids_for("SN-2") == {p2.id}
+
+        # точка вышла из группы — по группе больше не находится
+        GroupRepoV2(db).remove_member(grp.id, p1.id)
+        assert ids_for("Котельный") == set(), "закрытое членство в группе поиск не находит"
+        print("[OK] A02: поиск находит точку по названию её группы и по имени узла питания; "
+              "закрытое членство и узел-получатель не дают ложных совпадений")
+    finally:
+        db.close(); os.unlink(path)
+
+
 def test_unbound_and_unplaced_points_still_listed():
     """§8.3: непривязанные и неразмещённые точки не исчезают — они
     просто помечены bound=false/placed_on_plan=false, а не отсутствуют."""
@@ -205,6 +272,7 @@ def test_structure_points_shape_matches_frontend_usage():
 
 if __name__ == "__main__":
     test_search_by_name_code_mqtt_serial_and_path()
+    test_a02_search_finds_point_by_group_and_feed_node()
     test_unbound_and_unplaced_points_still_listed()
     test_location_path_reflects_full_hierarchy()
     test_search_no_match_returns_empty_not_error()

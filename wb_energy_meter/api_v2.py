@@ -2485,6 +2485,28 @@ def register_v2_routes(app, state, json_response):
                     plan_point_ids.add(e.primary_point_id)
 
         q = (request.args.get("q") or "").strip().casefold()
+        # Партия 13, 13.8 (A02): точка — в трёх отношениях (место / питание / группа), и поиск
+        # находит её по любому: к коду, имени, MQTT ID, серийнику и пути места добавлены
+        # названия действующих групп точки и имя узла питания (откуда идёт линия, которую
+        # точка измеряет). Считается только при непустом q — обычный список этого не платит.
+        group_names_by_point = {}
+        feed_node_by_point = {}
+        if q:
+            group_names = {g.id: g.name for g in _group_repo_v2().list_all()}
+            with db.read() as c:
+                for row in c.execute(
+                        "SELECT point_id, group_id FROM group_memberships "
+                        "WHERE valid_to IS NULL").fetchall():
+                    name = group_names.get(row["group_id"])
+                    if name:
+                        group_names_by_point.setdefault(row["point_id"], []).append(name)
+            nodes_by_id = {n.id: n for n in _node_repo().list_all(include_archived=True)}
+            for e in _edge_repo().list_active_published():
+                if e.primary_point_id is None:
+                    continue
+                feeder = nodes_by_id.get(e.from_node_id)
+                if feeder is not None:
+                    feed_node_by_point[e.primary_point_id] = feeder.name
         items = []
         for p in all_points:
             binding = binding_repo.get_open_primary(p.id)
@@ -2502,8 +2524,9 @@ def register_v2_routes(app, state, json_response):
 
             if q:
                 searchable = " ".join(str(x) for x in (
-                    p.code, p.name, meter_device_id, meter_serial,
-                    location_path) if x).casefold()
+                    p.code, p.name, meter_device_id, meter_serial, location_path,
+                    *group_names_by_point.get(p.id, ()),
+                    feed_node_by_point.get(p.id)) if x).casefold()
                 if q not in searchable:
                     continue
 

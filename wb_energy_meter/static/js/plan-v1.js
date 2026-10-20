@@ -114,13 +114,24 @@ function _planLinkColor(state){
           await this.loadPlanLive();
         },
 
-      async loadPlanLive(){
+      async loadPlanLive(poll){
           if(!this.planCurrentId) return;
+          // Партия 13, 13.5: лента 'plan-live' — один запрос за раз; смена периода или плана
+          // обесценивает идущий (его ответ не перетрёт новый).
+          const t=this.feedStart('plan-live', {live:true, skipIfBusy:poll===true});
+          if(!t) return;
           try{
-            const r=await fetch(`/api/plans/${this.planCurrentId}/live?period=${encodeURIComponent(this.planPeriod)}`);
-            if(!r.ok) return;
-            this.planLive=await r.json();
-          }catch(e){ console.error(e); return; }
+            const r=await fetch(`/api/plans/${this.planCurrentId}/live?period=${encodeURIComponent(this.planPeriod)}`,
+                                {signal:t.signal});
+            if(!r.ok){ this.feedFail(t, 'HTTP '+r.status); return; }
+            const d=await r.json();
+            if(!this.feedLive(t)) return;
+            this.planLive=d;
+            this.feedDone(t,'ready');
+          }catch(e){
+            if(this.feedAborted(e) || !this.feedLive(t)) return;
+            console.error(e); this.feedFail(t, e.message); return;
+          }
           this._planApplyLiveStyles();
         },
 
@@ -465,11 +476,13 @@ function _planLinkColor(state){
           }catch(e){ this.showToast('Ошибка: '+e,false); }
         },
 
-      async _planEdgeLiveMetrics(edge){
+      // signal — AbortSignal ленты (партия 13, 13.4); failed:true — запрос не удался (в отличие
+      // от «точка не привязана / токов нет»), чтобы опрос карточки пометил данные устаревшими.
+      async _planEdgeLiveMetrics(edge, signal){
           if(!edge || edge.primary_point_id==null) return {currentA:null, loadPct:null, phases:null};
           try{
-            const sr=await fetch('/api/v2/snapshot?point_ids='+edge.primary_point_id);
-            if(!sr.ok) return {currentA:null, loadPct:null, phases:null};
+            const sr=await fetch('/api/v2/snapshot?point_ids='+edge.primary_point_id, {signal});
+            if(!sr.ok) return {currentA:null, loadPct:null, phases:null, failed:true};
             const snap=(await sr.json()).points||[];
             const point=snap[0]||null;
             const cur=point && point.current_a;
@@ -479,7 +492,8 @@ function _planLinkColor(state){
             const currentA=Math.max(...vals);
             const loadPct=edge.rated_current_a ? Math.round(currentA/edge.rated_current_a*100) : null;
             return {currentA, loadPct, phases:cur, power_w: point.power_w};
-          }catch(e){ return {currentA:null, loadPct:null, phases:null}; }
+          }catch(e){ return {currentA:null, loadPct:null, phases:null, failed:true,
+                             aborted:!!(e&&e.name==='AbortError')}; }
         }
     };
   });
