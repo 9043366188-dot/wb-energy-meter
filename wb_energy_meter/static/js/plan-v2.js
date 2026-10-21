@@ -193,17 +193,11 @@ function _planV2KindColor(kind){
           this.planV2History=[]; this.planV2Future=[];
         },
 
-      _planV2EffectiveDims(plan){
-          // §7.2: у floor — размеры изображения, у single_line без картинки —
-          // логический холст (canvas_width/height). Та же логика, что
-          // PlanV2.effective_width/height в plan_service_v2.py.
-          if(plan.image_width && plan.image_height) return [plan.image_width, plan.image_height];
-          return [plan.canvas_width||2000, plan.canvas_height||1200];
-        },
+      // §7.2: у floor — размеры изображения, у single_line без картинки — логический холст.
+      // Партия 14: код общий — _planEffectiveDims в core.js.
+      _planV2EffectiveDims(plan){ return _planEffectiveDims(plan); },
 
-      _planV2XyToLatLng(x, y, height){
-          return [height - y, x];
-        },
+      _planV2XyToLatLng(x, y, height){ return _planXyToLatLng(x, y, height); },
 
       planV2ItemColor(kind){ return _planV2KindColor(kind); },
 
@@ -319,9 +313,7 @@ function _planV2KindColor(kind){
                   label:effItem.label ?? null};
         },
 
-      _planV2LatLngToXy(latlng, height){
-          return [latlng.lng, height-latlng.lat];
-        },
+      _planV2LatLngToXy(latlng, height){ return _planLatLngToXy(latlng, height); },
 
       _planV2OnItemDragEnd(effItem, latlng, height){
           this._planV2PushHistory();

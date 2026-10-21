@@ -638,6 +638,13 @@
 
       async _runConfirmAction(kind, p, variant){
           const J={'Content-Type':'application/json'};
+          if(kind==='sl_auto_all'){
+            // Партия 14: окно подтверждения закрываем сразу — раскладка может открыть
+            // окно конфликта ревизий, и два окна подряд мешали бы друг другу.
+            this.uiConfirmOpen=false;
+            await this.slAutoLayout('all');
+            return true;
+          }
           if(kind==='archive_point'){
             const rev=await this._structCurrentRev();
             const r=await fetch('/api/v2/points/'+p.point_id, {
@@ -656,7 +663,9 @@
               let d={}; try{ d=await r.json(); }catch(e){}
               return this._confirmFail(this._apiErrorMessage(d, r.status));
             }
-            this.showToast('Убрано с плана. В схеме остаётся — список «Не размещены на плане».', true);
+            this.showToast(this.planV3IsScheme()
+              ? 'Убрано со схемы. Элемент остаётся в топологии — список «Неразмещённые».'
+              : 'Убрано с плана. В схеме остаётся — список «Не размещены на плане».', true);
             await this._afterSchemeChange({closeInspector:false});
             return true;
           }

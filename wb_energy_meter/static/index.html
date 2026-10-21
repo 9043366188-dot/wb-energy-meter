@@ -462,6 +462,47 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
 .feed-note .feed-stale{margin-right:10px}
 .is-stale{opacity:.62;transition:opacity .18s ease}
 .is-loading{opacity:.7;transition:opacity .18s ease}
+/* Однолинейная схема (партия 14, 14.1–14.4). Цвета значков — токены темы (WCAG ≥ 3:1 к фону
+   карты), подписи — стандартная подсказка Leaflet (светлая в обеих темах), поэтому числа в ней
+   окрашены фиксированными тёмными цветами. */
+.sl-kind-badge{font-size:11px;font-weight:600;color:var(--txt2);border:1px solid var(--line-ctl);
+  border-radius:999px;padding:2px 8px;white-space:nowrap}
+.sl-node{background:none;border:none}
+.sl-ico{width:36px;height:36px;border-radius:8px;background:var(--bg2);border:2px solid currentColor;
+  display:flex;align-items:center;justify-content:center;box-shadow:0 1px 3px rgba(0,0,0,.35);cursor:pointer}
+.sl-ico svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;
+  stroke-linecap:round;stroke-linejoin:round}
+.sl-ico.k-source{color:var(--info)}
+.sl-ico.k-panel{color:var(--accent2)}
+.sl-ico.k-junction{color:var(--txt2)}
+.sl-ico.k-load{color:var(--warn)}
+.sl-node-tip{max-width:220px;overflow:hidden;text-overflow:ellipsis}
+.sl-sep{display:none}
+.sl-bal{display:block;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+.sl-bal-pos{color:#116329}.sl-bal-neg{color:#a40e26}
+.sl-line-label{background:none;border:none;width:auto;height:auto}
+.sl-ll{display:block;width:max-content;max-width:118px;overflow:hidden;white-space:nowrap;
+  font-size:11px;line-height:15px;padding:0 5px;border-radius:4px;background:var(--bg2);color:var(--txt);
+  border:1px solid var(--line-ctl);font-variant-numeric:tabular-nums}
+.sl-ll-a,.sl-ll-b{display:block;overflow:hidden;text-overflow:ellipsis}
+.sl-ll-b{color:var(--txt2)}
+.sl-ll-m{border-color:var(--ok)}
+path.sl-line-bad{stroke-dasharray:2,5}
+/* печать схемы (14.4): светлая тема, без панелей и кнопок — только лист со схемой */
+@media print{
+  html[data-sl="1"] header,html[data-sl="1"] nav,html[data-sl="1"] .plan-toolbar,
+  html[data-sl="1"] .plan-side,html[data-sl="1"] .toast,html[data-sl="1"] .leaflet-control-container,
+  html[data-sl="1"] .feed-note,html[data-sl="1"] .confirm-overlay{display:none!important}
+  html[data-sl="1"] body,html[data-sl="1"] main{background:#fff!important;color:#000!important;
+    padding:0!important;max-width:none!important}
+  html[data-sl="1"] .plan-layout-v3{display:block!important}
+  html[data-sl="1"] #site-plan-v3-map{background:#fff!important;border:none!important}
+  html[data-sl="1"] .leaflet-container{background:#fff!important}
+  html[data-sl="1"] .sl-ico{background:#fff!important;box-shadow:none!important;color:#000!important}
+  html[data-sl="1"] .sl-ll{background:#fff!important;color:#000!important;border-color:#000!important}
+  html[data-sl="1"] .leaflet-interactive{stroke:#000!important}
+  @page{size:A4 landscape;margin:10mm}
+}
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;
     transition-duration:.001ms!important;scroll-behavior:auto!important}
@@ -2766,8 +2807,11 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
             <input type="file" accept="image/png,image/jpeg" data-testid="planv3-new-file"
                    @change="planV3PickPlanFile($event)"></label>
           <button class="btn btn-primary" :disabled="planV3Saving" @click="planV3CreateEmptyPlan()">Создать план</button>
+          <button class="btn btn-secondary" data-testid="sl-empty-create" :disabled="slNewSchemeBusy"
+                  @click="slNewSchemeName=planV3NewPlanName; slCreateScheme()">Создать схему</button>
         </div>
         <div class="muted" style="font-size:11px;margin-top:6px">
+          «Создать схему» — однолинейная схема: холст подбирается по топологии, значки раскладываются сами.
           Подложка необязательна: план помещения в PNG или JPEG. Картинку больше
           8192 px по стороне или 25 МБ браузер уменьшит сам. Без подложки план —
           пустой холст.
@@ -2777,13 +2821,29 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
 
     <div x-show="planV3Plans.length>0">
       <div class="plan-toolbar">
-        <select aria-label="План" x-model.number="planV3CurrentId" @change="selectPlanV3(planV3CurrentId)">
-          <template x-for="p in planV3Plans" :key="p.id">
-            <option :value="p.id" x-text="p.name"></option>
+        <select aria-label="План" data-testid="planv3-select" x-model.number="planV3CurrentId" @change="selectPlanV3(planV3CurrentId)">
+          <!-- Партия 14, 14.4: планы сгруппированы по виду; выбор любого — тот же selectPlanV3. -->
+          <template x-if="slPlansOfKind('floor').length>0">
+            <optgroup label="Планы этажей">
+              <template x-for="p in slPlansOfKind('floor')" :key="p.id">
+                <option :value="p.id" x-text="p.name"></option>
+              </template>
+            </optgroup>
+          </template>
+          <template x-if="slPlansOfKind('single_line').length>0">
+            <optgroup label="Однолинейные схемы">
+              <template x-for="p in slPlansOfKind('single_line')" :key="p.id">
+                <option :value="p.id" x-text="p.name"></option>
+              </template>
+            </optgroup>
           </template>
         </select>
+        <span class="sl-kind-badge" data-testid="planv3-kind" x-show="planV3Current"
+              x-text="planV3IsScheme() ? 'Схема' : 'План этажа'"></span>
         <button class="btn btn-sm" data-testid="planv3-new-plan" :class="{'btn-primary': planV3NewPlanOpen}"
-                @click="planV3NewPlanOpen=!planV3NewPlanOpen">+ План</button>
+                @click="planV3NewPlanOpen=!planV3NewPlanOpen; slNewSchemeOpen=false">+ План</button>
+        <button class="btn btn-sm" data-testid="sl-new-scheme" :class="{'btn-primary': slNewSchemeOpen}"
+                @click="slNewSchemeOpen=!slNewSchemeOpen; planV3NewPlanOpen=false">+ Схема</button>
         <template x-if="planV3Current && planV3Current.plan_kind==='floor'">
           <label class="btn btn-sm btn-secondary" data-testid="planv3-replace-bg" style="cursor:pointer"
                  :class="{'disabled': planV3BgBusy}">
@@ -2804,6 +2864,40 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                 @click="planV3PanelOpen=!planV3PanelOpen">☰ Панель</button>
       </div>
 
+      <template x-if="planV3IsScheme()">
+        <div class="plan-toolbar sl-toolbar" style="margin-top:-6px;flex-wrap:wrap" data-testid="sl-toolbar">
+          <button class="btn btn-sm btn-primary" data-testid="sl-auto-unplaced" :disabled="slAutoBusy"
+                  @click="slAutoLayout('unplaced')"
+                  x-text="'Разложить неразмещённые'+(slUnplacedCount()>0?(' ('+slUnplacedCount()+')'):'')"></button>
+          <button class="btn btn-sm btn-secondary" data-testid="sl-auto-all" :disabled="slAutoBusy"
+                  @click="slAskAutoAll()">Перераскладить всё…</button>
+          <button class="btn btn-sm btn-secondary" data-testid="sl-undo" :disabled="slAutoBusy"
+                  x-show="slUndo && planV3Current && slUndo.planId===planV3Current.id"
+                  @click="slUndoAuto()">Отменить автораскладку</button>
+          <button class="btn btn-sm btn-secondary" data-testid="sl-print" @click="slPrint()">Печать</button>
+          <span class="feed-stale" data-testid="sl-stale" x-show="feedStale('sl-live')"
+                x-text="'Мощность линий: '+feedStaleText('sl-live')"></span>
+          <span class="muted" style="font-size:11px;width:100%">
+            Вводы сверху, щиты ниже, нагрузки внизу. Линии идут по осям; общий горизонтальный участок
+            у линий одного щита — «шина». Пунктир — линия без счётчика. Трасса линии правится в её карточке.
+          </span>
+        </div>
+      </template>
+
+      <template x-if="slNewSchemeOpen">
+        <div class="plan-toolbar" style="margin-top:-6px;flex-wrap:wrap" data-testid="sl-new-scheme-form">
+          <input type="text" x-model="slNewSchemeName" placeholder="Название схемы" style="max-width:220px"
+                 aria-label="Название схемы" data-testid="sl-new-scheme-name">
+          <button class="btn btn-sm btn-primary" data-testid="sl-new-scheme-create"
+                  :disabled="slNewSchemeBusy" @click="slCreateScheme()">Создать схему</button>
+          <span class="muted" style="font-size:11px;width:100%">
+            Схема — ещё одно изображение той же топологии: элементы, линии и числа общие с
+            планами этажей. Размер холста подбирается по числу элементов и потом не меняется.
+            После создания нажмите «Разложить неразмещённые».
+          </span>
+        </div>
+      </template>
+
       <template x-if="planV3NewPlanOpen">
         <div class="plan-toolbar" style="margin-top:-6px;flex-wrap:wrap" data-testid="planv3-new-plan-form">
           <input type="text" x-model="planV3NewPlanName" placeholder="Название плана" style="max-width:220px">
@@ -2813,7 +2907,8 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
           <button class="btn btn-sm btn-primary" :disabled="planV3Saving" @click="planV3CreateEmptyPlan()">Создать план</button>
           <span class="muted" style="font-size:11px;width:100%">
             Подложка необязательна: PNG или JPEG; больше 8192 px по стороне или
-            25 МБ браузер уменьшит сам. Схема одна на все планы:
+            25 МБ браузер уменьшит сам. Без подложки получится пустой холст 2000×1200 —
+            для схемы с раскладкой удобнее кнопка «+ Схема». Топология одна на все планы:
             элементы, уже стоящие на другом плане, ставятся на новый кнопкой
             «Разместить на карте» в списке «Не размещены на плане».
           </span>
@@ -2927,7 +3022,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
               <!-- П1: убранный с плана элемент остаётся в схеме и появляется тут. -->
               <div class="structure-field" x-show="structNodes.filter(n=>!planV3NodePlaced(n.id)).length>0"
                    data-testid="planv3-unplaced">
-                <div class="sf-lbl" x-text="'Не размещены на плане ('+structNodes.filter(n=>!planV3NodePlaced(n.id)).length+')'"></div>
+                <div class="sf-lbl" x-text="(planV3IsScheme() ? 'Неразмещённые на схеме (' : 'Не размещены на плане (')+structNodes.filter(n=>!planV3NodePlaced(n.id)).length+')'"></div>
                 <template x-for="n in structNodes.filter(n=>!planV3NodePlaced(n.id))" :key="n.id">
                   <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:3px">
                     <span class="sf-val" style="font-size:12px;cursor:pointer" tabindex="0" role="button" data-kb-row
@@ -3444,6 +3539,26 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
               </div>
               <template x-if="planV3EdgeCardError">
                 <div class="warn-item" x-text="planV3EdgeCardError"></div>
+              </template>
+
+              <!-- Партия 14, 14.3: трасса линии на однолинейной схеме. -->
+              <template x-if="planV3IsScheme() && slViewOfEdge((structInspector||{}).id)">
+                <div class="structure-field" data-testid="sl-trace">
+                  <div class="sf-lbl">Трасса на схеме</div>
+                  <div class="sf-val" style="font-size:12px" data-testid="sl-trace-state"
+                       x-text="slEdgeIsManual((structInspector||{}).id) ? (slEdgeIsBad((structInspector||{}).id) ? 'ручная, не по осям' : 'ручная') : 'автоматическая'"></div>
+                  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+                    <button class="btn btn-sm btn-secondary" data-testid="sl-trace-draw"
+                            :disabled="slTraceBusy" @click="slStartDrawTrace((structInspector||{}).id)">Нарисовать трассу</button>
+                    <button class="btn btn-sm btn-secondary" data-testid="sl-trace-auto"
+                            x-show="slEdgeIsManual((structInspector||{}).id)" :disabled="slTraceBusy"
+                            @click="slMakeAuto((structInspector||{}).id)">Сделать автоматической</button>
+                  </div>
+                  <div class="muted" style="font-size:11px;margin-top:4px">
+                    Кликайте по углам трассы рядом со значками (не по самим значкам); двойной клик — конец.
+                    Начало и конец достроятся от значков, отрезки встанут по горизонтали и вертикали.
+                  </div>
+                </div>
               </template>
 
               <div class="structure-field">
@@ -5240,6 +5355,24 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
     </div>
   </template>
 
+  <!-- REVISION CONFLICT SCHEME (партия 14, 14.2): сохранение раскладки схемы вернуло 409 -->
+  <template x-if="slConflictOpen">
+    <div class="confirm-overlay" data-testid="sl-conflict" role="alertdialog" aria-labelledby="sl-conflict-title">
+      <div class="confirm-box">
+        <h3 id="sl-conflict-title">Схема изменена в другом месте</h3>
+        <p>Кто-то ещё сохранил изменения этой схемы, пока вы раскладывали. Чтобы не затереть
+           чужие правки, раскладка НЕ записана. Рассчитанная раскладка не потеряна:
+           «Разложить заново» загрузит свежую схему и повторит тот же режим.</p>
+        <div class="actions">
+          <button class="btn btn-secondary" data-testid="sl-conflict-close"
+                  @click="slConflictClose()">Закрыть</button>
+          <button class="btn btn-primary" data-testid="sl-conflict-retry"
+                  @click="slConflictRetry()">Разложить заново на свежей схеме</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
   <!-- REVISION CONFLICT PLAN V2 (A35, ТЗ §13) -->
   <template x-if="planV2RevisionConflict">
     <div class="confirm-overlay" data-testid="planv2-conflict" role="alertdialog" aria-labelledby="planv2-conflict-title">
@@ -5334,6 +5467,8 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
 <script src="/static/js/structure.js"></script>
 <script src="/static/js/scheme.js"></script>
 <script src="/static/js/plan-v2.js"></script>
+<script src="/static/js/scheme-layout.js"></script>
+<script src="/static/js/single-line.js"></script>
 <script src="/static/vendor/alpine.min.js" defer></script>
 <script>
 function app(){

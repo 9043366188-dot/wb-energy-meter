@@ -63,6 +63,16 @@ function _planEscapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c=>(
     {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 }
+// Партия 14 (14-1, docs/design-single-line.md): ОДНА копия пересчёта координат плана для «Плана v2»,
+// «Плана v3» и схемы. Y плана растёт вниз, Y карты Leaflet (CRS.Simple) — вверх: [H−y, x] ⇄ (x, y).
+function _planXyToLatLng(x, y, height){ return [height-y, x]; }
+function _planLatLngToXy(latlng, height){ return [latlng.lng, height-latlng.lat]; }
+// Размеры плана: картинка, если она есть, иначе логический холст
+// (та же логика, что PlanV2.effective_width/height в plan_service_v2.py).
+function _planEffectiveDims(plan){
+  if(plan.image_width && plan.image_height) return [plan.image_width, plan.image_height];
+  return [plan.canvas_width||2000, plan.canvas_height||1200];
+}
 // Партия 14 (A32): хвост строки «ток / загрузка». Процент приходит с сервера
 // (line_load.py); если его нет — видна причина, а не подставленное значение.
 function _planLoadSuffix(pct, reasonText){
