@@ -158,6 +158,8 @@ def main() -> int:
               "все значки внутри холста")
         check(page.evaluate(APP + ".slUnplacedCount()") == 0, "список неразмещённых пуст")
         page.wait_for_timeout(600)
+        zoom = page.evaluate("_planV3Map.getZoom()")
+        check(abs(zoom) < 0.01, f"после раскладки схема вписана по содержимому в натуральную величину (zoom {zoom})")
 
         # ---- 3. рамки значков и подписей не пересекаются ----------------------------
         boxes = page.evaluate("""() => {

@@ -1042,7 +1042,9 @@ function _planV3FreeSpot(o){
           // Партия 13, 13.8 (плавающие b02/b03): без анимации. Анимированный зум идёт ~250 мс,
           // и клик по карте посреди него пересчитывается в координаты ещё не вписанного вида —
           // «Точка вне границ плана» сразу после создания плана, чаще на медленном процессоре.
-          _planV3Map.fitBounds(bounds, {animate:false});
+          // Схему вписываем по содержимому (single-line.js::_slFitContent), план этажа — по картинке.
+          if(this.planV3IsScheme()) this._slFitContent();
+          else _planV3Map.fitBounds(bounds, {animate:false});
           return true;
         }
     };

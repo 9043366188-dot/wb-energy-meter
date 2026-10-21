@@ -111,6 +111,7 @@
  "_slCancelDraw",
  "_slClear",
  "_slEdgeTitle",
+ "_slFitContent",
  "_slKindLabel",
  "_slLabelOf",
  "_slLayoutInput",
