@@ -381,6 +381,7 @@ function _planV3FreeSpot(o){
             if(m.failed){ this.feedFail(t, 'нет ответа'); return; }
             if(this.structInspector && this.structInspector.kind==='edge' && this.structInspector.id===edgeId){
               this.structInspector.currentA=m.currentA; this.structInspector.loadPct=m.loadPct;
+              this.structInspector.loadReasonText=m.loadReasonText;
               this.structInspector.phases=m.phases; this.structInspector.power_w=m.power_w;
               this.feedDone(t, 'ready');
             }

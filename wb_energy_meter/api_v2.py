@@ -14,6 +14,7 @@ B/C (BindingConflict/TopologyConflict/AccountingConflict/ValueError) в
   topology/publish, balance-scopes (CRUD с версионируемым составом),
   metrics/query (measured/sum/balance/comparison), snapshot (этап E,
   ТЗ §8.2/§9.2 — текущие значения без исторических RPC, см. v2_snapshot),
+  `GET /api/v2/topology/edge-loads` (партия 14, A31/A32: load_percent линии),
   groups (этап E/F, ТЗ §4.4 — CRUD + версионируемая иерархия с защитой
   циклов и областью видимости категории, версионируемый состав точек
   (одна точка может состоять в нескольких группах), рекурсивный
@@ -86,6 +87,7 @@ from .accounting_contract import ContractViolation, resolve_percentage
 from .accounting_service import (
     AccountingConflict, measured_point, sum_points, balance, comparison,
 )
+from . import line_load
 from . import overview_service
 from . import reports_service
 from . import topology_history
@@ -2430,6 +2432,61 @@ def register_v2_routes(app, state, json_response):
         return json_response({
             "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "points": items,
+        })
+
+    # Партия 14 (A31/A32/A43): загрузка линий — единственное место, где
+    # считается «ток / номинал». Карточка линии и однолинейная схема берут
+    # число отсюда; на клиенте процент не пересчитывается. Мощность вместо
+    # тока не подставляется (A32). Один пакетный запрос на live-тик.
+    @app.route("/api/v2/topology/edge-loads", methods=["GET"])
+    def v2_topology_edge_loads():
+        edge_repo = _edge_repo()
+        raw_ids = request.args.get("edge_ids")
+        if raw_ids:
+            try:
+                edge_ids = [int(x) for x in raw_ids.split(",") if x.strip()]
+            except ValueError:
+                body, status = _err(
+                    "bad_request",
+                    "edge_ids должен быть списком целых чисел через запятую",
+                    400, fields=["edge_ids"])
+                return json_response(body, status)
+            edges, missing = [], []
+            for eid in edge_ids:
+                e = edge_repo.get_by_id(eid)
+                if e is None:
+                    missing.append(eid)
+                else:
+                    edges.append(e)
+            if missing:
+                body, status = _err(
+                    "not_found", f"Связи не найдены: {missing}", 404,
+                    ids=missing)
+                return json_response(body, status)
+        else:
+            edges = edge_repo.list_active_published() + edge_repo.list_drafts()
+
+        point_repo = _point_repo()
+        binding_repo = _binding_repo()
+        source_repo = _source_repo()
+        snaps = {}
+        items = []
+        for e in edges:
+            snap = None
+            if e.primary_point_id is not None:
+                if e.primary_point_id not in snaps:
+                    p = point_repo.get_by_id(e.primary_point_id)
+                    snaps[e.primary_point_id] = (
+                        _point_snapshot(p, binding_repo, source_repo,
+                                        state.registry) if p is not None else None)
+                snap = snaps[e.primary_point_id]
+            item = line_load.compute_line_load(e.rated_current_a, snap)
+            item["edge_id"] = e.id
+            item["primary_point_id"] = e.primary_point_id
+            items.append(item)
+        return json_response({
+            "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "edges": items,
         })
 
     # ------------------------------------ структура/инспектор (партия 3, задача 1)

@@ -63,6 +63,12 @@ function _planEscapeHtml(s){
   return String(s==null?'':s).replace(/[&<>"']/g, c=>(
     {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 }
+// Партия 14 (A32): хвост строки «ток / загрузка». Процент приходит с сервера
+// (line_load.py); если его нет — видна причина, а не подставленное значение.
+function _planLoadSuffix(pct, reasonText){
+  if(pct!=null) return ' · '+pct+'% от номинала';
+  return reasonText ? ' · загрузка неизвестна: '+reasonText : '';
+}
 function lsGet(k,def){ try{ return localStorage.getItem(k)||def; }catch(e){ return def; } }
 function fmtTime(ts){
   return new Date(ts*1000).toLocaleString('ru-RU',

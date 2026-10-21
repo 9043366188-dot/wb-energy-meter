@@ -563,11 +563,11 @@
           // этот же loader (общий structInspector) — «Структура» показывает
           // его read-only (см. HTML ниже), «План v3» добавляет редактирование
           // и живые числа поверх тех же данных.
-          const {currentA, loadPct, phases, power_w, failed}=await this._planEdgeLiveMetrics(data, t&&t.signal);
+          const {currentA, loadPct, loadReasonText, phases, power_w, failed}=await this._planEdgeLiveMetrics(data, t&&t.signal);
           if(!this.feedLive(t)) return;
           if(failed) this.structInspectorPartial = 'Ток и загрузка линии не получены — остальное в карточке актуально.';
           this.structInspector = {
-            kind:'edge', id, data, currentA, loadPct, phases, power_w,
+            kind:'edge', id, data, currentA, loadPct, loadReasonText, phases, power_w,
             nameDraft: data.name||'',
             ratedDraft: data.rated_current_a!=null ? String(data.rated_current_a) : '',
             cableDraft: data.cable_note||'',

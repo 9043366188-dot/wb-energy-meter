@@ -478,21 +478,20 @@ function _planLinkColor(state){
 
       // signal — AbortSignal ленты (партия 13, 13.4); failed:true — запрос не удался (в отличие
       // от «точка не привязана / токов нет»), чтобы опрос карточки пометил данные устаревшими.
+      // Партия 14 (A31/A32/A43): процент загрузки НЕ считается здесь — его отдаёт сервер
+      // (GET /api/v2/topology/edge-loads, wb_energy_meter/line_load.py): одна формула на все экраны.
+      // loadReason/loadReasonText — почему процента нет (no_rating/no_current/phase_missing).
       async _planEdgeLiveMetrics(edge, signal){
-          if(!edge || edge.primary_point_id==null) return {currentA:null, loadPct:null, phases:null};
+          if(!edge || edge.id==null) return {currentA:null, loadPct:null, loadReason:null, phases:null};
           try{
-            const sr=await fetch('/api/v2/snapshot?point_ids='+edge.primary_point_id, {signal});
-            if(!sr.ok) return {currentA:null, loadPct:null, phases:null, failed:true};
-            const snap=(await sr.json()).points||[];
-            const point=snap[0]||null;
-            const cur=point && point.current_a;
-            if(!cur) return {currentA:null, loadPct:null, phases:null, power_w: point?point.power_w:null};
-            const vals=[cur.L1,cur.L2,cur.L3].filter(x=>x!=null);
-            if(!vals.length) return {currentA:null, loadPct:null, phases:cur, power_w: point.power_w};
-            const currentA=Math.max(...vals);
-            const loadPct=edge.rated_current_a ? Math.round(currentA/edge.rated_current_a*100) : null;
-            return {currentA, loadPct, phases:cur, power_w: point.power_w};
-          }catch(e){ return {currentA:null, loadPct:null, phases:null, failed:true,
+            const r=await fetch('/api/v2/topology/edge-loads?edge_ids='+edge.id, {signal});
+            if(!r.ok) return {currentA:null, loadPct:null, loadReason:null, phases:null, failed:true};
+            const it=((await r.json()).edges||[])[0];
+            if(!it) return {currentA:null, loadPct:null, loadReason:null, phases:null, failed:true};
+            return {currentA:it.current_a, loadPct:it.load_percent,
+                    loadReason:it.load_unavailable_reason, loadReasonText:it.load_unavailable_text,
+                    missingPhases:it.missing_phases||[], phases:it.phase_currents, power_w:it.power_w};
+          }catch(e){ return {currentA:null, loadPct:null, loadReason:null, phases:null, failed:true,
                              aborted:!!(e&&e.name==='AbortError')}; }
         }
     };

@@ -115,9 +115,9 @@ function _planV2KindColor(kind){
             const r=await fetch('/api/v2/topology/edges/'+edgeId);
             if(!r.ok) throw new Error('связь не найдена (HTTP '+r.status+')');
             const edge=await r.json();
-            const {currentA, loadPct}=await this._planEdgeLiveMetrics(edge);
+            const {currentA, loadPct, loadReasonText}=await this._planEdgeLiveMetrics(edge);
             if(this.planV2EdgeInfo && this.planV2EdgeInfo.edgeId===edgeId){
-              this.planV2EdgeInfo={loading:false, edgeId, edge, currentA, loadPct};
+              this.planV2EdgeInfo={loading:false, edgeId, edge, currentA, loadPct, loadReasonText};
             }
           }catch(e){
             this.planV2EdgeInfo={loading:false, edgeId, error:'Не удалось загрузить связь: '+e.message};

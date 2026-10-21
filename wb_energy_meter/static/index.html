@@ -2585,7 +2585,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                   </div>
                   <div class="structure-field" x-show="planV2EdgeInfo.currentA!=null || planV2EdgeInfo.edge.rated_current_a!=null">
                     <div class="sf-lbl">Ток / загрузка</div>
-                    <div class="sf-val mono" x-text="(planV2EdgeInfo.currentA!=null?planV2EdgeInfo.currentA.toFixed(1)+' А':'ток неизвестен')+(planV2EdgeInfo.loadPct!=null?(' · '+planV2EdgeInfo.loadPct+'% от номинала'):(planV2EdgeInfo.edge.rated_current_a?(' (номинал '+planV2EdgeInfo.edge.rated_current_a+' А)'):''))"></div>
+                    <div class="sf-val mono" x-text="(planV2EdgeInfo.currentA!=null?planV2EdgeInfo.currentA.toFixed(1)+' А':'ток неизвестен')+_planLoadSuffix(planV2EdgeInfo.loadPct, planV2EdgeInfo.loadReasonText)+(planV2EdgeInfo.loadPct==null&&planV2EdgeInfo.edge.rated_current_a?(' (номинал '+planV2EdgeInfo.edge.rated_current_a+' А)'):'')"></div>
                   </div>
                   <div class="structure-field" x-show="planV2EdgeInfo.edge.cable_note">
                     <div class="sf-lbl">Кабель</div>
@@ -3417,7 +3417,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                 <div class="sf-lbl">Ток / загрузка / мощность</div>
                 <div class="sf-val mono"
                      x-text="((structInspector||{}).currentA!=null?(structInspector||{}).currentA.toFixed(1)+' А':'ток неизвестен')
-                             +((structInspector||{}).loadPct!=null?(' · '+(structInspector||{}).loadPct+'% от номинала'):'')
+                             +_planLoadSuffix((structInspector||{}).loadPct, (structInspector||{}).loadReasonText)
                              +((structInspector||{}).power_w!=null?(' · '+((structInspector||{}).power_w/1000).toFixed(2)+' кВт'):'')"></div>
               </div>
 
