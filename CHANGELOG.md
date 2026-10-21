@@ -14,7 +14,7 @@
 (R7): схема — тот же `site_plans` вида `single_line` (холст фиксируется при
 создании), узлы — `plan_items`, линии — `plan_edge_views`; автоматическая
 трасса не хранится, считается при отрисовке, ручная лежит в `waypoints`.
-В `tests/fixtures/app_keys_baseline.json` 730 → 799 ключей `app()` (70 добавлено,
+В `tests/fixtures/app_keys_baseline.json` 730 → 800 ключей `app()` (71 добавлено,
 1 удалён — `planV3ReplaceBackground`, заменён на `pbgPick`): `sl*`/`_sl*` (схема:
 раскладка, трассы, баланс, печать, новая схема), `pbg*`/`_pbg*` (замена подложки),
 `planV3IsScheme`; перечень — в сообщениях коммитов (§2.7).
