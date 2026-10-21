@@ -611,13 +611,17 @@
               if(seen.has(m.device_id)) return;
               seen.add(m.device_id);
               const name=m.display_name||m.device_id;
-              list.push({device_id:m.device_id, name, label:name, phase_channels:!!m.phase_channels});
+              const emu=!!m.is_emulator || this.emuIs(m.device_id);
+              list.push({device_id:m.device_id, name, label:this._emuLabel(name, emu),
+                         phase_channels:!!m.phase_channels, is_emulator:emu});
             });
             (ud.items||[]).forEach(m=>{
               if(seen.has(m.device_id)) return;
               seen.add(m.device_id);
               const name=m.mqtt_name||m.device_id;
-              list.push({device_id:m.device_id, name, label:name+' — виден в MQTT', phase_channels:!!m.phase_channels});
+              const emu=!!m.is_emulator || this.emuIs(m.device_id);
+              list.push({device_id:m.device_id, name, label:this._emuLabel(name, emu)+' — виден в MQTT',
+                         phase_channels:!!m.phase_channels, is_emulator:emu});
             });
             this.structKnownDevices = list;
           }catch(e){ this.structKnownDevices = []; }

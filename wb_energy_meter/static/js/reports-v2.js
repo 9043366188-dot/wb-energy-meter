@@ -170,10 +170,16 @@
           if(hasCmp) head.push('Сравнение: с','Сравнение: по','Значение сравнения','Изменение',
             'Изменение %','Состав изменился','Конфликт сравнения');
           head.push('Режим структуры','Структура подтверждена','Структура до начала журнала (допущение)',
-            'Пояснения');
+            'Пояснения','Эмулятор');
           const structTitle = d.structure_mode==='as_was' ? 'как было' : 'текущая';
           const lines=['﻿', `wb-energy-meter — Отчёт v2 (${d.dimension}, состав: ${d.composition_mode}, структура: ${structTitle})`,
             '', head.join(';')];
+          // П12: цифры с виртуальных приборов не настоящие — предупреждение в самом файле
+          // и колонка «Эмулятор» (да/нет) у каждой строки
+          if(d.has_emulator){
+            lines.splice(2, 0, 'ВНИМАНИЕ: в отчёте есть данные эмулятора счётчиков — цифры в строках '+
+              'с пометкой «Эмулятор: да» не настоящие');
+          }
           (d.rows||[]).forEach(row=>{
             const res=row.result;
             const names=(row.member_point_ids||[]).map(id=>this.ovPointName(id)).join(', ');
@@ -201,6 +207,7 @@
               row.structure_confirmed===false?'нет':'да',
               d.assumed_legacy?'да':'нет',
               this.csvCell(this.rv2RowNotes(row).join(' | ')),
+              row.has_emulator?'да':'нет',
             );
             lines.push(cells.join(';'));
           });

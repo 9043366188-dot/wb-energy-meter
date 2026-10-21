@@ -448,12 +448,15 @@ def test_s10_service_rows_equal_http_rows():
                         compare=(0, HOUR), revision=rev,
                         tag=None)
         # результаты из сервиса тегируются заглушкой, поэтому сверяем без
-        # полей ревизии/as_of, которые проставляет HTTP-слой
+        # полей ревизии/as_of, которые проставляет HTTP-слой; туда же относится
+        # `has_emulator` (П12): знает ли строка про приборы эмулятора, решает
+        # HTTP-слой по таблице привязок, сервис отчётов о них не знает
         def drop_rev(o):
             o = strip_as_of(o)
             if isinstance(o, dict):
                 return {k: drop_rev(v) for k, v in o.items()
-                        if k not in ("configuration_revision_id", "configuration_revision_ids")}
+                        if k not in ("configuration_revision_id", "configuration_revision_ids",
+                                     "has_emulator")}
             if isinstance(o, list):
                 return [drop_rev(v) for v in o]
             return o

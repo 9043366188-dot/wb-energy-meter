@@ -294,6 +294,7 @@ const UPD_ACTIVE_STATES=['starting','downloading','installing','verifying','roll
           this.settingsLoading=false;
           this.loadUptimeSummary();
           this.scanUnregistered();
+          if(this.uiSet=='v2') this.loadEmulator();
         },
 
       async reloadGroups(){

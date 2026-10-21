@@ -332,7 +332,14 @@ function fmtHour(ts){
           // только стили/попапы (_planApplyLiveStyles), слои не пересоздаём —
           // иначе открытый попап зоны закрывался бы на каждый тик.
           if(this.tab=='plan') this.loadPlanLive(true);
-          if(this.tab=='overviewv2') this.loadOverviewV2Snapshot();
+          if(this.tab=='overviewv2'){
+            this.loadOverviewV2Snapshot();
+            // П12: баннер «Включён эмулятор» живёт на том же тике (5 с)
+            this.loadEmulatorSummary();
+          }
+          // П12: раздел «Эмулятор счётчиков» в «Настройках» v2 — состояние приборов и
+          // журнал обновляются тем же тиком, пока раздел открыт
+          if(this.tab=='settings' && this.uiSet=='v2') this.loadEmulator(true);
           // Партия 7, Этап 3, Э3/B7: "новый таймер не заводить" — P-now по
           // линиям открытой карточки узла/тока-загрузки открытой карточки
           // линии на «Плане v3» обновляются тем же тиком.
