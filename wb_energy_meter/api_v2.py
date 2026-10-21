@@ -14,6 +14,7 @@ B/C (BindingConflict/TopologyConflict/AccountingConflict/ValueError) в
   topology/publish, balance-scopes (CRUD с версионируемым составом),
   metrics/query (measured/sum/balance/comparison), snapshot (этап E,
   ТЗ §8.2/§9.2 — текущие значения без исторических RPC, см. v2_snapshot),
+  `GET /api/v2/topology/edge-loads` (партия 14, A31/A32: load_percent линии),
   groups (этап E/F, ТЗ §4.4 — CRUD + версионируемая иерархия с защитой
   циклов и областью видимости категории, версионируемый состав точек
   (одна точка может состоять в нескольких группах), рекурсивный
@@ -86,6 +87,7 @@ from .accounting_contract import ContractViolation, resolve_percentage
 from .accounting_service import (
     AccountingConflict, measured_point, sum_points, balance, comparison,
 )
+from . import line_load
 from . import overview_service
 from . import reports_service
 from . import topology_history
@@ -108,7 +110,7 @@ from .periods import parse_user_datetime
 from .plan_repo import read_plan_image
 from .plan_service_v2 import (
     SitePlanRepoV2, PlanItemRepo, PlanEdgeViewRepo,
-    RevisionConflict, PlanError, save_plan_layout,
+    RevisionConflict, PlanError, ReanchorRequired, save_plan_layout,
 )
 from .legacy_migration import (
     migrate_meters_and_groups, SCHEMA_MIGRATION_VERSION, DEFAULT_CONTROLLER_KEY,
@@ -2432,6 +2434,61 @@ def register_v2_routes(app, state, json_response):
             "points": items,
         })
 
+    # Партия 14 (A31/A32/A43): загрузка линий — единственное место, где
+    # считается «ток / номинал». Карточка линии и однолинейная схема берут
+    # число отсюда; на клиенте процент не пересчитывается. Мощность вместо
+    # тока не подставляется (A32). Один пакетный запрос на live-тик.
+    @app.route("/api/v2/topology/edge-loads", methods=["GET"])
+    def v2_topology_edge_loads():
+        edge_repo = _edge_repo()
+        raw_ids = request.args.get("edge_ids")
+        if raw_ids:
+            try:
+                edge_ids = [int(x) for x in raw_ids.split(",") if x.strip()]
+            except ValueError:
+                body, status = _err(
+                    "bad_request",
+                    "edge_ids должен быть списком целых чисел через запятую",
+                    400, fields=["edge_ids"])
+                return json_response(body, status)
+            edges, missing = [], []
+            for eid in edge_ids:
+                e = edge_repo.get_by_id(eid)
+                if e is None:
+                    missing.append(eid)
+                else:
+                    edges.append(e)
+            if missing:
+                body, status = _err(
+                    "not_found", f"Связи не найдены: {missing}", 404,
+                    ids=missing)
+                return json_response(body, status)
+        else:
+            edges = edge_repo.list_active_published() + edge_repo.list_drafts()
+
+        point_repo = _point_repo()
+        binding_repo = _binding_repo()
+        source_repo = _source_repo()
+        snaps = {}
+        items = []
+        for e in edges:
+            snap = None
+            if e.primary_point_id is not None:
+                if e.primary_point_id not in snaps:
+                    p = point_repo.get_by_id(e.primary_point_id)
+                    snaps[e.primary_point_id] = (
+                        _point_snapshot(p, binding_repo, source_repo,
+                                        state.registry) if p is not None else None)
+                snap = snaps[e.primary_point_id]
+            item = line_load.compute_line_load(e.rated_current_a, snap)
+            item["edge_id"] = e.id
+            item["primary_point_id"] = e.primary_point_id
+            items.append(item)
+        return json_response({
+            "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "edges": items,
+        })
+
     # ------------------------------------ структура/инспектор (партия 3, задача 1)
     # ТЗ §8.3: "слева дерево и поиск... поиск по имени, коду точки, MQTT
     # ID, серийному номеру и пути" (A02). Этот маршрут отдаёт ТОЛЬКО то,
@@ -3397,11 +3454,21 @@ def register_v2_routes(app, state, json_response):
                     "not_found", f"У плана {plan_id} нет фонового изображения", 404,
                     ids=[plan_id])
                 return json_response(body, status)
-            data = read_plan_image(state.plans_dir, plan.image_file)
+            image_file = plan.image_file
+            version = request.args.get("version", type=int)
+            if version is not None:
+                # Прежняя версия фона (для предпросмотра возврата, A30).
+                image_file = _plan_repo_v2().image_version_file(plan_id, version)
+                if not image_file:
+                    body, status = _err(
+                        "not_found", f"Версия фона {version} не найдена у плана {plan_id}",
+                        404, ids=[plan_id])
+                    return json_response(body, status)
+            data = read_plan_image(state.plans_dir, image_file)
             if data is None:
                 body, status = _err("not_found", "файл изображения не найден", 404, ids=[plan_id])
                 return json_response(body, status)
-            ext = os.path.splitext(plan.image_file)[1].lower()
+            ext = os.path.splitext(image_file)[1].lower()
             mime = "image/png" if ext == ".png" else "image/jpeg"
             resp = Response(data, mimetype=mime)
             resp.headers["Cache-Control"] = "private, max-age=3600"
@@ -3414,12 +3481,71 @@ def register_v2_routes(app, state, json_response):
                                  fields=["file"])
             return json_response(body, status)
         image_bytes = upload.stream.read()
+        # mode=keep (по умолчанию) — значки остаются на прежних пикселях;
+        # mode=scale — пропорционально, только при том же соотношении сторон.
+        mode = request.form.get("mode") or "keep"
         try:
-            plan = _plan_repo_v2().replace_image(plan_id, image_bytes)
+            plan = _plan_repo_v2().replace_image(plan_id, image_bytes, mode=mode)
+        except ReanchorRequired as e:
+            body, status = _err("reanchor_required", str(e), 400, ids=[plan_id])
+            return json_response(body, status)
         except PlanError as e:
             body, status = _err("bad_request", str(e), 400)
             return json_response(body, status)
         return json_response(_plan_to_dict_v2(plan))
+
+    @app.route("/api/v2/plans/<int:plan_id>/image/preview", methods=["POST"])
+    def v2_plan_image_preview(plan_id):
+        """Предпросмотр замены фона (A30): ничего не пишет. Возвращает, как
+        изменится план: `compat` = same | scalable | reanchor, коэффициенты
+        масштаба и сколько значков окажется за краем при mode=keep."""
+        plan, err = _plan_or_404_v2(plan_id)
+        if err:
+            return err
+        upload = request.files.get("file")
+        if upload is None:
+            body, status = _err("bad_request", "Файл не передан (поле формы file)", 400,
+                                 fields=["file"])
+            return json_response(body, status)
+        try:
+            info = _plan_repo_v2().preview_image(plan_id, upload.stream.read())
+        except PlanError as e:
+            body, status = _err("bad_request", str(e), 400)
+            return json_response(body, status)
+        return json_response(info)
+
+    @app.route("/api/v2/plans/<int:plan_id>/image-versions", methods=["GET"])
+    def v2_plan_image_versions(plan_id):
+        plan, err = _plan_or_404_v2(plan_id)
+        if err:
+            return err
+        return json_response(_plan_repo_v2().list_image_versions(plan_id))
+
+    @app.route("/api/v2/plans/<int:plan_id>/image/restore", methods=["POST"])
+    def v2_plan_image_restore(plan_id):
+        """Вернуть прежний фон (A30). Тело: {"version_id": N, "mode": "keep"|"scale"}.
+        Значки обрабатываются по тем же правилам, что при замене."""
+        plan, err = _plan_or_404_v2(plan_id)
+        if err:
+            return err
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        version_id = data.get("version_id")
+        if isinstance(version_id, bool) or not isinstance(version_id, int):
+            body, status = _err("bad_request", "требуется version_id (число)", 400,
+                                 fields=["version_id"])
+            return json_response(body, status)
+        try:
+            updated = _plan_repo_v2().restore_image(
+                plan_id, version_id, mode=data.get("mode") or "keep")
+        except ReanchorRequired as e:
+            body, status = _err("reanchor_required", str(e), 400, ids=[plan_id])
+            return json_response(body, status)
+        except PlanError as e:
+            code = "not_found" if "не найдена" in str(e) else "bad_request"
+            body, status = _err(code, str(e), 404 if code == "not_found" else 400,
+                                 ids=[plan_id])
+            return json_response(body, status)
+        return json_response(_plan_to_dict_v2(updated))
 
     @app.route("/api/v2/plans/<int:plan_id>/items", methods=["GET", "POST"])
     def v2_plan_items(plan_id):

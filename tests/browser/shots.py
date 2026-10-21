@@ -8,7 +8,8 @@
 
 Имя файла: <экран>_<тема>_<ширина>.png (например `overview_dark_1280.png`).
 Экраны: overview, reports, structure, planv3 (карта), planv3-node (карточка
-щита), planv3-edge (карточка линии), settings (v2: вкладка «Настройки» набора v2;
+щита), planv3-edge (карточка линии), scheme (однолинейная схема, партия 14:
+создаётся и раскладывается автоматически), settings (v2: вкладка «Настройки» набора v2;
 для снимков «до» --set classic снимает классические «Настройки»).
 
 Скрипт не входит в `run_all`/`run.py` — это инструмент отчёта, не тест. Размер
@@ -44,6 +45,30 @@ def _open_menu_if_needed(page):
             page.wait_for_timeout(300)
 
 
+def _make_scheme(h):
+    """Создать на демо-данных однолинейную схему и разложить её (как это делает человек). → id плана."""
+    bp = open_browser(h.base_url, viewport={"width": 1400, "height": 900})
+    page = bp.page
+    try:
+        page.wait_for_timeout(1200)
+        if page.evaluate(APP + ".uiSet") != "v2":
+            page.evaluate(APP + ".toggleUiSet()")
+            page.wait_for_timeout(400)
+        _nav(page, "План v3")
+        page.evaluate(f"{APP}.slNewSchemeName = 'Схема объекта'")
+        page.evaluate(f"{APP}.slCreateScheme()")
+        page.wait_for_function(
+            "() => { const a = %s; return a.planV3Current && a.planV3Current.plan_kind === 'single_line'; }" % APP,
+            timeout=15000)
+        page.evaluate(f"{APP}.slAutoLayout('unplaced')")
+        page.wait_for_function(
+            "() => { const a = %s; return a.planV3Current.items.length > 0 "
+            "&& a.planV3Current.items.length === a.structNodes.length; }" % APP, timeout=15000)
+        return page.evaluate(APP + ".planV3Current.id")
+    finally:
+        bp.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
@@ -59,6 +84,7 @@ def main() -> int:
     too_big = []
     with Harness() as h:
         info = seed_demo(h)
+        scheme_id = _make_scheme(h) if "scheme" in args.screens else None
         for width in args.widths:
             for theme in args.themes:
                 bp = open_browser(h.base_url, viewport={"width": width, "height": HEIGHTS.get(width, 900)})
@@ -73,7 +99,7 @@ def main() -> int:
                     page.wait_for_timeout(400)
                 for screen in args.screens:
                     tab_label = {"overview": "Обзор", "reports": "Отчёты", "structure": "Структура",
-                                 "planv3": "План v3", "planv3-node": "План v3",
+                                 "planv3": "План v3", "planv3-node": "План v3", "scheme": "План v3",
                                  "planv3-edge": "План v3", "settings": "Настройки"}[screen]
                     _open_menu_if_needed(page)
                     try:
@@ -81,7 +107,12 @@ def main() -> int:
                     except Exception as e:  # экран недоступен в этом наборе/ширине
                         print(f"SKIP {screen} {theme} {width}: {e.__class__.__name__}")
                         continue
-                    if screen == "planv3-node":
+                    if screen == "scheme":
+                        page.evaluate(f"{APP}.selectPlanV3({scheme_id})")
+                        page.wait_for_timeout(2500)
+                        page.evaluate(f"{APP}.slFitContent()")   # кнопка «Вписать»
+                        page.wait_for_timeout(500)
+                    elif screen == "planv3-node":
                         page.evaluate(f"{APP}.openInspectorInPlace('node', {info['shr1']['id']!r})")
                         page.wait_for_timeout(1500)
                     elif screen == "planv3-edge":

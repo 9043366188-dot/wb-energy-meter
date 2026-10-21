@@ -368,6 +368,8 @@ function _planV3FreeSpot(o){
         },
 
       async _planV3PollLiveCard(){
+          // Партия 14: на схеме те же 5 секунд обновляют P и загрузку линий (single-line.js).
+          if(this.tab==='planv3') this._slPollScheme();
           if(!this.structInspector) return;
           if(this.structInspector.kind==='edge'){
             const edgeId=this.structInspector.id;
@@ -381,6 +383,7 @@ function _planV3FreeSpot(o){
             if(m.failed){ this.feedFail(t, 'нет ответа'); return; }
             if(this.structInspector && this.structInspector.kind==='edge' && this.structInspector.id===edgeId){
               this.structInspector.currentA=m.currentA; this.structInspector.loadPct=m.loadPct;
+              this.structInspector.loadReasonText=m.loadReasonText;
               this.structInspector.phases=m.phases; this.structInspector.power_w=m.power_w;
               this.feedDone(t, 'ready');
             }
@@ -400,6 +403,9 @@ function _planV3FreeSpot(o){
             // (см. openStructureTab), здесь нужен сразу.
             if(!this.structKnownDevicesLoaded) loads.push(this._loadKnownDevices());
             await Promise.all(loads);
+            // Партия 14: список плана мог выбрать схему раньше, чем пришли элементы структуры
+            // (имена на значках) — перерисовываем, когда всё загружено.
+            if(this.planV3IsScheme()) this._planV3RenderItems();
           }
           // Партия 7, Этап 3, B1: контейнер карты мог быть невидим (display:none
           // за x-show), когда _planV3RenderBase() уже пытался вписать план —
@@ -519,28 +525,7 @@ function _planV3FreeSpot(o){
           finally{ this.planV3Saving=false; }
         },
 
-      // 0.22.4: заменить подложку плана с картинкой. Старый файл сервер хранит
-      // (версии, §7.2); значки не пересчитываются — остаются на тех же
-      // пикселях картинки, об этом говорит сообщение.
-      async planV3ReplaceBackground(ev){
-          const input=ev && ev.target;
-          const f=(input && input.files && input.files[0]) || null;
-          const pc=this.planV3Current;
-          if(!f || !pc || pc.plan_kind!=='floor'){ if(input) input.value=''; return; }
-          this.planV3BgBusy=true;
-          try{
-            const fit=await _planV3FitImage(f);
-            if(fit.error){ this.showToast(fit.error, false); return; }
-            const fd=new FormData();
-            fd.append('file', fit.blob, fit.name);
-            const r=await fetch('/api/v2/plans/'+pc.id+'/image', {method:'POST', body:fd});
-            const d=await r.json();
-            if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
-            await this.selectPlanV3(pc.id);
-            this.showToast('Подложка заменена. Значки остались на прежних местах картинки — проверьте, что они стоят где нужно.'+_planV3ResizedNote(fit), true);
-          }catch(e){ this.showToast('Ошибка сети: '+e, false); }
-          finally{ this.planV3BgBusy=false; if(input) input.value=''; }
-        },
+      // Замена подложки (предпросмотр, версии, возврат) — plan-background.js (партия 14, A30).
 
       async selectPlanV3(id){
           if(!id) return;
@@ -573,14 +558,12 @@ function _planV3FreeSpot(o){
           }
         },
 
-      _planV3EffectiveDims(plan){
-          if(plan.image_width && plan.image_height) return [plan.image_width, plan.image_height];
-          return [plan.canvas_width||2000, plan.canvas_height||1200];
-        },
+      // Партия 14: пересчёт координат — общий код core.js (одна копия для v2, v3 и схемы).
+      _planV3EffectiveDims(plan){ return _planEffectiveDims(plan); },
 
-      _planV3XyToLatLng(x, y, height){ return [height-y, x]; },
+      _planV3XyToLatLng(x, y, height){ return _planXyToLatLng(x, y, height); },
 
-      _planV3LatLngToXy(latlng, height){ return [latlng.lng, height-latlng.lat]; },
+      _planV3LatLngToXy(latlng, height){ return _planLatLngToXy(latlng, height); },
 
       // П8: место для значка нового элемента рядом с родителем — одно на «+ Счётчик»
       // (scheme.js::_schemePlaceAfterMeter) и «Добавить отходящую линию».
@@ -619,6 +602,7 @@ function _planV3FreeSpot(o){
           this.planV3ZoneGroupId='';
           this.planV3PlacingExistingNodeId=null;
           this._planV3CancelDrawZone();
+          this._slCancelDraw();
         },
 
       _planV3OnMapClick(e){
@@ -778,6 +762,8 @@ function _planV3FreeSpot(o){
         },
 
       async _planV3OnPmCreate(e){
+          // Партия 14: «Нарисовать трассу» на схеме — Geoman Line (single-line.js).
+          if(e.shape==='Line' && this.slDrawingEdgeId!=null){ await this._slOnLineDrawn(e); return; }
           if(e.shape!=='Polygon' || !this.planV3DrawingZone || !this.planV3Current) return;
           const rings=e.layer.getLatLngs();
           const ring=Array.isArray(rings[0]) ? rings[0] : rings;
@@ -907,6 +893,8 @@ function _planV3FreeSpot(o){
           }
           if(item.kind!=='node' || !item.geometry || typeof item.geometry.x!=='number') return null;
           const node=(this.structNodes||[]).find(n=>n.id===item.node_id);
+          // Партия 14: на однолинейной схеме значок — значок вида узла (single-line.js).
+          if(this.planV3IsScheme()) return this._slNodeLayer(item, node, height);
           const colors={source:'#4fa8f5', panel:'#3dd6c0', junction:'#9aa0a8', load:'#f0a83c'};
           const color=colors[node?node.kind:'']||'#3dd6c0';
           const latlng=this._planV3XyToLatLng(item.geometry.x, item.geometry.y, height);
@@ -945,6 +933,7 @@ function _planV3FreeSpot(o){
           _planV3ItemLayers.clear();
           _planV3EdgeLayers.forEach(l=>{ try{_planV3Map.removeLayer(l);}catch(e){} });
           _planV3EdgeLayers.clear();
+          this._slClear();
       
           const [,H]=this._planV3EffectiveDims(this.planV3Current);
           const items=this.planV3Current.items||[];
@@ -952,6 +941,11 @@ function _planV3FreeSpot(o){
             const layer=this._planV3ItemLayerFor(it, H);
             if(layer){ layer.addTo(_planV3Map); _planV3ItemLayers.set(String(it.id), layer); }
           });
+          // Партия 14: на схеме линии — ортогональные трассы с подписями (single-line.js).
+          if(this.planV3IsScheme()){
+            this._slRenderEdges(items, H);
+            return;
+          }
       
           (this.planV3Current.edges||[]).forEach(v=>{
             const fromIt=v.from_item_id!=null ? items.find(i=>i.id===v.from_item_id) : null;
@@ -1000,6 +994,7 @@ function _planV3FreeSpot(o){
           _planV3ItemLayers.clear();
           _planV3EdgeLayers.forEach(l=>{ try{_planV3Map.removeLayer(l);}catch(e){} });
           _planV3EdgeLayers.clear();
+          this._slClear();
           if(_planV3ImageLayer){ try{_planV3Map.removeLayer(_planV3ImageLayer);}catch(e){} _planV3ImageLayer=null; }
         },
 
@@ -1024,6 +1019,7 @@ function _planV3FreeSpot(o){
           // openPlanV3Tab()/selectPlanV3() довписывают через $nextTick, когда
           // контейнер уже получил реальный размер.
           _planV3NeedsFit=bounds;
+          this._slOnRenderBase(W, H);
           this._planV3RenderItems();
           this._planV3TryFit();
         },

@@ -12,7 +12,8 @@
      карте слой картинки с адресом `/api/v2/plans/<id>/image?v=…`, картинка
      загрузилась (naturalWidth = 800).
   3. «Щит» ставится кликом по карте, координаты — в пикселях картинки.
-  4. «Заменить подложку…» → картинка 1000×600: размеры плана и картинки на
+  4. «Заменить подложку…» → окно предпросмотра (партия 14, A30) → «Заменить подложку» →
+     картинка 1000×600: размеры плана и картинки на
      карте новые (адрес другой — кэш браузера не мешает), значок щита на месте.
   5. «+ План» без файла → пустой холст `single_line`; у него кнопки «Заменить
      подложку…» нет.
@@ -164,7 +165,13 @@ def main() -> int:
         # ---- 4. заменить подложку ------------------------------------------------
         src_before = (layer or {}).get("src")
         page.set_input_files("[data-testid=planv3-replace-bg] input", big)
-        page.wait_for_timeout(1800)
+        # Партия 14 (A30): сначала предпросмотр — пока не нажато «Заменить», ничего не записано
+        page.wait_for_selector("[data-testid=pbg-dialog]", timeout=8000)
+        check(api(page, f"/api/v2/plans/{p1['id']}").get("image_width") == 800,
+              "до подтверждения подложка не заменена")
+        page.click("[data-testid=pbg-apply]")
+        page.wait_for_function("() => !document.querySelector('[data-testid=pbg-dialog]')", timeout=8000)
+        page.wait_for_timeout(1500)
         p1b = api(page, f"/api/v2/plans/{p1['id']}")
         check(p1b.get("image_width") == 1000 and p1b.get("image_height") == 600,
               f"подложка заменена: 1000×600 ({p1b.get('image_width')}×{p1b.get('image_height')})")
@@ -229,8 +236,14 @@ def main() -> int:
         check((pw.get("image_width"), pw.get("image_height")) == (8192, 1092),
               f"9000×1200 браузер уменьшил до 8192×1092 и загрузил: "
               f"{pw.get('image_width')}×{pw.get('image_height')}")
-        check("уменьшил её до 8192×1092" in page.inner_text("body"),
-              "сообщение: картинка была больше 8192 px — браузер уменьшил её до 8192×1092")
+        # уведомление появляется после загрузки списка и открытия плана — ждём его, а не читаем сразу
+        try:
+            page.wait_for_function(
+                "() => document.body.innerText.includes('уменьшил её до 8192×1092')", timeout=8000)
+            noted = True
+        except Exception:
+            noted = False
+        check(noted, "сообщение: картинка была больше 8192 px — браузер уменьшил её до 8192×1092")
 
         # Ровно один ожидаемый отказ сервера — шаг 6 («не картинка» → 400); как
         # 409 в b07/b08, браузер пишет его в консоль сам. Других ошибок быть не должно.
