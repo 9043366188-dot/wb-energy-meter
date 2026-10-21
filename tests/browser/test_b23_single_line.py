@@ -158,8 +158,23 @@ def main() -> int:
               "все значки внутри холста")
         check(page.evaluate(APP + ".slUnplacedCount()") == 0, "список неразмещённых пуст")
         page.wait_for_timeout(600)
-        zoom = page.evaluate("_planV3Map.getZoom()")
-        check(abs(zoom) < 0.01, f"после раскладки схема вписана по содержимому в натуральную величину (zoom {zoom})")
+        # схема вписана по содержимому и не мельче необходимого: все значки на экране, масштаб не больше 1:1
+        view = page.evaluate("""() => { const r = _planV3Map.getContainer().getBoundingClientRect();
+            const inside = [..._planV3ItemLayers.values()].every(l => { const a = l._icon.getBoundingClientRect();
+              return a.left >= r.left && a.right <= r.right && a.top >= r.top && a.bottom <= r.bottom; });
+            return {zoom: _planV3Map.getZoom(), inside}; }""")
+        check(view["inside"] and view["zoom"] <= 0.01,
+              f"после раскладки схема вписана по содержимому: все значки на экране, масштаб не крупнее 1:1 ({view})")
+        # кнопка «Вписать»: из любого масштаба возвращает такой же вид
+        page.evaluate("_planV3Map.setView([300, 300], -2, {animate: false})")
+        page.click("[data-testid=sl-fit]")
+        page.wait_for_timeout(300)
+        view2 = page.evaluate("""() => { const r = _planV3Map.getContainer().getBoundingClientRect();
+            const inside = [..._planV3ItemLayers.values()].every(l => { const a = l._icon.getBoundingClientRect();
+              return a.left >= r.left && a.right <= r.right && a.top >= r.top && a.bottom <= r.bottom; });
+            return {zoom: _planV3Map.getZoom(), inside}; }""")
+        check(view2["inside"] and abs(view2["zoom"] - view["zoom"]) < 0.01,
+              f"«Вписать» возвращает вписанный вид ({view2})")
 
         # ---- 3. рамки значков и подписей не пересекаются ----------------------------
         boxes = page.evaluate("""() => {

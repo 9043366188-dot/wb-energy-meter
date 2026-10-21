@@ -2894,6 +2894,8 @@ path.sl-line-bad{stroke-dasharray:2,5}
           <button class="btn btn-sm btn-secondary" data-testid="sl-undo" :disabled="slAutoBusy"
                   x-show="slUndo && planV3Current && slUndo.planId===planV3Current.id"
                   @click="slUndoAuto()">Отменить автораскладку</button>
+          <button class="btn btn-sm btn-secondary" data-testid="sl-fit" @click="slFitContent()"
+                  title="Показать нарисованное в натуральную величину (не мельче 1:1), чтобы подписи не налезали друг на друга">Вписать</button>
           <button class="btn btn-sm btn-secondary" data-testid="sl-print" @click="slPrint()">Печать</button>
           <span class="feed-stale" data-testid="sl-stale" x-show="feedStale('sl-live')"
                 x-text="'Мощность линий: '+feedStaleText('sl-live')"></span>

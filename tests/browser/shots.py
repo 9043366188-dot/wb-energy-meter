@@ -110,6 +110,8 @@ def main() -> int:
                     if screen == "scheme":
                         page.evaluate(f"{APP}.selectPlanV3({scheme_id})")
                         page.wait_for_timeout(2500)
+                        page.evaluate(f"{APP}.slFitContent()")   # кнопка «Вписать»
+                        page.wait_for_timeout(500)
                     elif screen == "planv3-node":
                         page.evaluate(f"{APP}.openInspectorInPlace('node', {info['shr1']['id']!r})")
                         page.wait_for_timeout(1500)

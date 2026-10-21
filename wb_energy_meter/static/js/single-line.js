@@ -121,11 +121,12 @@ window.addEventListener('afterprint', ()=>{
           return k ? k.label : 'Элемент';
         },
 
-      // Вписать в окно то, что нарисовано, а не весь холст, и не мельче натуральной величины:
+      // «Вписать» (и после автораскладки): вписать в окно то, что нарисовано, а не весь холст, и не
+      // мельче натуральной величины:
       // подписи имеют фиксированный размер в экранных px, а зазоры между значками уменьшаются
       // вместе с масштабом — при масштабе < 1 подпись налезала бы на соседний значок. Пустую
       // схему вписываем целиком. Справа оставляем место под подпись самого правого значка.
-      _slFitContent(){
+      slFitContent(){
           const pc=this.planV3Current;
           if(!_planV3Map || !pc) return;
           const [W,H]=this._planV3EffectiveDims(pc);
@@ -513,7 +514,7 @@ window.addEventListener('afterprint', ()=>{
             itemIds:(now.items||[]).filter(i=>!before.items.has(i.id)).map(i=>i.id),
             viewIds:(now.edges||[]).filter(v=>!before.views.has(v.id)).map(v=>v.id),
           };
-          this._slFitContent();
+          this.slFitContent();
           this.showToast('Раскладка применена: размещено '+created.length+', перемещено '+moved.length+
                          '. Её можно отменить.', true);
           this._slLoadBalances();
@@ -552,7 +553,7 @@ window.addEventListener('afterprint', ()=>{
             if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
             this.slUndo=null;
             await this.reloadPlanV3Items();
-            this._slFitContent();
+            this.slFitContent();
             this.showToast('Автораскладка отменена: прежние положения возвращены', true);
           }catch(e){ this.showToast('Ошибка сети: '+e, false); }
           finally{ this.slAutoBusy=false; }
