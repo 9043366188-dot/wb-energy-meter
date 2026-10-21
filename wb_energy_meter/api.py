@@ -14,6 +14,7 @@ from . import updater as _updater_module
 from .aggregates_repo import align_hour_down
 from .channels import (CATEGORIES, CHANNEL_INFO, get_channel_info,
                        localize_units)
+from .emulator import is_emulator_device
 from .model import MeterStatus
 from .periods import PERIOD_PRESETS, build_period, parse_user_datetime
 from .repo import GroupNameConflict
@@ -53,7 +54,10 @@ class _AppState:
                  wb_serial_config=None, kv_repo=None,
                  wb_serial=None, service_restarter=None,
                  plan_repo=None, plan_zone_repo=None, plan_link_repo=None,
-                 plans_dir=None, db=None):
+                 plans_dir=None, db=None, emulator=None):
+        # `emulator` (wb_energy_meter.emulator.EmulatorService) — П12; None,
+        # когда эмулятор не подключён (тесты без него, старые окружения).
+        self.emulator = emulator
         # `db` (wb_energy_meter.db.Database) — только для /api/v2 (этап C):
         # существующие поля выше остаются отдельными репозиториями legacy
         # API, db добавлен по необходимости и не меняет их поведение.
@@ -206,6 +210,7 @@ def _meter_detail(m):
         }
     return {
         "device_id": m.device_id,
+        "is_emulator": is_emulator_device(m.device_id),
         "display_name": m.effective_name,
         "mqtt_name": m.mqtt_name, "group": m.group,
         "driver": m.driver, "serial": m.get_serial(),
@@ -609,6 +614,7 @@ def create_app(state):
             m = state.registry.get(did)
             result.append({
                 "device_id": did,
+                "is_emulator": is_emulator_device(did),
                 "phase_channels": _has_phase_channels(state, did),
                 "mqtt_name": m.mqtt_name if m else None,
                 "serial": m.get_serial() if m else None,
@@ -663,6 +669,7 @@ def create_app(state):
             # П9: есть ли у прибора пофазные счётчики энергии — от этого зависит,
             # можно ли ставить счётчик «по фазам» (форма «+ Счётчик»)
             d["phase_channels"] = _has_phase_channels(state, m.device_id)
+            d["is_emulator"] = is_emulator_device(m.device_id)
             out.append(d)
         return json_response({"count": len(items), "items": out})
 
@@ -1872,7 +1879,7 @@ class ApiServer:
                  status_path=None, install_dir=None,
                  wb_serial_config=None, kv_repo=None,
                  plan_repo=None, plan_zone_repo=None, plan_link_repo=None,
-                 plans_dir=None, db=None):
+                 plans_dir=None, db=None, emulator=None):
         self._host = host
         self._port = port
         self._app_state = _AppState(
@@ -1891,7 +1898,7 @@ class ApiServer:
             wb_serial_config=wb_serial_config, kv_repo=kv_repo,
             plan_repo=plan_repo, plan_zone_repo=plan_zone_repo,
             plan_link_repo=plan_link_repo, plans_dir=plans_dir,
-            db=db,
+            db=db, emulator=emulator,
             started_at=time.time())
         self._app = create_app(self._app_state)
         self._server = None

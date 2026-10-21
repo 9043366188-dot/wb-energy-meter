@@ -165,7 +165,9 @@
           let base=m.name;
           if(m.phase && !String(base).endsWith(' · '+m.phase)) base+=' · '+m.phase;
           const dev = m.device_id && String(base).indexOf(m.device_id)<0 ? (' · '+m.device_id) : '';
-          return base+dev+' — '+m.role;
+          // П12: прибор эмулятора — метка в названии (цифры с него не настоящие)
+          const emu = this.emuIs(m.device_id) && String(base).toLowerCase().indexOf('эмулятор')<0 ? ' · эмулятор' : '';
+          return base+dev+emu+' — '+m.role;
         },
 
       // Дерево по опубликованным действующим линиям: корни — элементы без
@@ -703,6 +705,8 @@
             await this._loadStructureLists();
             return true;
           }
+          // П12: действия «Эмулятора счётчиков» — их разбор в emulator.js
+          if(kind.indexOf('emu_')===0) return this._emuRunConfirm(kind, p);
           return this._confirmFail('неизвестное действие: '+kind);
         },
 

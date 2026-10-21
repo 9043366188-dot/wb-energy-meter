@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Репетиция пилота: разделы 1–5 `docs/pilot-checklist.md` на поддельных
-счётчиках (партия находок 0.22.3, П10; docs/pilot-findings.md, П10).
+"""Репетиция пилота: разделы 1–5 и «Проверка без нагрузки: эмулятор»
+`docs/pilot-checklist.md` на виртуальных счётчиках (партия находок 0.22.3, П10;
+с 0.23.1, П12, приборы — модуль `wb_energy_meter.emulator`; docs/pilot-findings.md).
 
 Что поднимается (всё настоящее, кроме приборов и истории):
   - свой `mosquitto` на свободном порту (брокер не общий — retained-значения не
     переживают прогон и не мешают другим тестам);
-  - три поддельных WB-MAP3E в MQTT: `/devices/<id>/controls/<канал>` с `meta`;
-    `Total AP energy`, `AP energy L1–L3`, `P L1–L3` растут с заданной скоростью
-    (retained при старте и «живые» раз в секунду);
+  - три виртуальных WB-MAP3E — настоящий `EmulatorService` сервиса, поднятый в процессе
+    репетиции и публикующий в брокер репетиции (`emu-map3e-101…103`, «Эмулятор N: …»):
+    `/devices/<id>/controls/<канал>` с `meta`, retained при старте и живые значения. Их
+    состояние (включён, якорь недельной давности, начальные показания) заложено в kv, как
+    если бы служба «проработала» с начала репетируемой недели;
   - поддельный RPC `wb-mqtt-db` с историей: показания каждые 10 минут за неделю и
-    двое суток запаса, по той же формуле, что и живые значения;
+    двое суток запаса. Значения даёт второй, «эталонный» экземпляр эмулятора с тем же
+    состоянием (счётчик эмулятора — чистая функция времени), поэтому история, живые
+    значения и ручной расчёт — одни и те же числа;
   - настоящий сервис: `python -m wb_energy_meter.main` отдельным процессом (демон +
     Flask), настоящая база в каталоге данных, часовой пояс процесса UTC;
   - настоящий Chromium (Playwright), как у человека: клики и ввод.
@@ -35,13 +40,20 @@
 | 3.8 «Баланс щита» | блок показывает значение |
 | 3.9 «Обзор» | нет «не размещена на плане», «Итог объекта» — число, в «Все точки учёта» пять точек |
 | 4 сверка с ручным расчётом | сервис перезапускается (догон истории — см. ниже), для суток и недели таблица раздела 4 заполняется показаниями поддельных приборов на границах; итог объекта, баланс щита, небаланс объекта и расход каждой точки (срез «Точка») сходятся с ручным расчётом в пределах 0,1 % |
-| 5 отчёт и CSV | срез «Ветвь», числа = таблица «Ветвь сети» «Обзора»; CSV `report_v2_branch_<дата>.csv` совпадает с экраном построчно; срез «Точка» = таблица недели |
+| 5 отчёт и CSV | срез «Ветвь», числа = таблица «Ветвь сети» «Обзора»; CSV `report_v2_branch_<дата>.csv` совпадает с экраном построчно (колонка «Эмулятор» = да, предупреждение в шапке); срез «Точка» = таблица недели |
+| Э.1–Э.2 включение | «Настройки» → «Эмулятор счётчиков»: по умолчанию выключен; «Добавить типовой набор» (3 нагрузки и ввод) → четыре строки с меткой «эмулятор»; включение → в «Обзоре» баннер «Включён эмулятор: 4 виртуальных прибора — цифры с ними не настоящие» |
+| Э.3 метки | в «+ Счётчик» у приборов эмулятора слово «эмулятор» в названии |
+| Э.4 неисправности | кнопка «Сброс» → строка в журнале со временем; кнопка «Проверить историю сейчас» → предупреждение «wb-mqtt-db не пишет историю эмулятора…» (поддельный RPC истории эмулятора не знает) |
+| Э.5 выключение | новый подписчик брокера не получает ни одного retained-топика приборов, которые завела служба (приборы репетиции, живущие в этом процессе, остаются — проверка не пустая); баннера нет |
+| Э.6 архивация | «Архивировать точки эмулятора» → подтверждение с перечнем точек → все пять точек схемы в архиве |
 
 Чего репетиция выполнить не может (и не заменяет):
   - команды по SSH на контроллере (`curl`, `journalctl`, `systemctl`, `mosquitto_sub`),
     само самообновление и откат на железе (раздел 1.1);
   - раздел 6 (что вы используете в классическом интерфейсе) и раздел 8 (диагностика
     `wb-map3e_49`);
+  - ожидание 10–15 минут автоматической пробы истории эмулятора: репетиция нажимает
+    «Проверить историю сейчас» (тот же вызов), а таймер пробы проверяют модульные тесты;
   - вердикт «пилот прошёл» (раздел 9): его выносит Кир по живому объекту — репетиция
     проверяет только, что инструкция и программа сходятся на поддельных данных;
   - настоящую неделю работы: история — поддельная, готовая. Догон истории (на объекте его
@@ -80,6 +92,7 @@ sys.path.insert(0, os.path.join(REPO, "tests"))
 import paho.mqtt.client as mqtt  # noqa: E402
 
 from wb_energy_meter import __code_generation__, __version__  # noqa: E402
+from wb_energy_meter import emulator as em  # noqa: E402
 from wb_energy_meter.db import Database  # noqa: E402
 from wb_energy_meter.repo import GroupRepo, MeterRepo  # noqa: E402
 
@@ -96,16 +109,20 @@ def check(cond, msg):
 
 
 # --------------------------------------------------------------------- приборы
-# Поддельные WB-MAP3E. Мощность по фазам, кВт; показания — начальные, кВт·ч, на T0.
-# Ввод щита — один трёхфазный прибор целиком; «Станок» — второй прибор целиком;
-# третий прибор разнесён «по фазам»: L1 — Освещение, L2 — Розетки, L3 — Вентиляция.
+# Виртуальные WB-MAP3E (модуль эмулятора). Мощность по фазам, кВт; показания — начальные, кВт·ч,
+# на T0. Ввод щита — один трёхфазный прибор целиком; «Станок» — второй прибор целиком; третий
+# прибор разнесён «по фазам»: L1 — Освещение, L2 — Розетки, L3 — Вентиляция. Номера 101–103,
+# чтобы не пересекаться с приборами, которые служба заводит сама (раздел Э, номера с 1).
 FAKE = {
-    "wb-map3e_901": {"title": "Ввод щита", "kw": (2.0, 2.0, 2.0), "base": (1000.0, 1100.0, 900.0)},
-    "wb-map3e_902": {"title": "Станок", "kw": (1.0, 0.8, 0.7), "base": (300.0, 310.0, 290.0)},
-    "wb-map3e_903": {"title": "Три нагрузки", "kw": (0.8, 1.2, 0.5), "base": (100.5, 110.25, 99.75)},
+    "emu-map3e-101": {"title": "Эмулятор 101: ввод щита", "kw": (2.0, 2.0, 2.0),
+                      "base": (1000.0, 1100.0, 900.0)},
+    "emu-map3e-102": {"title": "Эмулятор 102: станок", "kw": (1.0, 0.8, 0.7),
+                      "base": (300.0, 310.0, 290.0)},
+    "emu-map3e-103": {"title": "Эмулятор 103: три нагрузки", "kw": (0.8, 1.2, 0.5),
+                      "base": (100.5, 110.25, 99.75)},
 }
 PHASES = ("L1", "L2", "L3")
-INPUT_DEV, MACHINE_DEV, SPLIT_DEV = "wb-map3e_901", "wb-map3e_902", "wb-map3e_903"
+INPUT_DEV, MACHINE_DEV, SPLIT_DEV = "emu-map3e-101", "emu-map3e-102", "emu-map3e-103"
 PHASE_LOADS = {"L1": "Освещение", "L2": "Розетки", "L3": "Вентиляция"}
 
 
@@ -121,14 +138,80 @@ T0 = T_WEEK - 2 * 86400                # от него растут показа
 BIND_AT = T_WEEK - 86400               # «счётчики привязаны за сутки до начала недели»
 
 
+class _Kv:
+    """kv в памяти (get/set — как у KvRepo): состояние эмулятора лежит в нём."""
+
+    def __init__(self):
+        self.d = {}
+
+    def get(self, key, default=None):
+        return json.loads(self.d[key]) if key in self.d else default
+
+    def set(self, key, value):
+        self.d[key] = json.dumps(value, ensure_ascii=False)
+
+
+def _dev_n(dev: str) -> int:
+    return int(dev.rsplit("-", 1)[1])
+
+
+def seed_kv():
+    """Состояние эмулятора «как будто служба работает с T0»: включён, якорь на T0 с
+    начальными показаниями, ровный профиль (на пилоте нагрузка идёт без суточной формы)."""
+    kv = _Kv()
+    devs = [em.EmuDevice(_dev_n(d), spec["title"], kw=spec["kw"], profile="flat",
+                         anchor_ts=T0, anchor_kwh=spec["base"], started_ts=T0).to_dict()
+            for d, spec in FAKE.items()]
+    kv.set(em.STATE_KEY, {"v": 1, "enabled": True, "enabled_at": T0, "next_n": 104,
+                          "devices": devs,
+                          "history": {"state": "pending", "checked_at": None, "message": ""},
+                          "pending_erase": []})
+    return kv
+
+
+_ORACLE = None
+_MEMO: dict = {}
+_MEMO_LOCK = threading.Lock()
+
+
+def _oracle():
+    """Эталон: второй экземпляр эмулятора с тем же состоянием, который никогда не тикает и не
+    публикует. Счётчик эмулятора — чистая функция времени, значит живой экземпляр и эталон
+    дают одни и те же показания на любой момент."""
+    global _ORACLE
+    if _ORACLE is None:
+        _ORACLE = em.EmulatorService(seed_kv(), utc_offset_s=0)
+    return _ORACLE
+
+
+def _energies(dev: str, t: float):
+    key = (dev, int(t))
+    v = _MEMO.get(key)
+    if v is None:
+        with _MEMO_LOCK:
+            o = _oracle()
+            v = o.energies(o._devices[_dev_n(dev)], int(t))
+            _MEMO[key] = v
+    return v
+
+
+def prime_history():
+    """Прогнать эталон по сетке истории вперёд один раз: каждое следующее показание
+    досчитывается от предыдущего, а не от якоря."""
+    t = T0
+    end = int(time.time())
+    while t <= end:
+        for dev in FAKE:
+            _energies(dev, t)
+        t += STEP
+
+
 def phase_reading(dev: str, phase: str, t: float) -> float:
-    i = PHASES.index(phase)
-    spec = FAKE[dev]
-    return spec["base"][i] + spec["kw"][i] * (t - T0) / 3600.0
+    return _energies(dev, t)[PHASES.index(phase)]
 
 
 def total_reading(dev: str, t: float) -> float:
-    return sum(phase_reading(dev, ph, t) for ph in PHASES)
+    return sum(_energies(dev, t))
 
 
 def reading(dev: str, ctrl: str, t: float):
@@ -181,60 +264,19 @@ def new_client(port, prefix):
     return c
 
 
-class FakeMeters:
-    """Поддельные счётчики в MQTT: retained-снимок и живые обновления раз в секунду."""
+class EmulatorHost:
+    """Виртуальные счётчики в MQTT — настоящий `EmulatorService` в процессе репетиции."""
 
     def __init__(self, port):
-        self.c = new_client(port, "fake-meters")
-        self._stop = threading.Event()
-        for dev, spec in FAKE.items():
-            self._pub("/devices/%s/meta" % dev, json.dumps(
-                {"driver": "wb-modbus", "title": {"en": spec["title"], "ru": spec["title"]}}), retain=True)
-            self._pub("/devices/%s/meta/name" % dev, spec["title"], retain=True)
-            for ctrl, mtype, units in self._controls():
-                self._pub("/devices/%s/controls/%s/meta" % (dev, ctrl), json.dumps(
-                    {"type": mtype, "units": units, "readonly": True, "order": 1}), retain=True)
-        self.publish_values(retain=True)
-        self.t = threading.Thread(target=self._loop, daemon=True)
-        self.t.start()
-
-    @staticmethod
-    def _controls():
-        out = [("Total AP energy", "value", "kWh"), ("Total P", "power", "W"),
-               ("Frequency", "value", "Hz")]
-        for ph in PHASES:
-            out += [("AP energy " + ph, "value", "kWh"), ("P " + ph, "power", "W"),
-                    ("Urms " + ph, "voltage", "V"), ("Irms " + ph, "current", "A")]
-        return out
-
-    def _pub(self, topic, payload, retain=False):
-        self.c.publish(topic, payload, qos=1, retain=retain).wait_for_publish(5)
-
-    def publish_values(self, retain=False):
-        now = time.time()
-        for dev, spec in FAKE.items():
-            kw_total = sum(spec["kw"])
-            vals = {"Total AP energy": total_reading(dev, now), "Total P": kw_total * 1000.0,
-                    "Frequency": 50.0}
-            for i, ph in enumerate(PHASES):
-                vals["AP energy " + ph] = phase_reading(dev, ph, now)
-                vals["P " + ph] = spec["kw"][i] * 1000.0
-                vals["Urms " + ph] = 230.0
-                vals["Irms " + ph] = spec["kw"][i] * 1000.0 / 230.0
-            for ctrl, v in vals.items():
-                self.c.publish("/devices/%s/controls/%s" % (dev, ctrl), "%.6f" % v, qos=0, retain=retain)
-
-    def _loop(self):
-        while not self._stop.wait(1.0):
-            try:
-                self.publish_values()
-            except Exception:
-                pass
+        self.svc = em.EmulatorService(
+            seed_kv(), publisher_factory=lambda: em.PahoPublisher("127.0.0.1", port),
+            utc_offset_s=0)
+        # retained-снимок — до запуска сервиса, как и раньше; дальше публикует поток службы
+        self.svc.tick()
+        self.svc.start()
 
     def stop(self):
-        self._stop.set()
-        self.c.loop_stop()
-        self.c.disconnect()
+        self.svc.stop()
 
 
 class FakeHistoryRpc:
@@ -455,8 +497,32 @@ def date_str(t):
 
 
 def rep_rows(page):
-    return page.evaluate("() => [...document.querySelectorAll('table.rep-table tbody tr')]"
-                         ".map(tr => [...tr.children].map(td => td.innerText.trim()))")
+    # метка «эмулятор» (П12) — отдельный элемент в ячейке названия; в сравнении нужно само
+    # название: берём видимый текст ячейки и отрезаем от него видимую метку
+    return page.evaluate("""() => [...document.querySelectorAll('table.rep-table tbody tr')]
+        .map(tr => [...tr.children].map(td => {
+            let t = td.innerText.trim();
+            const b = td.querySelector('.emu-badge');
+            if (b && b.offsetParent !== null) {
+                const i = t.lastIndexOf(b.innerText.trim());
+                if (i >= 0) t = t.slice(0, i).trim();
+            }
+            return t;
+        }))""")
+
+
+def retained_topics(port, window=1.5):
+    """Что брокер хранит под `/devices/…` — глазами нового подписчика."""
+    got = set()
+    c = mqtt.Client(client_id="probe-%s" % uuid.uuid4().hex[:6], clean_session=True)
+    c.on_connect = lambda cl, u, f, rc: cl.subscribe("/devices/+/#", qos=1)
+    c.on_message = lambda cl, u, m: got.add(m.topic) if m.retain else None
+    c.connect("127.0.0.1", port, 15)
+    c.loop_start()
+    time.sleep(window)
+    c.loop_stop()
+    c.disconnect()
+    return got
 
 
 def run_report(page, dimension, d_from, d_to, point_ids=None):
@@ -506,7 +572,8 @@ def main() -> int:
     broker = meters = rpc = daemon = bp = None
     try:
         broker = Broker(tmp)
-        meters = FakeMeters(broker.port)
+        prime_history()
+        meters = EmulatorHost(broker.port)
         rpc = FakeHistoryRpc(broker.port)
         daemon = Daemon(tmp, data_dir, broker.port)
 
@@ -782,6 +849,9 @@ def main() -> int:
         same = len(data) == len(brows) and all(
             d[c_name] == b[0] and abs(float(d[c_val]) - num(b[1])) < 1e-9 for d, b in zip(data, brows))
         check(same, "5.4: CSV ветвей совпадает с экраном построчно (%s)" % [(d[c_name], d[c_val]) for d in data])
+        c_emu = head.index("Эмулятор") if "Эмулятор" in head else -1
+        check(c_emu == len(head) - 1 and all(d[c_emu] == "да" for d in data) and "ВНИМАНИЕ" in text,
+              "5.4: в CSV колонка «Эмулятор» (да у всех ветвей) и предупреждение в шапке файла")
 
         ids = [by_key[(dev, ph)][0] for dev, ph, _ in measured]
         trows = run_report(page, "point", d_from, d_to, ids)
@@ -801,6 +871,96 @@ def main() -> int:
         check(all(abs(csv_pt.get(n, -1) - screen_pt[n]) < 1e-9 for n in screen_pt) and len(csv_pt) == len(screen_pt),
               "5.5: CSV точек совпадает с экраном построчно")
         bp.screenshot("rehearsal_reports")
+
+        # ========== раздел Э. Проверка без нагрузки: эмулятор (П12) ==========
+        # Приборы, которые заводит сама служба (номера с 1), — в отличие от приборов репетиции
+        # (101–103, живущих в этом процессе). Баннер, метки, журнал, выключение и архивация.
+        tab(page, "Настройки")
+        page.wait_for_selector("[data-testid=settings-emulator]", timeout=8000)
+        check(page.locator("main h2:visible", has_text="Эмулятор счётчиков").count() == 1
+              and not page.locator("[data-testid=emu-toggle]").is_checked(),
+              "Э.1: «Настройки» → «Эмулятор счётчиков»: раздел есть, переключатель выключен")
+        tab(page, "Обзор")
+        check(not page.locator("[data-testid=emu-banner]").is_visible(),
+              "Э.1: в «Обзоре» баннера эмулятора нет")
+        tab(page, "Настройки")
+        page.click("[data-testid=emu-add-preset]")
+        page.wait_for_function(
+            "() => document.querySelectorAll('[data-testid^=emu-device-]').length === 4", timeout=8000)
+        rows_e = page.locator("[data-testid^=emu-device-]")
+        check(all("эмулятор" in rows_e.nth(i).inner_text().lower() for i in range(4)),
+              "Э.2: типовой набор — четыре строки с меткой «эмулятор»")
+        page.locator("[data-testid=emu-toggle]").check()
+        page.wait_for_function(
+            "() => document.querySelector('[data-testid=emu-toggle-label]').textContent.trim() === 'Включён'",
+            timeout=8000)
+        tab(page, "Обзор")
+        page.wait_for_selector("[data-testid=emu-banner]:visible", timeout=8000)
+        banner = page.locator("[data-testid=emu-banner]").inner_text().strip()
+        check(banner == "Включён эмулятор: 4 виртуальных прибора — цифры с ними не настоящие",
+              "Э.2: баннер в «Обзоре» (%r)" % banner)
+
+        tab(page, "Структура")
+        page.evaluate(APP + ".openInspectorInPlace('node', %d)" % shield["id"])
+        page.wait_for_timeout(1500)
+        open_form(page)
+        opts = page.locator("[data-testid=node-meter-device]:visible option").evaluate_all(
+            "els => els.filter(e => e.value).map(e => ({t: e.textContent.trim(), v: e.value}))")
+        free_ids = {"emu-map3e-%d" % n for n in (1, 2, 3, 4)}
+        check(free_ids <= {o["v"] for o in opts}
+              and all("эмулятор" in o["t"].lower() for o in opts if o["v"].startswith("emu-")),
+              "Э.3: в «+ Счётчик» все приборы эмулятора с меткой «эмулятор» (%s)"
+              % [o["t"] for o in opts if o["v"] in free_ids])
+        page.locator("[data-testid=node-meter-form]:visible button", has_text="Отмена").click()
+
+        tab(page, "Настройки")
+        page.wait_for_selector("[data-testid=emu-fault-reset-1]:visible", timeout=8000)
+        page.click("[data-testid=emu-fault-reset-1]")
+        page.wait_for_function(
+            "() => /Сброс счётчика/.test(document.querySelector('[data-testid=emu-journal]').textContent)",
+            timeout=8000)
+        first_line = page.locator("[data-testid=emu-journal]").inner_text().splitlines()[0]
+        check(re.match(r"\d\d\.\d\d, \d\d:\d\d:\d\d ", first_line) is not None
+              and "Сброс счётчика" in first_line,
+              "Э.4: «Сброс» — строка журнала со временем (%r)" % first_line)
+        page.click("[data-testid=emu-probe-history]")
+        page.wait_for_selector("[data-testid=emu-history-warning]:visible", timeout=10000)
+        warn = page.locator("[data-testid=emu-history-warning]").inner_text()
+        check("wb-mqtt-db не пишет историю эмулятора" in warn and "группы каналов" in warn,
+              "Э.4: «Проверить историю сейчас» → предупреждение про группы каналов (%r)" % warn[:90])
+
+        before = retained_topics(broker.port)
+        mine = {t for t in before if re.match(r"/devices/emu-map3e-[1-4]/", t)}
+        theirs = {t for t in before if re.match(r"/devices/emu-map3e-10[1-3]/", t)}
+        check(mine and theirs, "Э.5: до выключения в брокере есть топики и службы, и репетиции "
+                               "(%d и %d)" % (len(mine), len(theirs)))
+        page.locator("[data-testid=emu-toggle]").uncheck()
+        page.wait_for_function(
+            "() => document.querySelector('[data-testid=emu-toggle-label]').textContent.trim() === 'Выключен'",
+            timeout=8000)
+        after = retained_topics(broker.port)
+        check(not {t for t in after if re.match(r"/devices/emu-map3e-[1-4]/", t)}
+              and {t for t in after if re.match(r"/devices/emu-map3e-10[1-3]/", t)},
+              "Э.5: после выключения новый подписчик не получает ни одного топика приборов службы "
+              "(приборы репетиции на месте)")
+        tab(page, "Обзор")
+        check(not page.locator("[data-testid=emu-banner]").is_visible(), "Э.5: баннера нет")
+
+        tab(page, "Настройки")
+        page.wait_for_function(
+            "() => /\\(5\\)/.test(document.querySelector('[data-testid=emu-archive-points]').textContent)",
+            timeout=8000)
+        page.click("[data-testid=emu-archive-points]")
+        page.wait_for_selector("[data-testid=ui-confirm]", timeout=5000)
+        lines_e = page.locator("[data-testid=ui-confirm] li").all_inner_texts()
+        check(len(lines_e) == 5, "Э.6: подтверждение перечисляет пять точек эмулятора (%s)" % lines_e)
+        page.click("[data-testid=ui-confirm-ok]")
+        page.wait_for_selector("[data-testid=ui-confirm]", state="detached", timeout=8000)
+        page.wait_for_timeout(600)
+        check(api(page, "/api/v2/structure/points")["points"] == []
+              and api(page, "/api/v2/emulator")["bound_points"] == [],
+              "Э.6: «Архивировать точки эмулятора» — все пять точек схемы в архиве")
+        bp.screenshot("rehearsal_emulator")
 
         # ========== итоги ==========
         from collections import Counter

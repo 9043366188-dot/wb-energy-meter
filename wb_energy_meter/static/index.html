@@ -70,6 +70,10 @@ main{padding:24px;max-width:1400px;margin:0 auto}
   text-overflow:ellipsis;white-space:nowrap}
 .badge{font-size:10px;font-weight:700;text-transform:uppercase;
   letter-spacing:.4px;padding:3px 7px;border-radius:5px}
+/* П12: метка «эмулятор» — цифры с виртуального прибора не настоящие */
+.emu-badge{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.4px;padding:1px 6px;border-radius:4px;border:1px solid var(--warn);
+  color:var(--warn);margin-left:6px;white-space:nowrap;vertical-align:middle}
 .card-grp{font-size:11px;color:var(--txt3);padding:0 16px 6px}
 .card-body{padding:0 16px 14px;display:grid;grid-template-columns:1fr 1fr;gap:10px 12px}
 .metric .k{font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--txt3)}
@@ -631,7 +635,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
               <div class="card" @click="openDetail(m.device_id)">
             <div class="card-head">
               <span class="dot" :style="`background:${statusColor(m.status)};width:10px;height:10px`"></span>
-              <span class="nm" x-text="m.display_name"></span>
+              <span class="nm" x-text="m.display_name"></span><span class="emu-badge" data-testid="emu-badge-card" x-show="m.is_emulator">эмулятор</span>
               <span class="badge" :style="badgeStyle(m.status)" x-text="statusLabel(m.status)"></span>
               <template x-if="m.role==='input'">
                 <span style="font-size:10px;font-weight:700;color:var(--ok);
@@ -689,6 +693,15 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
   <!-- ОБЗОР v2 (ТЗ §8.2) -->
   <template x-if="tab=='overviewv2'">
     <div>
+      <!-- П12: пока включён эмулятор счётчиков, цифры с виртуальных приборов не настоящие -->
+      <div class="upd-banner upd-banner-warn" data-testid="emu-banner" role="status"
+           style="margin-bottom:12px" x-show="emuSummary.enabled">
+        <span x-text="emuSummary.banner"></span>
+      </div>
+      <div class="upd-banner upd-banner-warn" data-testid="emu-banner-history" role="status"
+           style="margin-bottom:12px"
+           x-show="emuSummary.enabled && (emuSummary.history_state==='missing'||emuSummary.history_state==='error')"
+           x-text="emuSummary.history_message"></div>
       <!-- Партия 13, 13.4: состояние снимка — «устарело, обновлено ЧЧ:ММ» (прежние числа
            остаются на экране, но затемнены), неполные суммы, ошибка. -->
       <div class="feed-note" data-testid="ov-state" role="status">
@@ -857,7 +870,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
               <tbody>
                 <template x-for="b in ((ovSummary||{}).network_branches||[])" :key="b.edge_id">
                   <tr>
-                    <td x-text="b.name"></td>
+                    <td><span x-text="b.name"></span><span class="emu-badge" data-testid="emu-badge" x-show="b.has_emulator">эмулятор</span></td>
                     <td class="num mono" x-text="b.result?fmt(b.result.value,1):'—'"></td>
                     <td class="num mono" x-text="b.percentage_of_object!=null?fmt(b.percentage_of_object,1)+'%':'—'"></td>
                   </tr>
@@ -1004,7 +1017,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                             ? overviewV2BranchRows()
                             : ((ovSummary||{}).branches||[]).map(b=>({
                                 group:{id:b.group_id,name:b.name},
-                                power_kw:null,energy_kwh:null,
+                                power_kw:null,energy_kwh:null,has_emulator:!!b.has_emulator,
                                 knownCount:0,pointCount:0})))"
                           :key="row.group.id">
                   <tr>
@@ -1012,7 +1025,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                       <span style="display:inline-block;width:10px;height:10px;border-radius:3px;
                                    margin-right:6px;vertical-align:middle"
                             :style="`background:${row.group.color||'var(--txt3)'}`"></span>
-                      <span x-text="row.group.name"></span>
+                      <span x-text="row.group.name"></span><span class="emu-badge" data-testid="emu-badge" x-show="row.has_emulator">эмулятор</span>
                       <span class="muted" style="font-size:11px" x-show="row.group.category"
                             x-text="'('+row.group.category+')'"></span>
                     </td>
@@ -1072,7 +1085,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
               <span class="badge" :style="badgeStyle(prob.point.device_status)"
                     x-text="prob.kind==='unbound'?'не привязана':statusLabel(prob.point.device_status)"></span>
               <span style="flex:1">
-                <div style="font-weight:600" x-text="prob.point.name||prob.point.code"></div>
+                <div style="font-weight:600"><span x-text="prob.point.name||prob.point.code"></span><span class="emu-badge" data-testid="emu-badge" x-show="prob.point.is_emulator">эмулятор</span></div>
                 <div class="muted" style="font-size:11px" x-text="'('+prob.point.code+')'"></div>
               </span>
               <span class="muted" style="font-size:11px;text-align:right"
@@ -1133,7 +1146,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
             <template x-for="p in overviewV2Snapshot.points" :key="p.point_id">
               <tr>
                 <td style="font-family:monospace;font-size:12px" x-text="p.code"></td>
-                <td x-text="p.name"></td>
+                <td><span x-text="p.name"></span><span class="emu-badge" data-testid="emu-badge" x-show="p.is_emulator">эмулятор</span></td>
                 <td>
                   <span class="badge" :style="badgeStyle(p.binding_status==='unbound'?'unknown':p.device_status)"
                         x-text="p.binding_status==='unbound'?'не привязана':statusLabel(p.device_status)"></span>
@@ -1240,6 +1253,10 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
         <span data-testid="rv2-partial" x-show="feedStatus('rv2-query')==='partial'"
               x-text="'Данные неполные: у '+rv2IncompleteRows(rv2Result)+' из '+((rv2R().rows||[]).length)+' строк нет полной истории или есть конфликт — подробности в колонках «Доступность» и «Флаги / конфликт».'"></span>
       </div>
+      <div class="upd-banner upd-banner-warn" data-testid="rv2-emulator-note" role="status"
+           style="margin-bottom:10px" x-show="rv2R().has_emulator">
+        В отчёте есть данные эмулятора счётчиков: цифры в строках с пометкой «эмулятор» не настоящие.
+      </div>
       <template x-if="!rv2Loading && !rv2Error && !rv2Result">
         <div class="empty" data-testid="rv2-empty" style="text-align:left;line-height:1.5">
           Отчёт ещё не построен. Выберите срез и период и нажмите «Показать».
@@ -1291,6 +1308,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                           @click="openInspector(row.dimension==='point'?'point':'group', row.id)"
                           x-text="row.name"></span>
                     <span x-show="row.dimension==='balance_scope'" x-text="row.name"></span>
+                    <span class="emu-badge" data-testid="rv2-emu-badge" x-show="row.has_emulator">эмулятор</span>
                   </td>
                   <td class="num mono" x-text="row.result&&row.result.value!=null?fmt(row.result.value,3):'—'"></td>
                   <td x-text="row.result?row.result.unit:''"></td>
@@ -1368,6 +1386,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                 <div class="structure-tree-row" tabindex="0" role="button" data-kb-row @click="openInspector('point', p.point_id)">
                   <span x-text="p.name||p.code"></span>
                   <span class="muted mono" style="font-size:11px" x-text="p.meter_device_id||'нет прибора'"></span>
+                  <span class="emu-badge" data-testid="emu-badge" x-show="emuIs(p.meter_device_id)">эмулятор</span>
                 </div>
               </template>
               <div class="feed-note" data-testid="struct-search-state" role="status">
@@ -1396,6 +1415,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                              @click="openInspector('point', p.point_id)">
                           <span x-text="p.name||p.code"></span>
                           <span class="muted mono" style="font-size:11px" x-text="p.meter_device_id||'нет прибора'"></span>
+                          <span class="emu-badge" data-testid="emu-badge" x-show="emuIs(p.meter_device_id)">эмулятор</span>
                         </div>
                       </template>
                     </div>
@@ -1405,7 +1425,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                       <div class="muted" style="font-size:11px;margin:6px 0 4px">Приборы без точки учёта:</div>
                       <template x-for="d in structFreeDevices()" :key="'od'+d.device_id">
                         <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px" data-testid="off-scheme-device">
-                          <span class="sf-val" style="font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis" x-text="d.name||d.device_id"></span>
+                          <span class="sf-val" style="font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis" x-text="_emuLabel(d.name||d.device_id, emuIs(d.device_id))"></span>
                           <select :aria-label="'Куда поставить счётчик: '+(d.name||d.device_id)" style="max-width:150px" x-model="structDeviceTarget[d.device_id]"
                                   @change="structDeviceToNode(d.device_id)">
                             <option value="">+ Счётчик → куда?</option>
@@ -1691,7 +1711,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
               <div class="structure-field">
                 <div class="sf-lbl">Текущий прибор</div>
                 <div class="sf-val" x-show="((structInspector||{}).data||{}).meter_device_id">
-                  <div x-text="'Адрес: '+((structInspector||{}).data||{}).meter_controller_key+' / '+((structInspector||{}).data||{}).meter_device_id"></div>
+                  <div><span x-text="'Адрес: '+((structInspector||{}).data||{}).meter_controller_key+' / '+((structInspector||{}).data||{}).meter_device_id"></span><span class="emu-badge" data-testid="emu-badge-inspector" x-show="emuIs(((structInspector||{}).data||{}).meter_device_id)">эмулятор</span></div>
                   <div class="muted" style="font-size:11px" x-show="((structInspector||{}).data||{}).meter_serial"
                        x-text="'Серийный: '+((structInspector||{}).data||{}).meter_serial"></div>
                 </div>
@@ -3920,7 +3940,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
                       </template>
                     </td>
 
-                    <td class="muted mono" style="font-size:12px" x-text="m.device_id"></td>
+                    <td class="muted mono" style="font-size:12px"><span x-text="m.device_id"></span><span class="emu-badge" data-testid="emu-badge-registry" x-show="m.is_emulator">эмулятор</span></td>
                     <td class="muted mono" style="font-size:12px" x-text="m.serial_number||'—'"></td>
 
                     <!-- Uptime: бейдж состояния канала (ТЗ v0.10.0).
@@ -4046,6 +4066,212 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
         </table></div>
       </div>
 
+      <!-- П12 (партия находок 0.23.1, docs/design-emulator.md): «Эмулятор счётчиков» —
+           виртуальные WB-MAP3E в том же брокере, проверка без нагрузки. Раздел набора v2. -->
+      <template x-if="uiSet=='v2'">
+        <div class="settings-section" data-testid="settings-emulator">
+          <h2>Эмулятор счётчиков</h2>
+          <div class="wbs-intro">
+            Виртуальные счётчики WB-MAP3E в том же MQTT-брокере: можно проверить схему, отчёты и
+            ошибки связи без нагрузки. Цифры <b>не настоящие</b> — везде, где они видны, прибор
+            помечен «эмулятор». Значения публикуются раз в 5 секунд, показания не сбрасываются
+            при перезапуске службы.
+          </div>
+
+          <template x-if="emuUnavailable">
+            <div class="upd-banner upd-banner-warn" data-testid="emu-unavailable">
+              Эмулятор в этой сборке службы не подключён.
+            </div>
+          </template>
+
+          <template x-if="!emuUnavailable">
+            <div>
+              <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:10px 0">
+                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                  <input type="checkbox" data-testid="emu-toggle" aria-label="Эмулятор счётчиков включён"
+                         :checked="emuOn()" :disabled="emuBusy||!emu"
+                         @change="emuSetEnabled($event.target.checked)">
+                  <b data-testid="emu-toggle-label" x-text="emuOn()?'Включён':'Выключен'"></b>
+                </label>
+                <span class="muted" style="font-size:12px" data-testid="emu-state"
+                      x-text="emuOn()?'Приборы публикуют значения':'Ничего не публикуется, топики стёрты; точки учёта остаются'"></span>
+              </div>
+
+              <div class="upd-banner upd-banner-warn" data-testid="emu-error" role="alert"
+                   style="margin:8px 0" x-show="emuError!==''" x-text="emuError"></div>
+              <div class="upd-banner upd-banner-warn" data-testid="emu-history-warning" role="status"
+                   style="margin:8px 0" x-show="emuHistoryWarning()!==''" x-text="emuHistoryWarning()"></div>
+
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0">
+                <button class="btn btn-secondary" data-testid="emu-add-preset" :disabled="emuBusy||!emu"
+                        @click="emuAddPreset()">Добавить типовой набор (3 нагрузки + ввод)</button>
+                <button class="btn btn-secondary" data-testid="emu-add-device" :disabled="emuBusy||!emu"
+                        @click="emuOpenForm(null)">+ Прибор</button>
+                <button class="btn btn-secondary" data-testid="emu-probe-history" :disabled="emuBusy||!emuOn()"
+                        @click="emuProbeHistory()">Проверить историю сейчас</button>
+              </div>
+
+              <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin:10px 0;font-size:12px"
+                   data-testid="emu-fault-params">
+                <label>Потеря связи, минут
+                  <input type="number" min="1" max="1440" step="1" style="width:80px"
+                         data-testid="emu-loss-min" aria-label="Длительность потери связи, минут"
+                         x-model.number="emuLossMin"></label>
+                <label>Редкие показания, часов
+                  <input type="number" min="1" max="72" step="1" style="width:80px"
+                         data-testid="emu-sparse-h" aria-label="Длительность редких показаний, часов"
+                         x-model.number="emuSparseH"></label>
+                <span class="muted">При редких показаниях прибор обновляется раз в 30–60 минут.</span>
+              </div>
+
+              <template x-if="emuFormOpen">
+                <div class="wbs-note" data-testid="emu-form" style="margin:12px 0">
+                  <div style="font-weight:600;margin-bottom:8px"
+                       x-text="emuForm.n===null?'Новый прибор эмулятора':'Прибор эмулятора №'+emuForm.n"></div>
+                  <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+                    <label style="font-size:12px">Название
+                      <input type="text" data-testid="emu-form-name" style="min-width:220px"
+                             placeholder="слово «эмулятор» добавится само" x-model="emuForm.name"></label>
+                    <label style="font-size:12px">Роль
+                      <select data-testid="emu-form-role" x-model="emuForm.role">
+                        <template x-for="r in emuRoles()" :key="r.value">
+                          <option :value="r.value" :selected="r.value===emuForm.role" x-text="r.label"></option>
+                        </template>
+                      </select></label>
+                    <label style="font-size:12px">Профиль
+                      <select data-testid="emu-form-profile" x-model="emuForm.profile">
+                        <template x-for="pr in emuProfiles()" :key="pr.value">
+                          <option :value="pr.value" :selected="pr.value===emuForm.profile" x-text="pr.label"></option>
+                        </template>
+                      </select></label>
+                  </div>
+                  <template x-if="emuForm.role==='load'">
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:10px">
+                      <label style="font-size:12px">L1, кВт
+                        <input type="number" min="0" step="0.1" style="width:80px" data-testid="emu-form-kw1" x-model="emuForm.kw1"></label>
+                      <label style="font-size:12px">L2, кВт
+                        <input type="number" min="0" step="0.1" style="width:80px" data-testid="emu-form-kw2" x-model="emuForm.kw2"></label>
+                      <label style="font-size:12px">L3, кВт
+                        <input type="number" min="0" step="0.1" style="width:80px" data-testid="emu-form-kw3" x-model="emuForm.kw3"></label>
+                    </div>
+                  </template>
+                  <template x-if="emuForm.role==='input'">
+                    <div style="margin-top:10px">
+                      <div class="muted" style="font-size:12px;margin-bottom:4px">Нагрузки, которые ввод суммирует:</div>
+                      <template x-for="l in emuLoads()" :key="'src'+l.n">
+                        <label style="display:flex;gap:6px;align-items:center;font-size:12px">
+                          <input type="checkbox" :data-testid="'emu-form-src-'+l.n"
+                                 :checked="emuForm.sources.indexOf(l.n)!==-1"
+                                 :aria-label="'Нагрузка под вводом: '+l.name"
+                                 @change="emuToggleSource(l.n)">
+                          <span x-text="l.name"></span>
+                        </label>
+                      </template>
+                      <template x-if="emuLoads().length===0">
+                        <div class="muted" style="font-size:12px">Сначала добавьте нагрузки.</div>
+                      </template>
+                      <label style="font-size:12px;display:block;margin-top:8px">Сверх суммы, % (небаланс щита)
+                        <input type="number" min="-50" max="200" step="0.5" style="width:80px"
+                               data-testid="emu-form-pct" x-model="emuForm.pct"></label>
+                    </div>
+                  </template>
+                  <div class="upd-banner upd-banner-warn" data-testid="emu-form-error" role="alert"
+                       style="margin-top:10px" x-show="emuFormError!==''" x-text="emuFormError"></div>
+                  <div style="display:flex;gap:8px;margin-top:10px">
+                    <button class="btn btn-primary" data-testid="emu-form-save"
+                            :disabled="emuBusy||!emuFormValid()" @click="emuSaveForm()">Сохранить</button>
+                    <button class="btn btn-secondary" data-testid="emu-form-cancel" @click="emuCloseForm()">Отмена</button>
+                  </div>
+                </div>
+              </template>
+
+              <div class="tbl-scroll"><table class="reg-table" data-testid="emu-devices" style="margin-top:8px">
+                <thead><tr>
+                  <th>Прибор</th><th>Роль и профиль</th><th class="num">Мощность L1/L2/L3, кВт</th>
+                  <th class="num">Показания, кВт·ч</th><th>Состояние</th><th>Неисправности</th><th style="width:150px"></th>
+                </tr></thead>
+                <tbody>
+                  <template x-for="d in emuDevices()" :key="d.device_id">
+                    <tr :data-testid="'emu-device-'+d.n">
+                      <td>
+                        <span x-text="d.name"></span><span class="emu-badge">эмулятор</span><br>
+                        <span class="muted mono" style="font-size:11px" x-text="d.device_id+' · '+d.serial"></span>
+                      </td>
+                      <td style="font-size:12px">
+                        <span x-text="emuRoleLabel(d.role)+', '+emuProfileLabel(d.profile)"></span>
+                        <div class="muted" style="font-size:11px" x-show="d.role==='input'" x-text="emuSourcesText(d)"></div>
+                      </td>
+                      <td class="num mono" x-text="(d.power_w||[]).map(x=>fmt(x/1000,2)).join(' / ')"></td>
+                      <td class="num mono" x-text="fmt(d.energy_total_kwh,2)"></td>
+                      <td style="font-size:12px">
+                        <span :data-testid="'emu-fault-state-'+d.n" x-text="emuFaultLabel(d)"></span>
+                        <div class="muted" style="font-size:11px" x-show="d.fault!=='ok'" x-text="emuFaultUntil(d)"></div>
+                      </td>
+                      <td>
+                        <div style="display:flex;gap:4px;flex-wrap:wrap">
+                          <button class="btn btn-sm btn-secondary" :disabled="emuBusy||!emuOn()"
+                                  :data-testid="'emu-fault-reset-'+d.n" :aria-label="'Сброс счётчика: '+d.name"
+                                  @click="emuFault(d,'reset')">Сброс</button>
+                          <button class="btn btn-sm btn-secondary" :disabled="emuBusy||!emuOn()"
+                                  :data-testid="'emu-fault-replace-'+d.n" :aria-label="'Замена счётчика: '+d.name"
+                                  @click="emuFault(d,'replace')">Замена</button>
+                          <button class="btn btn-sm btn-secondary" :disabled="emuBusy||!emuOn()"
+                                  :data-testid="'emu-fault-loss-'+d.n" :aria-label="'Потеря связи: '+d.name"
+                                  @click="emuFault(d,'loss')">Нет связи</button>
+                          <button class="btn btn-sm btn-secondary" :disabled="emuBusy||!emuOn()"
+                                  :data-testid="'emu-fault-sparse-'+d.n" :aria-label="'Редкие показания: '+d.name"
+                                  @click="emuFault(d,'sparse')">Редкие показания</button>
+                        </div>
+                      </td>
+                      <td>
+                        <div style="display:flex;gap:4px">
+                          <button class="btn btn-sm btn-secondary" :data-testid="'emu-edit-'+d.n"
+                                  :aria-label="'Изменить прибор эмулятора: '+d.name" :disabled="emuBusy"
+                                  @click="emuOpenForm(d)">Изменить</button>
+                          <button class="btn btn-sm btn-secondary" :data-testid="'emu-remove-'+d.n"
+                                  :aria-label="'Удалить прибор эмулятора: '+d.name" :disabled="emuBusy"
+                                  @click="emuAskRemove(d)">Удалить</button>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
+                  <template x-if="emuDevices().length===0">
+                    <tr><td colspan="7" style="text-align:center;color:var(--txt3);padding:16px"
+                            data-testid="emu-empty">
+                      Приборов нет. Добавьте типовой набор или отдельный прибор.
+                    </td></tr>
+                  </template>
+                </tbody>
+              </table></div>
+
+              <div class="wbs-note" style="margin-top:12px" data-testid="emu-history-state"
+                   x-text="'История wb-mqtt-db: '+emuHistoryStateText()"></div>
+
+              <div class="sf-lbl" style="margin-top:14px">Журнал неисправностей и изменений</div>
+              <ul data-testid="emu-journal" style="margin:4px 0 0 18px;font-size:12px">
+                <template x-for="(j,ji) in emuJournal()" :key="ji+'_'+j.ts">
+                  <li><span class="mono muted" x-text="emuTime(j.ts)"></span> <span x-text="j.text"></span></li>
+                </template>
+                <template x-if="emuJournal().length===0">
+                  <li class="muted">Записей пока нет.</li>
+                </template>
+              </ul>
+
+              <div class="wbs-note" style="margin-top:14px">
+                После выключения эмулятора точки учёта, привязанные к его приборам, остаются: в них
+                накопилась история. Когда они больше не нужны, архивируйте их кнопкой ниже
+                (история сохранится).
+              </div>
+              <div style="margin-top:8px">
+                <button class="btn btn-secondary" data-testid="emu-archive-points"
+                        :disabled="emuBusy||emuBoundPoints().length===0" @click="emuAskArchive()"
+                        x-text="'Архивировать точки эмулятора ('+emuBoundPoints().length+')'"></button>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
       <!-- Партия 13, 13.2: тема и сведения о версии — раздел набора v2 -->
       <template x-if="uiSet=='v2'">
         <div class="settings-section" data-testid="settings-v2-about">
@@ -4086,7 +4312,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
           <template x-for="u in unregistered" :key="u.device_id">
             <div class="unrg-item">
               <div class="unrg-info">
-                <div class="unrg-id" x-text="u.device_id"></div>
+                <div class="unrg-id"><span x-text="u.device_id"></span><span class="emu-badge" data-testid="emu-badge-unreg" x-show="u.is_emulator">эмулятор</span></div>
                 <div class="unrg-sub">
                   <span x-text="u.mqtt_name ? 'MQTT: '+u.mqtt_name : ''"></span>
                   <span x-show="u.serial"> · серийник: <span x-text="u.serial"></span></span>
@@ -5104,6 +5330,7 @@ button,input,select,textarea,.btn,.btn-sm,.ico-btn{--line:var(--line-ctl)}
 <script src="/static/js/consumption.js"></script>
 <script src="/static/js/dashboard.js"></script>
 <script src="/static/js/settings.js"></script>
+<script src="/static/js/emulator.js"></script>
 <script src="/static/js/structure.js"></script>
 <script src="/static/js/scheme.js"></script>
 <script src="/static/js/plan-v2.js"></script>

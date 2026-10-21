@@ -52,11 +52,13 @@
             // (planV3DevicesWithoutPoint() переиспользуется как есть).
             if(!this.structInited){ this.structInited=true; loads.push(this._loadStructureLists()); }
             if(!this.structKnownDevicesLoaded) loads.push(this._loadKnownDevices());
+            loads.push(this.loadEmulatorSummary());
             await Promise.all(loads);
           }else{
             // Партия 13 (П5): после «+ Счётчик» на другой вкладке «Обзор» должен
             // сразу показать новую точку, а не ждать следующего тика таймера.
-            await Promise.all([this.loadOverviewV2Snapshot(), this.loadValidation()]);
+            await Promise.all([this.loadOverviewV2Snapshot(), this.loadValidation(),
+                               this.loadEmulatorSummary()]);
           }
         },
 
@@ -140,6 +142,7 @@
             return {
               group:g,
               pointCount:pts.length,
+              has_emulator:pts.some(p=>!!p.is_emulator),
               knownCount:withPower.length,
               power_kw: withPower.length>0 ? withPower.reduce((s,p)=>s+p.power_w,0)/1000 : null,
               energy_kwh: withEnergy.length>0 ? withEnergy.reduce((s,p)=>s+p.energy_total_kwh,0) : null,

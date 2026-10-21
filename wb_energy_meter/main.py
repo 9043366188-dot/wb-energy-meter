@@ -25,6 +25,7 @@ from .aggregates_repo import AggregateRepo
 from .aggregator import Aggregator, AggregatorConfig
 from .binding_service import open_phase_targets
 from .alert_repo import AlertRepo
+from .emulator import EmulatorService, PahoPublisher
 
 log = logging.getLogger(__name__)
 
@@ -149,6 +150,19 @@ def main(argv=None):
     )
     log.info("Расчёт расхода: гибридный (агрегаты + RPC)")
 
+    # Эмулятор счётчиков (П12, R17): по умолчанию выключен, состояние в kv.
+    # История wb-mqtt-db спрашивается через тот же RPC-клиент, что и у
+    # агрегатора — отдельного доступа к БД истории нет.
+    emulator = EmulatorService(
+        kv_repo,
+        publisher_factory=lambda: PahoPublisher(
+            cfg.mqtt.host, cfg.mqtt.port, cfg.mqtt.username,
+            cfg.mqtt.password),
+        registry=registry, meters_repo=meters_repo,
+        history_probe=lambda device, control, ts_from: len(
+            wb_db_client.get_values(device, control, ts_from=ts_from,
+                                    limit=5)))
+
     # Самообновление (ТЗ v0.9.0). install_dir — каталог на уровень выше
     # пакета wb_energy_meter (в проде это /opt/wb-energy-meter, куда
     # install.sh кладёт и wb_energy_meter/, и scripts/). status_path —
@@ -190,7 +204,7 @@ def main(argv=None):
         kv_repo=kv_repo,
         plan_repo=plan_repo, plan_zone_repo=plan_zone_repo,
         plan_link_repo=plan_link_repo, plans_dir=plans_directory,
-        db=db,
+        db=db, emulator=emulator,
     )
     try:
         api.start()
@@ -198,6 +212,7 @@ def main(argv=None):
         log.error("Не удалось запустить HTTP API: %s", e)
         aggregator.stop(); bg_tasks.stop(); status_engine.stop()
         mqtt_service.stop(); db.close(); return 3
+    emulator.start()
 
     stop_event = threading.Event()
     def _shutdown(signum, frame):
@@ -212,7 +227,8 @@ def main(argv=None):
     finally:
         log.info("Остановка...")
         for stopper, name in [
-            (api.stop, "api"), (aggregator.stop, "aggregator"),
+            (api.stop, "api"), (emulator.stop, "emulator"),
+            (aggregator.stop, "aggregator"),
             (bg_tasks.stop, "bg_tasks"),
             (status_engine.stop, "status"), (mqtt_service.stop, "mqtt"),
             (db.close, "db"),

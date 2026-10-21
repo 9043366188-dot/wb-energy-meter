@@ -96,6 +96,8 @@ from .binding_service import (
 )
 from .location_repo import LocationRepo
 from .model import PHASES
+from . import emulator as emulator_mod
+from .emulator import EmulatorError, is_emulator_device
 from .point_repo import MeteringPointRepo, MeterSourceRepo
 from .topology_service import (
     ElectricalNodeRepo, ElectricalEdgeRepo, TopologyConflict,
@@ -166,6 +168,15 @@ def register_v2_routes(app, state, json_response):
     def _plan_item_repo(): return PlanItemRepo(db)
     def _plan_edge_view_repo(): return PlanEdgeViewRepo(db)
     def _group_repo_v2(): return GroupRepoV2(db)
+
+    def _emulator_point_ids(c):
+        """П12: точки, когда-либо привязанные к прибору эмулятора (открытой или
+        закрытой привязкой) — по ним «Обзор» и отчёты ставят метку «эмулятор»."""
+        rows = c.execute(
+            "SELECT DISTINCT b.point_id AS point_id FROM point_bindings b "
+            "JOIN meter_sources s ON s.id = b.meter_source_id "
+            "WHERE s.device_id LIKE 'emu-%'").fetchall()
+        return {r["point_id"] for r in rows}
 
     def _point_to_dict(p, power_supply=None):
         out = {
@@ -2301,6 +2312,7 @@ def register_v2_routes(app, state, json_response):
             "point_id": point.id, "code": point.code, "name": point.name,
             "enabled": bool(point.enabled),
             "binding_status": "unbound",
+            "is_emulator": False,
             "channel_profile": None,
             "device_status": None,
             "device_status_reason": None,
@@ -2325,6 +2337,7 @@ def register_v2_routes(app, state, json_response):
             result["device_status_reason"] = "Источник привязки не найден"
             return result
 
+        result["is_emulator"] = is_emulator_device(source.device_id)
         meter = registry.get(source.device_id)
         if meter is None:
             # ТЗ A38: устройство зарегистрировано в БД как источник, но
@@ -2544,6 +2557,7 @@ def register_v2_routes(app, state, json_response):
                 "meter_device_id": meter_device_id,
                 "meter_controller_key": meter_controller_key,
                 "meter_serial": meter_serial,
+                "is_emulator": is_emulator_device(meter_device_id),
                 # П9: какую часть прибора меряет точка (total_3p / phase_lN)
                 "channel_profile": binding.channel_profile if binding is not None else None,
                 "meter_phase": PROFILE_PHASE.get(binding.channel_profile) if binding is not None else None,
@@ -2589,6 +2603,7 @@ def register_v2_routes(app, state, json_response):
             if entry is None:
                 entry = {
                     "device_id": r["device_id"], "controller_key": r["controller_key"],
+                    "is_emulator": is_emulator_device(r["device_id"]),
                     **holder_info, "profiles": [], "busy_phases": {},
                 }
                 by_device[key] = entry
@@ -2993,6 +3008,19 @@ def register_v2_routes(app, state, json_response):
                 # Имена полей сохранены — поменялся только смысл, это
                 # исправление ошибки, а не новый контракт (Э2.4).
 
+                # П12: метки «эмулятор» — по точкам, привязанным к приборам
+                # эмулятора (в любой момент: прошлый период мог считаться по
+                # ним же)
+                emu_ids = _emulator_point_ids(c)
+                for nb in network_branches:
+                    nb["has_emulator"] = nb["point_id"] in emu_ids
+                for b in branches:
+                    b["has_emulator"] = any(i in emu_ids for i in b["member_point_ids"])
+                object_has_emulator = any(i in emu_ids for i in (input_point_ids or ()))
+                has_emulator = (object_has_emulator
+                                or any(nb["has_emulator"] for nb in network_branches)
+                                or any(b["has_emulator"] for b in branches))
+
                 ungrouped_ids = None
                 if object_total is not None or branches:
                     grouped = set()
@@ -3015,6 +3043,8 @@ def register_v2_routes(app, state, json_response):
             "period": {"from": str(ts_from), "to": str(ts_to), "timezone": timezone_name},
             **_structure_info(history, ts_from, ts_to),
             "object_input_point_ids": input_point_ids,
+            "object_has_emulator": object_has_emulator,
+            "has_emulator": has_emulator,
             "object_total": object_total.to_dict() if object_total is not None else None,
             "object_total_unavailable_reason": object_total_unavailable_reason,
             "imbalance_value": imbalance_value,
@@ -3198,12 +3228,18 @@ def register_v2_routes(app, state, json_response):
             except ValueError as e:
                 body, status = _err("bad_request", str(e), 400)
                 return json_response(body, status)
+            # П12: строка с данными эмулятора помечается — цифры не настоящие
+            emu_ids = _emulator_point_ids(c)
+            for row in rows:
+                row["has_emulator"] = any(
+                    i in emu_ids for i in (row.get("member_point_ids") or ()))
 
         response = {
             "configuration_revision_id": pinned_revision,
             "as_of": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "dimension": dimension,
             "composition_mode": composition_mode,
+            "has_emulator": any(r["has_emulator"] for r in rows),
             **_structure_info(history, ts_from, ts_to),
             "period": {"from": str(ts_from), "to": str(ts_to), "timezone": timezone_name},
             "rows": rows,
@@ -3625,6 +3661,190 @@ def register_v2_routes(app, state, json_response):
             "configuration_revision": new_rev,
             "results": [r.to_dict() for r in results],
         })
+
+    # --- Эмулятор счётчиков (П12, R17, docs/design-emulator.md) -------------
+    # Виртуальные приборы в том же брокере. Состояние хранит EmulatorService
+    # (kv, без миграций), здесь — только разбор тела и перевод ошибок в HTTP.
+    # Точки учёта, привязанные к приборам эмулятора, обычные: эмулятор их не
+    # создаёт и не удаляет, архивирует только кнопка «Архивировать точки
+    # эмулятора» с подтверждением.
+
+    def _emu_body():
+        body = request.get_json(silent=True)
+        return body if isinstance(body, dict) else {}
+
+    def _emu_unavailable():
+        body, status = _err("service_unavailable",
+                            "эмулятор счётчиков не подключён", 503)
+        return json_response(body, status)
+
+    def _emu_failed(e):
+        code = {404: "not_found", 409: "conflict"}.get(e.status, "bad_request")
+        body, status = _err(code, str(e), e.status)
+        return json_response(body, status)
+
+    def _emulator_open_points(c):
+        """Активные точки с открытой привязкой к прибору эмулятора."""
+        rows = c.execute(
+            "SELECT DISTINCT b.point_id AS point_id FROM point_bindings b "
+            "JOIN meter_sources s ON s.id = b.meter_source_id "
+            "WHERE b.valid_to IS NULL AND s.device_id LIKE 'emu-%' "
+            "ORDER BY b.point_id").fetchall()
+        repo = _point_repo()
+        out = []
+        for r in rows:
+            p = repo.get_by_id(r["point_id"])
+            if p is not None and p.archived_at is None:
+                out.append({"point_id": p.id, "name": p.name or p.code})
+        return out
+
+    @app.route("/api/v2/emulator", methods=["GET"])
+    def v2_emulator_state():
+        emu = state.emulator
+        if emu is None:
+            # Чтение не падает: экран «Настроек» открывается и без эмулятора
+            # (тестовые стенды), а ответ 503 дал бы ошибку в консоли браузера.
+            # Изменения без эмулятора по-прежнему 503.
+            return json_response({
+                "available": False, "enabled": False, "enabled_at": None,
+                "device_count": 0, "devices": [],
+                "history": {"state": "pending", "checked_at": None, "message": ""},
+                "journal": [], "banner": "", "bound_points": [],
+                "limits": {"max_devices": emulator_mod.MAX_DEVICES,
+                           "max_kw": emulator_mod.MAX_KW}})
+        out = emu.snapshot()
+        out["available"] = True
+        with db.read() as c:
+            out["bound_points"] = _emulator_open_points(c)
+        return json_response(out)
+
+    @app.route("/api/v2/emulator/summary", methods=["GET"])
+    def v2_emulator_summary():
+        """Лёгкая сводка для баннера «Обзора»: только память, без БД."""
+        emu = state.emulator
+        if emu is None:
+            return json_response({"enabled": False, "device_count": 0,
+                                  "banner": "", "history_state": None,
+                                  "history_message": ""})
+        return json_response(emu.summary())
+
+    @app.route("/api/v2/emulator/enabled", methods=["POST"])
+    def v2_emulator_enabled():
+        emu = state.emulator
+        if emu is None:
+            return _emu_unavailable()
+        data = _emu_body()
+        if not isinstance(data.get("enabled"), bool):
+            body, status = _err("bad_request",
+                                "enabled: true или false", 400, fields=["enabled"])
+            return json_response(body, status)
+        emu.set_enabled(data["enabled"])
+        return json_response(emu.snapshot())
+
+    @app.route("/api/v2/emulator/devices", methods=["POST"])
+    def v2_emulator_device_add():
+        emu = state.emulator
+        if emu is None:
+            return _emu_unavailable()
+        try:
+            dev = emu.add_device(_emu_body())
+        except EmulatorError as e:
+            return _emu_failed(e)
+        item = [d for d in emu.snapshot()["devices"] if d["n"] == dev.n][0]
+        return json_response(item, 201)
+
+    @app.route("/api/v2/emulator/devices/preset", methods=["POST"])
+    def v2_emulator_preset():
+        emu = state.emulator
+        if emu is None:
+            return _emu_unavailable()
+        try:
+            made = emu.add_preset()
+        except EmulatorError as e:
+            return _emu_failed(e)
+        ids = {d.n for d in made}
+        return json_response(
+            [d for d in emu.snapshot()["devices"] if d["n"] in ids], 201)
+
+    @app.route("/api/v2/emulator/devices/<int:n>", methods=["PATCH", "DELETE"])
+    def v2_emulator_device(n):
+        emu = state.emulator
+        if emu is None:
+            return _emu_unavailable()
+        try:
+            if request.method == "DELETE":
+                emu.remove_device(n)
+                return json_response({"removed": n})
+            emu.update_device(n, _emu_body())
+        except EmulatorError as e:
+            return _emu_failed(e)
+        return json_response([d for d in emu.snapshot()["devices"] if d["n"] == n][0])
+
+    @app.route("/api/v2/emulator/devices/<int:n>/fault", methods=["POST"])
+    def v2_emulator_fault(n):
+        emu = state.emulator
+        if emu is None:
+            return _emu_unavailable()
+        data = _emu_body()
+        kind = data.get("kind")
+        amount = data.get("minutes") if kind == "loss" else data.get("hours")
+        try:
+            emu.apply_fault(n, kind, amount)
+        except EmulatorError as e:
+            return _emu_failed(e)
+        snap = emu.snapshot()
+        return json_response({
+            "device": [d for d in snap["devices"] if d["n"] == n][0],
+            "journal": snap["journal"][:10]})
+
+    @app.route("/api/v2/emulator/probe-history", methods=["POST"])
+    def v2_emulator_probe_history():
+        emu = state.emulator
+        if emu is None:
+            return _emu_unavailable()
+        try:
+            return json_response(emu.probe_history_now())
+        except EmulatorError as e:
+            return _emu_failed(e)
+
+    @app.route("/api/v2/emulator/archive-points", methods=["POST"])
+    def v2_emulator_archive_points():
+        """Архивировать точки, привязанные к приборам эмулятора (одна
+        ревизия на все). Без {"confirm": true} — отказ; нечего архивировать —
+        200 без новой ревизии. Архивация закрывает привязки и освобождает
+        линии, как обычная архивация точки (PATCH /api/v2/points/<id>)."""
+        data, _envelope = _unwrap_data(request.get_json(silent=True) or {})
+        if data.get("confirm") is not True:
+            body, status = _err(
+                "bad_request",
+                "требуется подтверждение: {\"confirm\": true} — точки "
+                "эмулятора уйдут в архив (история сохранится)",
+                400, fields=["confirm"])
+            return json_response(body, status)
+        with db.read() as c:
+            targets = _emulator_open_points(c)
+        if not targets:
+            return json_response({"archived": 0, "points": []})
+        ids = [t["point_id"] for t in targets]
+        repo = _point_repo()
+
+        def _archive_all():
+            for pid in ids:
+                repo.archive(pid)
+                _binding_repo().close_open_for_point(pid)
+                _edge_repo().clear_point_references(pid)
+
+        try:
+            _, new_rev = with_revision_check(
+                db, data.get("expected_revision"), _archive_all,
+                touched=[("metering_point", pid) for pid in ids])
+        except GlobalRevisionConflict as e:
+            return _revision_conflict(e, ids=ids)
+        except ValueError as e:
+            body, status = _err("bad_request", str(e), 400)
+            return json_response(body, status)
+        return json_response({"archived": len(ids), "points": targets,
+                              "configuration_revision": new_rev})
 
     # --- Разовый перенос легаси meters/meter_groups в v2 (Стадия F,
     # docs/migration-plan-v2.md §5 п.1-2) --------------------------------

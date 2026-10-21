@@ -17,6 +17,11 @@ from .model import ControlState, MeterRegistry, MeterState, MEASUREMENT_CHANNELS
 
 log = logging.getLogger(__name__)
 
+# П12: виртуальные приборы эмулятора (`emu-map3e-N`) принимаются всегда, помимо
+# `device_prefix` из конфига. Они появляются в брокере только пока эмулятор
+# включён, так что лишнего приём не даёт.
+EMULATOR_PREFIX = "emu-"
+
 TOPIC_RE = re.compile(r"^/devices/([^/]+)/(meta|controls)(?:/(.+))?$")
 
 # Порог «ненулевого» измерения:
@@ -142,7 +147,7 @@ class MqttService:
         m = TOPIC_RE.match(topic)
         if not m: return
         device_id, section, rest = m.group(1), m.group(2), m.group(3)
-        if not device_id.startswith(self._device_prefix):
+        if not device_id.startswith((self._device_prefix, EMULATOR_PREFIX)):
             return
         try:
             text = payload.decode("utf-8", errors="replace")

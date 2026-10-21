@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
+from .emulator import is_emulator_device
+
 
 PHASES = ("L1", "L2", "L3")
 
@@ -152,6 +154,7 @@ class MeterState:
                 main[ch] = c.as_float()
         return {
             "device_id": self.device_id,
+            "is_emulator": is_emulator_device(self.device_id),
             "display_name": self.effective_name,
             "mqtt_name": self.mqtt_name,
             "group": self.group,
@@ -188,6 +191,13 @@ class MeterRegistry:
     def get(self, device_id: str) -> Optional[MeterState]:
         with self._lock:
             return self._meters.get(device_id)
+
+    def forget(self, device_id: str) -> bool:
+        """Убрать прибор из памяти (П12: выключенный эмулятор не должен
+        оставаться в списках выбора). Привязки и данные в БД не трогает —
+        решать, забывать ли прибор, должен вызывающий (см. EmulatorService)."""
+        with self._lock:
+            return self._meters.pop(device_id, None) is not None
 
     def all(self) -> list[MeterState]:
         with self._lock:
