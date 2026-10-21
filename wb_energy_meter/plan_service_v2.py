@@ -111,6 +111,89 @@ def _decode_and_check_image(image_bytes: bytes):
     return img_fmt, img_w, img_h
 
 
+# Соотношение сторон считается «тем же», если отличается не больше чем на 1 %
+# (картинку масштабируют с округлением до целых пикселей).
+ASPECT_TOLERANCE = 0.01
+IMAGE_CHANGE_MODES = ("keep", "scale")
+
+
+class ReanchorRequired(PlanError):
+    """Соотношение сторон нового фона другое: пропорциональный пересчёт значков
+    невозможен, нужна ручная перепривязка (A30)."""
+
+
+def _check_mode(mode: str) -> None:
+    if mode not in IMAGE_CHANGE_MODES:
+        raise PlanError("mode должен быть keep или scale")
+
+
+def classify_image_change(old_w, old_h, new_w, new_h) -> dict:
+    """`same` — размеры те же; `scalable` — другое разрешение, то же
+    соотношение сторон (значки можно пересчитать пропорционально);
+    `reanchor` — обрезан/повёрнут/другой формат: нужна перепривязка."""
+    sx, sy = new_w / old_w, new_h / old_h
+    if new_w == old_w and new_h == old_h:
+        compat = "same"
+    elif abs(sx / sy - 1.0) <= ASPECT_TOLERANCE:
+        compat = "scalable"
+    else:
+        compat = "reanchor"
+    return {"compat": compat, "scale_x": round(sx, 6), "scale_y": round(sy, 6)}
+
+
+def _geometry_points(geom):
+    """Точки геометрии элемента: {x,y} или полигон [[x,y],...]."""
+    if isinstance(geom, dict):
+        return [(geom.get("x"), geom.get("y"))]
+    if isinstance(geom, (list, tuple)):
+        return [(p[0], p[1]) for p in geom if isinstance(p, (list, tuple)) and len(p) == 2]
+    return []
+
+
+def _geometry_inside(geom, width, height) -> bool:
+    for x, y in _geometry_points(geom):
+        if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+            return False
+        if not (0 <= x <= width and 0 <= y <= height):
+            return False
+    return True
+
+
+def _scale_value(v, k, limit):
+    return min(float(limit), max(0.0, round(float(v) * k, 2)))
+
+
+def _scale_geometry(geom, sx, sy, width, height):
+    if isinstance(geom, dict):
+        return {**geom, "x": _scale_value(geom["x"], sx, width),
+                "y": _scale_value(geom["y"], sy, height)}
+    return [[_scale_value(p[0], sx, width), _scale_value(p[1], sy, height)] for p in geom]
+
+
+def _scale_plan_content(c, plan_id, sx, sy, width, height):
+    """Пересчёт положений значков и изломов трасс плана (в транзакции замены
+    фона). Возвращает (сколько значков, сколько трасс изменено)."""
+    items = 0
+    for r in c.execute("SELECT id, geometry FROM plan_items WHERE plan_id = ?",
+                       (plan_id,)).fetchall():
+        g = _scale_geometry(json.loads(r["geometry"]), sx, sy, width, height)
+        c.execute("UPDATE plan_items SET geometry = ? WHERE id = ?",
+                  (json.dumps(g), r["id"]))
+        items += 1
+    views = 0
+    for r in c.execute("SELECT id, waypoints FROM plan_edge_views "
+                       "WHERE plan_id = ? AND waypoints IS NOT NULL",
+                       (plan_id,)).fetchall():
+        pts = json.loads(r["waypoints"])
+        if not pts:
+            continue
+        c.execute("UPDATE plan_edge_views SET waypoints = ? WHERE id = ?",
+                  (json.dumps([[_scale_value(p[0], sx, width),
+                                _scale_value(p[1], sy, height)] for p in pts]), r["id"]))
+        views += 1
+    return items, views
+
+
 # ---------------------------------------------------------------------
 # site_plans (v2)
 # ---------------------------------------------------------------------
@@ -286,21 +369,78 @@ class SitePlanRepoV2:
                  plan_id, validated_name, is_default)
         return self.get_by_id(plan_id)
 
-    def replace_image(self, plan_id: int, image_bytes: bytes) -> PlanV2:
+    # --- Фон плана: предпросмотр, замена, версии, возврат (A30) -------------
+
+    def _plan_dims(self, plan: PlanV2):
+        """Размеры, в которых стоят значки: картинка, а без неё — холст."""
+        if plan.image_file:
+            return plan.image_width, plan.image_height
+        return plan.canvas_width, plan.canvas_height
+
+    def preview_image(self, plan_id: int, image_bytes: bytes) -> dict:
+        """Разбор новой картинки БЕЗ записи: во что превратится план.
+        Ответ: `compat` (`same` | `scalable` | `reanchor`), коэффициенты,
+        сколько значков окажется за краем картинки, если оставить их на
+        месте (`mode=keep`), и сколько останется внутри при масштабе."""
+        plan = self.get_by_id(plan_id)
+        if plan is None:
+            raise PlanError(f"План id={plan_id} не найден")
+        _fmt, new_w, new_h = _decode_and_check_image(image_bytes)
+        return self._describe_change(plan, new_w, new_h)
+
+    def _describe_change(self, plan: PlanV2, new_w: int, new_h: int) -> dict:
+        old_w, old_h = self._plan_dims(plan)
+        info = classify_image_change(old_w, old_h, new_w, new_h)
+        geoms = []
+        with self._db.read() as c:
+            for r in c.execute("SELECT geometry FROM plan_items WHERE plan_id = ?",
+                               (plan.id,)).fetchall():
+                geoms.append(json.loads(r["geometry"]))
+        outside = sum(1 for g in geoms if not _geometry_inside(g, new_w, new_h))
+        info.update({
+            "old": {"width": old_w, "height": old_h},
+            "new": {"width": new_w, "height": new_h},
+            "items_total": len(geoms),
+            # если значки оставить на прежних пикселях (mode=keep)
+            "items_outside_if_kept": outside,
+        })
+        return info
+
+    def replace_image(self, plan_id: int, image_bytes: bytes,
+                      mode: str = "keep") -> PlanV2:
         """Новый фон версионируется, старый файл НЕ удаляется (§7.2:
-        откат должен быть возможен). Геометрия существующих plan_items
-        не пересчитывается — по ТЗ при обрезке/повороте фона нужна
-        ручная перепривязка, автоматика здесь не обещается."""
+        откат возможен). `mode`:
+        - `keep` (по умолчанию) — значки остаются на прежних пикселях; так
+          делается, когда фон обрезан/повёрнут и значки нужно перепривязать
+          вручную (A30), автоматика здесь не обещается;
+        - `scale` — только при том же соотношении сторон (`compat` =
+          `scalable`): положения значков и изломов трасс пересчитываются
+          пропорционально, значки остаются на тех же местах рисунка."""
         plan = self.get_by_id(plan_id)
         if plan is None:
             raise PlanError(f"План id={plan_id} не найден")
         img_fmt, img_w, img_h = _decode_and_check_image(image_bytes)
+        _check_mode(mode)
+        if mode == "scale":
+            info = self._describe_change(plan, img_w, img_h)
+            if info["compat"] == "reanchor":
+                raise ReanchorRequired(
+                    "соотношение сторон новой картинки другое: пропорционально "
+                    "пересчитать значки нельзя — оставьте их на месте и "
+                    "перепривязайте вручную (mode=keep)")
 
         now = int(time.time())
         ext = "png" if img_fmt == "png" else "jpg"
-        versioned_name = f"plan_{int(plan_id)}_v{now}.{ext}"
         os.makedirs(self._dir, exist_ok=True)
-        path = os.path.join(self._dir, versioned_name)
+        # Имя уникально и внутри одной секунды: две замены подряд не должны
+        # затирать файл предыдущей версии (иначе её нельзя вернуть).
+        n = 0
+        while True:
+            versioned_name = f"plan_{int(plan_id)}_v{now}{'' if n == 0 else '_' + str(n)}.{ext}"
+            path = os.path.join(self._dir, versioned_name)
+            if not os.path.exists(path):
+                break
+            n += 1
         tmp_path = f"{path}.tmp.{os.getpid()}"
         with open(tmp_path, "wb") as f:
             f.write(image_bytes)
@@ -309,27 +449,122 @@ class SitePlanRepoV2:
         os.replace(tmp_path, path)
 
         with self._db.transaction() as c:
+            old_w, old_h = self._plan_dims(plan)
+            scaled = 0
+            if mode == "scale":
+                scaled = _scale_plan_content(c, plan_id, img_w / old_w, img_h / old_h,
+                                             img_w, img_h)
             c.execute(
                 "UPDATE site_plans SET image_file = ?, image_width = ?, "
-                "image_height = ?, updated_at = ? WHERE id = ?",
+                "image_height = ?, canvas_revision = canvas_revision + 1, "
+                "updated_at = ? WHERE id = ?",
                 (versioned_name, img_w, img_h, now, plan_id))
             c.execute(
                 "INSERT INTO plan_image_versions "
                 "(plan_id, image_file, image_width, image_height, file_hash, created_at) "
                 "VALUES (?, ?, ?, ?, NULL, ?)",
                 (plan_id, versioned_name, img_w, img_h, now))
-        log.info("Заменён фон плана id=%d -> %s", plan_id, versioned_name)
+            if scaled and (scaled[0] or scaled[1]):
+                change_journal.record(
+                    c, "plan_layout", plan_id, "update",
+                    new={"items": {"added": 0, "updated": scaled[0], "removed": 0},
+                         "edge_views": {"added": 0, "updated": scaled[1], "removed": 0},
+                         "image_scale": [round(img_w / old_w, 6), round(img_h / old_h, 6)]})
+        log.info("Заменён фон плана id=%d -> %s (mode=%s)", plan_id, versioned_name, mode)
+        return self.get_by_id(plan_id)
+
+    def list_image_versions(self, plan_id: int) -> List[dict]:
+        """Версии фона, от новых к старым. `is_current` — какая сейчас на плане;
+        у остальных — как изменится план при возврате (`compat`, коэффициенты,
+        `items_outside_if_kept`), чтобы показать это до подтверждения."""
+        plan = self.get_by_id(plan_id)
+        if plan is None:
+            raise PlanError(f"План id={plan_id} не найден")
+        with self._db.read() as c:
+            rows = c.execute(
+                "SELECT id, image_file, image_width, image_height, created_at "
+                "FROM plan_image_versions WHERE plan_id = ? "
+                "ORDER BY id DESC", (plan_id,)).fetchall()
+        out = []
+        for r in rows:
+            cur = r["image_file"] == plan.image_file
+            item = {"id": r["id"], "image_width": r["image_width"],
+                    "image_height": r["image_height"],
+                    "created_at": r["created_at"], "is_current": cur}
+            if not cur:
+                item.update(self._describe_change(plan, r["image_width"], r["image_height"]))
+            out.append(item)
+        return out
+
+    def image_version_file(self, plan_id: int, version_id: int) -> Optional[str]:
+        with self._db.read() as c:
+            row = c.execute(
+                "SELECT image_file FROM plan_image_versions WHERE id = ? AND plan_id = ?",
+                (version_id, plan_id)).fetchone()
+        return row["image_file"] if row else None
+
+    def restore_image(self, plan_id: int, version_id: int,
+                      mode: str = "keep") -> PlanV2:
+        """Вернуть прежний фон. Новая версия не создаётся — текущей становится
+        выбранная. Значки обрабатываются по тем же правилам, что при замене
+        (`keep` — не двигать, `scale` — пропорционально при том же соотношении
+        сторон): если фон возвращают после обрезки, значки, перепривязанные
+        под обрезанный вариант, придётся перепривязать снова."""
+        plan = self.get_by_id(plan_id)
+        if plan is None:
+            raise PlanError(f"План id={plan_id} не найден")
+        _check_mode(mode)
+        with self._db.read() as c:
+            row = c.execute(
+                "SELECT image_file, image_width, image_height FROM plan_image_versions "
+                "WHERE id = ? AND plan_id = ?", (version_id, plan_id)).fetchone()
+        if row is None:
+            raise PlanError(f"Версия фона {version_id} не найдена у плана {plan_id}")
+        new_w, new_h = row["image_width"], row["image_height"]
+        if mode == "scale":
+            info = self._describe_change(plan, new_w, new_h)
+            if info["compat"] == "reanchor":
+                raise ReanchorRequired(
+                    "соотношение сторон прежнего фона другое: пропорционально "
+                    "пересчитать значки нельзя — верните фон с mode=keep и "
+                    "перепривязайте значки вручную")
+        now = int(time.time())
+        with self._db.transaction() as c:
+            old_w, old_h = self._plan_dims(plan)
+            scaled = 0
+            if mode == "scale":
+                scaled = _scale_plan_content(c, plan_id, new_w / old_w, new_h / old_h,
+                                             new_w, new_h)
+            c.execute(
+                "UPDATE site_plans SET image_file = ?, image_width = ?, "
+                "image_height = ?, canvas_revision = canvas_revision + 1, "
+                "updated_at = ? WHERE id = ?",
+                (row["image_file"], new_w, new_h, now, plan_id))
+            if scaled and (scaled[0] or scaled[1]):
+                change_journal.record(
+                    c, "plan_layout", plan_id, "update",
+                    new={"items": {"added": 0, "updated": scaled[0], "removed": 0},
+                         "edge_views": {"added": 0, "updated": scaled[1], "removed": 0},
+                         "image_scale": [round(new_w / old_w, 6), round(new_h / old_h, 6)]})
+        log.info("Возвращён фон плана id=%d: версия %d (mode=%s)", plan_id, version_id, mode)
         return self.get_by_id(plan_id)
 
     def delete(self, plan_id: int) -> bool:
         plan = self.get_by_id(plan_id)
         if plan is None:
             return False
+        with self._db.read() as c:
+            files = {r["image_file"] for r in c.execute(
+                "SELECT image_file FROM plan_image_versions WHERE plan_id = ?",
+                (plan_id,)).fetchall()}
+        if plan.image_file:
+            files.add(plan.image_file)
         with self._db.transaction() as c:
             cur = c.execute("DELETE FROM site_plans WHERE id = ?", (plan_id,))
             removed = cur.rowcount > 0
-        if removed and plan.image_file:
-            delete_plan_image(self._dir, plan.image_file)
+        if removed:
+            for name in files:
+                delete_plan_image(self._dir, name)
         return removed
 
 

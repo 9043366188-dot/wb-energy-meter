@@ -525,28 +525,7 @@ function _planV3FreeSpot(o){
           finally{ this.planV3Saving=false; }
         },
 
-      // 0.22.4: заменить подложку плана с картинкой. Старый файл сервер хранит
-      // (версии, §7.2); значки не пересчитываются — остаются на тех же
-      // пикселях картинки, об этом говорит сообщение.
-      async planV3ReplaceBackground(ev){
-          const input=ev && ev.target;
-          const f=(input && input.files && input.files[0]) || null;
-          const pc=this.planV3Current;
-          if(!f || !pc || pc.plan_kind!=='floor'){ if(input) input.value=''; return; }
-          this.planV3BgBusy=true;
-          try{
-            const fit=await _planV3FitImage(f);
-            if(fit.error){ this.showToast(fit.error, false); return; }
-            const fd=new FormData();
-            fd.append('file', fit.blob, fit.name);
-            const r=await fetch('/api/v2/plans/'+pc.id+'/image', {method:'POST', body:fd});
-            const d=await r.json();
-            if(!r.ok){ this.showToast(this._apiErrorMessage(d, r.status), false); return; }
-            await this.selectPlanV3(pc.id);
-            this.showToast('Подложка заменена. Значки остались на прежних местах картинки — проверьте, что они стоят где нужно.'+_planV3ResizedNote(fit), true);
-          }catch(e){ this.showToast('Ошибка сети: '+e, false); }
-          finally{ this.planV3BgBusy=false; if(input) input.value=''; }
-        },
+      // Замена подложки (предпросмотр, версии, возврат) — plan-background.js (партия 14, A30).
 
       async selectPlanV3(id){
           if(!id) return;

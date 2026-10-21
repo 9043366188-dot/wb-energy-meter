@@ -235,6 +235,22 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 .confirm-box h3{font-size:16px;font-weight:700;margin-bottom:10px}
 .confirm-box p{color:var(--txt2);font-size:14px;margin-bottom:20px}
 .confirm-box .actions{display:flex;gap:10px;justify-content:flex-end}
+.pbg-box{max-width:560px}
+.pbg-prev{position:relative;width:100%;max-height:300px;margin:0 auto 12px;background:var(--bg3);
+  border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.pbg-prev img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;display:block}
+.pbg-dot{position:absolute;width:10px;height:10px;margin:-5px 0 0 -5px;border-radius:50%;
+  background:var(--accent2);border:2px solid var(--bg2);box-shadow:0 0 0 1px var(--txt2)}
+.pbg-dot-out{background:var(--err)}
+.pbg-note{margin-bottom:12px !important}
+.pbg-modes{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;font-size:14px}
+.pbg-modes label{display:flex;gap:8px;align-items:flex-start;cursor:pointer}
+.pbg-warn{color:var(--err) !important;margin-bottom:12px !important}
+.pbg-list{list-style:none;padding:0;margin:0 0 16px;max-height:50vh;overflow:auto}
+.pbg-list li{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
+.pbg-list img{width:64px;height:44px;object-fit:contain;background:var(--bg);border:1px solid var(--line);border-radius:4px}
+.pbg-vtitle{flex:1;font-size:13px}
+.pbg-cur{font-size:12px;color:var(--ok);font-weight:600}
 /* toast */
 .toast{position:fixed;bottom:24px;right:24px;z-index:200;
   padding:12px 20px;border-radius:8px;font-size:14px;font-weight:500;
@@ -2849,8 +2865,12 @@ path.sl-line-bad{stroke-dasharray:2,5}
                  :class="{'disabled': planV3BgBusy}">
             <span x-text="planV3BgBusy ? 'Загрузка…' : 'Заменить подложку…'"></span>
             <input type="file" accept="image/png,image/jpeg" style="display:none"
-                   :disabled="planV3BgBusy" @change="planV3ReplaceBackground($event)">
+                   :disabled="planV3BgBusy" @change="pbgPick($event)">
           </label>
+        </template>
+        <template x-if="planV3Current && planV3Current.plan_kind==='floor'">
+          <button class="btn btn-sm btn-secondary" data-testid="planv3-bg-versions"
+                  :disabled="planV3BgBusy" @click="pbgOpenVersions()">Версии подложки…</button>
         </template>
         <div class="spacer"></div>
         <button class="btn btn-sm" :class="{'btn-primary': planV3Tool=='node'}" @click="planV3SetTool('node')">+ Элемент схемы</button>
@@ -5355,6 +5375,62 @@ path.sl-line-bad{stroke-dasharray:2,5}
     </div>
   </template>
 
+  <!-- ЗАМЕНА ПОДЛОЖКИ ПЛАНА (партия 14, A30): предпросмотр и версии -->
+  <template x-if="pbgDialog==='preview' && pbgPreview">
+    <div class="confirm-overlay" data-testid="pbg-dialog" role="dialog" aria-labelledby="pbg-title">
+      <div class="confirm-box pbg-box">
+        <h3 id="pbg-title" x-text="pbgPreview.kind==='new' ? 'Заменить подложку' : 'Вернуть прежнюю подложку'"></h3>
+        <div class="pbg-prev" data-testid="pbg-preview"
+             :style="'aspect-ratio:'+pbgPreview.info.new.width+' / '+pbgPreview.info.new.height">
+          <img :src="pbgPreview.url" alt="Предпросмотр подложки">
+          <template x-for="d in pbgDots()" :key="d.id">
+            <span class="pbg-dot" :class="{'pbg-dot-out': d.out}" data-testid="pbg-dot"
+                  :style="'left:'+d.left+'%;top:'+d.top+'%'"></span>
+          </template>
+        </div>
+        <p class="pbg-note" data-testid="pbg-note" x-text="pbgNote()"></p>
+        <template x-if="pbgPreview.info.compat==='scalable'">
+          <div class="pbg-modes" role="radiogroup" aria-label="Что сделать со значками">
+            <label><input type="radio" name="pbg-mode" value="scale" x-model="pbgMode" data-testid="pbg-mode-scale">
+              Пересчитать значки (останутся на тех же местах рисунка)</label>
+            <label><input type="radio" name="pbg-mode" value="keep" x-model="pbgMode" data-testid="pbg-mode-keep">
+              Оставить значки на прежних пикселях</label>
+          </div>
+        </template>
+        <p class="pbg-warn" data-testid="pbg-outside" x-show="pbgOutsideCount()>0"
+           x-text="'Значков за краем картинки: '+pbgOutsideCount()+' (на предпросмотре они красные у края).'"></p>
+        <div class="actions">
+          <button class="btn btn-secondary" data-testid="pbg-cancel" :disabled="pbgBusy" @click="pbgClose()">Отмена</button>
+          <button class="btn btn-primary" data-testid="pbg-apply" :disabled="pbgBusy" @click="pbgApply()"
+                  x-text="pbgBusy ? 'Подождите…' : (pbgPreview.kind==='new' ? 'Заменить подложку' : 'Вернуть эту подложку')"></button>
+        </div>
+      </div>
+    </div>
+  </template>
+  <template x-if="pbgDialog==='versions'">
+    <div class="confirm-overlay" data-testid="pbg-versions" role="dialog" aria-labelledby="pbg-versions-title">
+      <div class="confirm-box pbg-box">
+        <h3 id="pbg-versions-title">Версии подложки</h3>
+        <p>Прежние подложки сохраняются при каждой замене. Вернуть можно любую; что произойдёт со значками,
+           покажет окно предпросмотра.</p>
+        <ul class="pbg-list">
+          <template x-for="v in pbgVersions" :key="v.id">
+            <li :data-testid="'pbg-version-'+v.id">
+              <img :src="pbgVersionUrl(v)" alt="" loading="lazy">
+              <span class="pbg-vtitle" x-text="pbgVersionTitle(v)"></span>
+              <span class="pbg-cur" x-show="v.is_current">сейчас</span>
+              <button class="btn btn-sm btn-secondary" x-show="!v.is_current" data-testid="pbg-restore"
+                      @click="pbgPickVersion(v)">Вернуть…</button>
+            </li>
+          </template>
+        </ul>
+        <div class="actions">
+          <button class="btn btn-secondary" data-testid="pbg-versions-close" @click="pbgClose()">Закрыть</button>
+        </div>
+      </div>
+    </div>
+  </template>
+
   <!-- REVISION CONFLICT SCHEME (партия 14, 14.2): сохранение раскладки схемы вернуло 409 -->
   <template x-if="slConflictOpen">
     <div class="confirm-overlay" data-testid="sl-conflict" role="alertdialog" aria-labelledby="sl-conflict-title">
@@ -5469,6 +5545,7 @@ path.sl-line-bad{stroke-dasharray:2,5}
 <script src="/static/js/plan-v2.js"></script>
 <script src="/static/js/scheme-layout.js"></script>
 <script src="/static/js/single-line.js"></script>
+<script src="/static/js/plan-background.js"></script>
 <script src="/static/vendor/alpine.min.js" defer></script>
 <script>
 function app(){
