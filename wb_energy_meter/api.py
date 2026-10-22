@@ -24,6 +24,7 @@ from .repo import GroupNameConflict
 from .wb_db_client import RpcError
 
 from . import image_meta as _image_meta_module
+from . import legacy_guard as _legacy_guard
 from . import plan_geo as _plan_geo_module
 from . import plan_repo as _plan_repo_module
 from . import wb_serial_config as _wb_serial_module
@@ -419,6 +420,17 @@ def create_app(state):
         resp.headers["Cache-Control"] = "no-store"
         resp.headers["Access-Control-Allow-Origin"] = "*"
         return resp
+
+    @app.before_request
+    def _legacy_registry_write_guard():
+        """15.2 (партия 15): после поколения домена 2 запись через старый реестр
+        (`/api/registry/*`) закрыта — 409 `moved_to_v2`, обработчик не вызывается, БД не меняется.
+        Чтение не затрагивается; до поколения 2 поведение прежнее (legacy_guard.py)."""
+        if (_legacy_guard.is_legacy_write(request.method, request.path)
+                and _legacy_guard.writes_closed(state.db)):
+            return json_response(
+                _legacy_guard.route_response_body(request.method, request.path), 409)
+        return None
 
     # ---- read-only ----
 

@@ -285,16 +285,29 @@ def test_rows_per_operation():
         assert sorted(j.shape(rows)) == sorted([
             ("balance_member", 1, "close"), ("balance_member", 2, "create")]), rows
 
-        # старый интерфейс групп (мимо протокола ревизий): запись есть,
-        # ревизии нет, происхождение — legacy-api
+        # старый интерфейс групп после поколения домена 2 закрыт (15.2): 409 `moved_to_v2`,
+        # обработчик не вызван — в журнал ничего не попадает
         r = client.post("/api/registry/groups", json={"name": "Старая"})
-        assert r.status_code in (200, 201), (r.status_code, r.get_json())
-        rows = j.new()
-        assert [(x["entity_type"], x["action"]) for x in rows] == \
-            [("group", "create")], rows
-        assert rows[0]["revision_id"] is None
-        assert rows[0]["origin"] == "legacy-api"
-        assert rows[0]["operation"] == "POST /api/registry/groups"
+        assert r.status_code == 409 and r.get_json()["code"] == "moved_to_v2", \
+            (r.status_code, r.get_json())
+        assert j.new() == [], "закрытая запись не должна оставлять строк журнала"
+
+        # а на свежей БД (поколение 0) старый интерфейс групп пишет мимо протокола ревизий:
+        # запись есть, ревизии нет, происхождение — legacy-api
+        client0, db0, path0, _plans0 = make_client()
+        try:
+            j0 = Journal(client0)
+            j0.new()
+            r = client0.post("/api/registry/groups", json={"name": "Старая"})
+            assert r.status_code in (200, 201), (r.status_code, r.get_json())
+            rows = j0.new()
+            assert [(x["entity_type"], x["action"]) for x in rows] == \
+                [("group", "create")], rows
+            assert rows[0]["revision_id"] is None
+            assert rows[0]["origin"] == "legacy-api"
+            assert rows[0]["operation"] == "POST /api/registry/groups"
+        finally:
+            db0.close(); os.unlink(path0)
 
         # чтение не пишет в журнал
         for url in ("/api/v2/points", "/api/v2/topology/nodes",

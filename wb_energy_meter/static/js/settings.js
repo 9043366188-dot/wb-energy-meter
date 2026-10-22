@@ -330,8 +330,10 @@ const UPD_ACTIVE_STATES=['starting','downloading','installing','verifying','roll
               {method:'PATCH',headers:{'Content-Type':'application/json'},
                body:JSON.stringify(body)});
             if(r.status===409){
-              // Зона с таким именем уже есть — предлагаем объединить (A3/A5)
               const e=await r.json();
+              // 15.2: запись в старый реестр закрыта (поколение домена 2) — это не конфликт имени
+              if(e.code==='moved_to_v2'){ this.showToast(e.error||'Запись через старый реестр закрыта',false); return; }
+              // Зона с таким именем уже есть — предлагаем объединить (A3/A5)
               this.mergeConfirm={groupId:id, name, existingId:e.existing_id};
               return;
             }
