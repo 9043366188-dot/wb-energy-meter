@@ -209,6 +209,27 @@ def test_api_day_strings_give_23_24_25_hours():
 def test_change_log_date_filter_uses_timezone_param():
     client, db, path, _registry = make_client()
     try:
+        # две записи журнала: 21.10 22:00Z (= 22.10 01:00 по Москве) и 22.10 10:00Z. Ожидания посчитаны вручную:
+        #   from=2026-10-22 в Москве = 21.10 21:00Z → обе записи; то же в UTC = 22.10 00:00Z → только вторая;
+        #   to=2026-10-22 в Москве = 21.10 21:00Z → ни одной (первая позже границы).
+        t_early = int(datetime(2026, 10, 21, 22, 0, tzinfo=timezone.utc).timestamp())
+        t_late = int(datetime(2026, 10, 22, 10, 0, tzinfo=timezone.utc).timestamp())
+        with db.transaction() as conn:
+            for n, t in enumerate((t_early, t_late), 1):
+                conn.execute(
+                    "INSERT INTO change_log (entity_type, entity_id, action, effective_from, recorded_at) "
+                    "VALUES ('metering_point', ?, 'update', ?, ?)", (n, t, t))
+
+        def ids(query):
+            r_ = client.get("/api/v2/change-log?" + query)
+            assert r_.status_code == 200, r_.get_json()
+            return sorted(i["entity_id"] for i in r_.get_json()["items"] if i["entity_type"] == "metering_point")
+
+        assert ids("from=2026-10-22&timezone=Europe/Moscow") == [1, 2], "в Москве 22.10 начинается раньше первой записи"
+        assert ids("from=2026-10-22") == [2], "без timezone — UTC: первая запись раньше 22.10 00:00Z"
+        assert ids("from=2026-10-22&timezone=UTC") == [2]
+        assert ids("to=2026-10-22&timezone=Europe/Moscow") == [], "граница to в Москве — 21.10 21:00Z, обе записи позже"
+        assert ids("to=2026-10-22&timezone=UTC") == [1], "в UTC граница to — 22.10 00:00Z: первая запись раньше"
         r = client.get("/api/v2/change-log?from=2026-10-22&to=2026-10-23&timezone=Europe/Moscow")
         assert r.status_code == 200, r.get_json()
         r = client.get("/api/v2/change-log?from=2026-10-22&timezone=Mars/Olympus")

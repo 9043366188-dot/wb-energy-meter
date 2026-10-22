@@ -211,6 +211,22 @@ def main() -> int:
         check("null" not in whole and "NaN" not in whole and "undefined" not in whole,
               "CSV: в файле нет слов null / NaN / undefined")
 
+        # попутно A22: режим состава назван на экране явно — и «как было», и «текущий»
+        label_now = page.evaluate("document.body.innerText").lower()
+        check("режим состава: как было на начало периода" in label_now,
+              "отчёт: подпись «режим состава: как было на начало периода» (режим по умолчанию)")
+        js(page, "%s.rv2CompositionMode='current'" % APP)
+        page.wait_for_timeout(200)
+        with page.expect_response(lambda r: r.url.endswith("/api/v2/reports/query")) as resp2:
+            page.locator("button.btn-primary", has_text="Показать").click()
+        check(resp2.value.status == 200 and resp2.value.request.post_data_json.get("composition_mode") == "current",
+              "отчёт в режиме «текущий»: запрос несёт composition_mode=current, ответ 200")
+        page.wait_for_selector("table.rep-table tbody tr", timeout=8000)
+        page.wait_for_timeout(300)
+        label_cur = page.evaluate("document.body.innerText").lower()
+        check("режим состава: текущий" in label_cur,
+              "отчёт: на экране подпись «режим состава: текущий» (A22)")
+
         errs = [e for e in bp.errors if "Failed to load resource" not in e]
         check(not errs, f"консоль без ошибок приложения ({errs[:3]})")
         bp.close()
