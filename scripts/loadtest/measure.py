@@ -32,6 +32,7 @@ docs/TZ-batch10-reliability-and-load.md §6).
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import math
 import os
@@ -187,6 +188,22 @@ def main():
         proc.terminate()
         return 3
 
+    # Вывод сервиса (журнал запросов werkzeug) идёт в трубу stdout=PIPE. Дальше строки
+    # READY её никто не читал: на ~64 КиБ журнала (≈ 900 запросов) сервер вставал на записи
+    # в stderr, и 30-минутный прогон (≈ 670 запросов клиентов плюс пробы) на последних
+    # минутах зависал (партия 15, A40). Поэтому вычитываем трубу до конца в фоне;
+    # последние строки храним для сообщения об ошибке.
+    server_tail = collections.deque(maxlen=50)
+
+    def _drain_server_output():
+        try:
+            for _line in proc.stdout:
+                server_tail.append(_line.rstrip())
+        except (ValueError, OSError):
+            pass
+
+    threading.Thread(target=_drain_server_output, daemon=True).start()
+
     # Дать werkzeug реально забиндиться на порт (READY печатается ДО run_simple).
     for _ in range(50):
         try:
@@ -317,8 +334,13 @@ def main():
     # /api/status отдельно, чистым замером (без конкуренции с циклами) -- 5 подряд.
     status_times = []
     for _ in range(5):
-        _s, _b, dt = call_status()
-        status_times.append(dt)
+        try:
+            _s, _b, dt = call_status()
+            status_times.append(dt)
+        except Exception as e:  # noqa: BLE001 -- 30 минут замера не должны пропасть из-за последней пробы
+            print(f"  ВНИМАНИЕ: контрольный /api/status не ответил: {e.__class__.__name__}", file=sys.stderr)
+            print("  Последние строки вывода сервиса:", *server_tail, sep="\n    ", file=sys.stderr)
+            break
 
     proc.terminate()
     try:
@@ -339,8 +361,8 @@ def main():
         "db_size_before_bytes": db_size_before, "db_size_after_bytes": db_size_after,
         "handlers": {name: s.summary() for name, s in stats.items()},
         "api_status_direct_ms": {
-            "p50": round(percentile(status_times, 0.5) * 1000, 2),
-            "p95": round(percentile(status_times, 0.95) * 1000, 2),
+            "p50": round(percentile(status_times, 0.5) * 1000, 2) if status_times else None,
+            "p95": round(percentile(status_times, 0.95) * 1000, 2) if status_times else None,
         },
         "n_plus_1": {
             "overview_summary_queries": n_queries_overview,
