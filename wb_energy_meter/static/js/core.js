@@ -342,8 +342,9 @@ function fmtHour(ts){
           this.feedNow=Date.now();
           this._pollN=(this._pollN||0)+1;
           if(this.tab=='dash') this.loadStatus(true);
-          // Шапка нового набора (MQTT, версия) обновляется реже — раз в 30 с.
-          else if(this.uiSet=='v2' && this._pollN%6===0) this.loadStatus(true);
+          // Шапка нового набора (MQTT, версия) обновляется реже — раз в 30 с. Партия 15, П13:
+          // на «Обзоре» раздел «Приборы» живёт на том же /api/status — каждый тик.
+          else if(this.uiSet=='v2' && (this.tab=='overviewv2' || this._pollN%6===0)) this.loadStatus(true);
           // План (ТЗ v0.11.0): та же частота 5с, что и дашборд. Обновляем
           // только стили/попапы (_planApplyLiveStyles), слои не пересоздаём —
           // иначе открытый попап зоны закрывался бы на каждый тик.

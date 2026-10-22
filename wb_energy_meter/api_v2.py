@@ -2315,6 +2315,9 @@ def register_v2_routes(app, state, json_response):
             "enabled": bool(point.enabled),
             "binding_status": "unbound",
             "is_emulator": False,
+            # П13 (партия 15): какой прибор стоит за точкой — «Обзор», раздел «Приборы»,
+            # по нему подписывает карточку прибора («Точка учёта: «…»»). Только добавление.
+            "device_id": None,
             "channel_profile": None,
             "device_status": None,
             "device_status_reason": None,
@@ -2340,6 +2343,7 @@ def register_v2_routes(app, state, json_response):
             return result
 
         result["is_emulator"] = is_emulator_device(source.device_id)
+        result["device_id"] = source.device_id
         meter = registry.get(source.device_id)
         if meter is None:
             # ТЗ A38: устройство зарегистрировано в БД как источник, но
