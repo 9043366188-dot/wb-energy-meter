@@ -122,6 +122,20 @@ function fmtHour(ts){
 
       version:'',
 
+      // Партия 15, П14: версия службы, с которой загружена страница (<meta name="wbem-build">, её
+      // подставляет сервер при отдаче «/»). Пусто — страница отдана не сервером: сравнивать не с чем.
+      pageVersion:(function(){
+          const m=document.querySelector('meta[name="wbem-build"]');
+          return (m&&m.getAttribute('content'))||'';
+        })(),
+
+      // Служба успела обновиться, пока вкладка была открыта: /api/status вернул другую версию.
+      get pageStale(){
+          return !!this.pageVersion && !!this.version && this.version!==this.pageVersion;
+        },
+
+      reloadPage(){ location.reload(); },
+
       uptime:0,
 
       toast:null,
@@ -342,8 +356,10 @@ function fmtHour(ts){
           this.feedNow=Date.now();
           this._pollN=(this._pollN||0)+1;
           if(this.tab=='dash') this.loadStatus(true);
-          // Шапка нового набора (MQTT, версия) обновляется реже — раз в 30 с.
-          else if(this.uiSet=='v2' && this._pollN%6===0) this.loadStatus(true);
+          // Остальные вкладки обоих наборов берут /api/status реже — раз в 30 с (шапка: MQTT, версия;
+          // П14: по версии страница узнаёт, что служба обновилась). Партия 15, П13: на «Обзоре» раздел
+          // «Приборы» живёт на том же /api/status — каждый тик.
+          else if(this.tab=='overviewv2' || this._pollN%6===0) this.loadStatus(true);
           // План (ТЗ v0.11.0): та же частота 5с, что и дашборд. Обновляем
           // только стили/попапы (_planApplyLiveStyles), слои не пересоздаём —
           // иначе открытый попап зоны закрывался бы на каждый тик.

@@ -128,7 +128,7 @@ def main() -> int:
         def total_api():
             return page.evaluate(
                 "fetch('/api/v2/overview/summary', {method:'POST', headers:{'Content-Type':'application/json'}, "
-                f"body: JSON.stringify({{from:'{ov_from}', to:'{ov_to}', timezone:'UTC'}})}}).then(r=>r.json())"
+                f"body: JSON.stringify({{from:'{ov_from}', to:'{ov_to}', timezone:Intl.DateTimeFormat().resolvedOptions().timeZone}})}}).then(r=>r.json())"
             ).get("object_total", {}).get("value")
 
         check(total_api() is not None and abs(total_api() - 120.0) < 1e-6,

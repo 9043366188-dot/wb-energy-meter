@@ -149,6 +149,14 @@ class MqttService:
         device_id, section, rest = m.group(1), m.group(2), m.group(3)
         if not device_id.startswith((self._device_prefix, EMULATOR_PREFIX)):
             return
+        if not payload and self._registry.get(device_id) is None:
+            # Пустое сообщение — стирание retained-топика (так выключается
+            # эмулятор), а не данные: прибор оно не создаёт. Иначе стирающие
+            # сообщения, дошедшие до подписчика уже после `registry.forget`
+            # (под нагрузкой), возвращали в реестр «призрак» выключенного прибора.
+            # Для уже известного прибора пустое значение обрабатывается как раньше
+            # (например, снятие `meta/error`).
+            return
         try:
             text = payload.decode("utf-8", errors="replace")
         except Exception:

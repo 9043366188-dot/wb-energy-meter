@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
+from html import escape as _html_escape
+from urllib.parse import quote as _url_quote
 
 from flask import Flask, Response, request
 
@@ -21,6 +24,7 @@ from .repo import GroupNameConflict
 from .wb_db_client import RpcError
 
 from . import image_meta as _image_meta_module
+from . import legacy_guard as _legacy_guard
 from . import plan_geo as _plan_geo_module
 from . import plan_repo as _plan_repo_module
 from . import wb_serial_config as _wb_serial_module
@@ -291,6 +295,32 @@ def _load_static(filename):
         return _ROOT_HTML_FALLBACK
 
 
+# П14 (партия 15): адреса /static/… в index.html на диске буквальные — версию к ним дописывает
+# маршрут «/» при отдаче (render_index_html). Так самопроверка и тесты читают файл как есть, а
+# браузер получает адреса, которые меняются с каждым релизом.
+_STATIC_REF_RE = re.compile(r'((?:src|href)=")(/static/[^"?]+)(")')
+_BUILD_META_EMPTY = '<meta name="wbem-build" content="">'
+
+
+def render_index_html(html_text, version):
+    """Страница для браузера: ко всем `src`/`href` на `/static/…` дописано `?v=<версия>`, а в
+    `<meta name="wbem-build">` записана версия, с которой страница загружена.
+
+    Зачем (П14): `/static/js/*.js` отдаются с `Cache-Control: public, max-age=43200`, и после
+    обновления службы обычная перезагрузка могла собрать новую разметку со старыми скриптами из
+    кэша браузера. Новая версия = новые адреса = кэш не используется. Версию применяем и к
+    вендорным файлам: они меняются только вместе с релизом, а правило проще, когда оно одно.
+    Страница по метке узнаёт, с какой версией загрузилась, и показывает плашку, если
+    `/api/status` вернул другую (core.js, `pageStale`)."""
+    ver = str(version)
+    q = _url_quote(ver, safe="")
+    out = _STATIC_REF_RE.sub(
+        lambda m: m.group(1) + m.group(2) + "?v=" + q + m.group(3), html_text)
+    return out.replace(
+        _BUILD_META_EMPTY,
+        '<meta name="wbem-build" content="%s">' % _html_escape(ver, quote=True), 1)
+
+
 def build_selfcheck_result(static_dir, vendor_dir, version):
     """Самопроверка интерфейса (ТЗ v0.11.1, §2.1): может ли index.html
     вообще загрузиться. Достаёт из index.html все ссылки вида
@@ -316,7 +346,8 @@ def build_selfcheck_result(static_dir, vendor_dir, version):
     def resolve(ref):
         if not ref.startswith("/static/"):
             return None, "не ссылка на /static/"
-        rel = ref[len("/static/"):]
+        # `?v=<версия>` — только для кэша браузера, на путь к файлу не влияет (П14)
+        rel = ref[len("/static/"):].split("?", 1)[0]
         parts = rel.replace("\\", "/").split("/")
         for part in parts:
             if part in ("", ".", "..") or os.path.isabs(part):
@@ -389,6 +420,17 @@ def create_app(state):
         resp.headers["Cache-Control"] = "no-store"
         resp.headers["Access-Control-Allow-Origin"] = "*"
         return resp
+
+    @app.before_request
+    def _legacy_registry_write_guard():
+        """15.2 (партия 15): после поколения домена 2 запись через старый реестр
+        (`/api/registry/*`) закрыта — 409 `moved_to_v2`, обработчик не вызывается, БД не меняется.
+        Чтение не затрагивается; до поколения 2 поведение прежнее (legacy_guard.py)."""
+        if (_legacy_guard.is_legacy_write(request.method, request.path)
+                and _legacy_guard.writes_closed(state.db)):
+            return json_response(
+                _legacy_guard.route_response_body(request.method, request.path), 409)
+        return None
 
     # ---- read-only ----
 
@@ -1845,7 +1887,12 @@ def create_app(state):
 
     @app.route("/")
     def root():
-        return Response(_load_static("index.html"), mimetype="text/html")
+        # П14: версия в адресах скриптов/стилей и в метке страницы; сама страница не кэшируется,
+        # чтобы после обновления службы браузер брал свежую разметку с новыми адресами.
+        resp = Response(render_index_html(_load_static("index.html"), __version__),
+                        mimetype="text/html")
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
 
     @app.route("/api/docs")
     def api_docs():

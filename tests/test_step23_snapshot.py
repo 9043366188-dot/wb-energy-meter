@@ -235,7 +235,60 @@ def test_snapshot_excludes_archived_by_default():
         db.close(); os.unlink(path)
 
 
+def test_snapshot_device_id_field():
+    """П13 (партия 15): у каждой точки снимка есть `device_id` прибора — по нему раздел «Приборы»
+    «Обзора» подписывает, к какой точке учёта привязан прибор. Поле только добавлено: точка без
+    привязки — None, привязанная (и «никогда не видели», и живая) — id прибора из MQTT."""
+    client, db, path, registry = make_client()
+    try:
+        MeteringPointRepo(db).add("devid-unbound", "Без привязки")
+        _p, never_dev = make_bound_point(db, "devid-never", "Не видели")
+        _p, live_dev = make_bound_point(db, "devid-live", "Живая")
+        populate_live_meter(registry, live_dev)
+
+        items = {it["code"]: it for it in client.get("/api/v2/snapshot").get_json()["points"]}
+        assert "device_id" in items["devid-unbound"] and items["devid-unbound"]["device_id"] is None
+        assert items["devid-never"]["device_id"] == never_dev
+        assert items["devid-live"]["device_id"] == live_dev
+        # поля, которые были до П13, на месте
+        for key in ("binding_status", "device_status", "power_w", "energy_total_kwh", "is_emulator"):
+            assert key in items["devid-live"], key
+        print("[OK] test_snapshot_device_id_field")
+    finally:
+        db.close(); os.unlink(path)
+
+
+def test_status_power_units():
+    """П13 (партия 15): /api/status отдаёт `power_units` — единицу `Total P` из meta прибора.
+    Карточки «Приборов» в «Обзоре» переводят мощность в кВт только когда meta явно говорит «W»;
+    нет meta — значение остаётся как есть (поведение классического «Дашборда»)."""
+    client, db, path, registry = make_client()
+    try:
+        w = populate_live_meter(registry, "emu-units-w", power_w=1500.0)
+        w.controls["Total P"].meta = {"type": "power", "units": "W"}
+        populate_live_meter(registry, "dev-units-none", power_w=1.5)            # meta без units
+        k = populate_live_meter(registry, "dev-units-kw", power_w=1.5)
+        k.controls["Total P"].meta = {"type": "power", "units": " kW "}
+        bare = registry.get_or_create("dev-units-empty")                          # нет канала вообще
+        bare.last_any_ts = time.time()
+
+        by_id = {m["device_id"]: m for m in client.get("/api/status").get_json()["meters"]}
+        assert by_id["emu-units-w"]["power_units"] == "W"
+        assert by_id["dev-units-none"]["power_units"] is None
+        assert by_id["dev-units-kw"]["power_units"] == "kW"
+        assert by_id["dev-units-empty"]["power_units"] is None
+        # значения и прежние поля карточки не тронуты
+        assert by_id["emu-units-w"]["main_values"]["Total P"] == 1500.0
+        for key in ("device_id", "display_name", "status", "main_values", "controls_count"):
+            assert key in by_id["emu-units-w"], key
+        print("[OK] test_status_power_units")
+    finally:
+        db.close(); os.unlink(path)
+
+
 if __name__ == "__main__":
+    test_snapshot_device_id_field()
+    test_status_power_units()
     test_snapshot_unbound_point()
     test_snapshot_never_seen_device()
     test_snapshot_live_device_full_values()

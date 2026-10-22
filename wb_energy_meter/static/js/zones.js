@@ -40,6 +40,11 @@
                 {method:'PATCH',headers:{'Content-Type':'application/json'},
                  body:JSON.stringify({group})});
               if(r.ok) ok++;
+              else if(r.status===409){
+                // 15.2: запись в старый реестр закрыта (поколение домена 2) — остальные тоже не пройдут
+                const e=await r.json().catch(()=>({}));
+                if(e.code==='moved_to_v2'){ this.showToast(e.error||'Запись через старый реестр закрыта',false); return; }
+              }
             }catch(e){ /* пропускаем, считаем ниже по ok */ }
           }
           this.selectedMeters=[];

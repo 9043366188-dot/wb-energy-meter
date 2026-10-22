@@ -1,5 +1,34 @@
 // overview-v2.js — извлечено из index.html партией 9 (F5, docs/TZ-batch9-split-frontend.md).
 // Механический перенос кода, поведение не менялось.
+// ---- Партия 15, П13: раздел «Приборы» (карточки приборов из MQTT) ----
+// Порядок карточек: сначала приборы с проблемами, затем остальные. Ранг — по статусу
+// прибора из /api/status; статус, которого здесь нет, считается проблемой (виден первым).
+const OV_DEV_RANK = {device_error:0, no_connection:1, incomplete:2, warning:3,
+                     unconfirmed:4, unknown:5, no_measurement:6, ok:7};
+const OV_DEV_PROBLEM_MAX_RANK = 5;
+// Слова сводки «6 приборов: 4 в норме, 1 ошибка, 1 нет нагрузки».
+const OV_DEV_SUMMARY_ORDER = ['ok', 'device_error', 'no_connection', 'incomplete', 'warning',
+                              'unconfirmed', 'unknown', 'no_measurement'];
+function ovPlural(n, one, few, many){
+  const m10 = n % 10, m100 = n % 100;
+  if(m10 === 1 && m100 !== 11) return one;
+  if(m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+function ovDevSummaryWord(status, n){
+  switch(status){
+    case 'ok': return 'в норме';
+    case 'device_error': return ovPlural(n, 'ошибка', 'ошибки', 'ошибок');
+    case 'no_connection': return 'нет связи';
+    case 'no_measurement': return 'нет нагрузки';
+    case 'incomplete': return 'нет фазы';
+    case 'warning': return 'внимание';
+    case 'unconfirmed': return 'не подтверждено';
+    case 'unknown': return 'состояние неизвестно';
+    default: return String(status);
+  }
+}
+
 (function () {
   window.WBEM = window.WBEM || { parts: [], conflicts: [] };
 
@@ -53,12 +82,14 @@
             if(!this.structInited){ this.structInited=true; loads.push(this._loadStructureLists()); }
             if(!this.structKnownDevicesLoaded) loads.push(this._loadKnownDevices());
             loads.push(this.loadEmulatorSummary());
+            // П13: «Приборы» — свой запрос /api/status (лента 'status'), не зависящий от точек и схемы.
+            loads.push(this.loadStatus());
             await Promise.all(loads);
           }else{
             // Партия 13 (П5): после «+ Счётчик» на другой вкладке «Обзор» должен
             // сразу показать новую точку, а не ждать следующего тика таймера.
             await Promise.all([this.loadOverviewV2Snapshot(), this.loadValidation(),
-                               this.loadEmulatorSummary()]);
+                               this.loadEmulatorSummary(), this.loadStatus()]);
           }
         },
 
@@ -215,6 +246,67 @@
           return known.reduce((sum,p)=>sum+p.energy_total_kwh, 0);
         },
 
+      // ===== Партия 15, П13: раздел «Приборы» =====
+      // Карточка на КАЖДЫЙ прибор из MQTT (`meters` из /api/status — тот же источник, что у
+      // классического «Дашборда»), независимо от точек учёта, схемы, привязок и итога объекта.
+      // Состояние запроса — лента 'status' (feedStale/feedError): сбой снимка или итога не
+      // прячет приборы, а сбой самого запроса оставляет прежние карточки с пометкой «устарело».
+
+      // Точки учёта прибора — из снимка «Обзора» (поле device_id). Нет снимка — состояние
+      // неизвестно, это не «не привязан».
+      ovDevicePointState(deviceId){
+          const snap=this.overviewV2Snapshot;
+          if(!snap || !snap.points){
+            return {kind:'unknown',
+                    text:this.overviewV2Loading ? 'Точка учёта: определяется…' : 'Точка учёта: не удалось определить'};
+          }
+          const pts=snap.points.filter(p=>p.device_id===deviceId);
+          if(!pts.length) return {kind:'free', text:'Точка учёта: не привязан'};
+          const phase=p=>({phase_l1:'L1', phase_l2:'L2', phase_l3:'L3'})[p.channel_profile]||'';
+          const names=pts.map(p=>'«'+(p.name||p.code)+'»'+(phase(p) ? ' · '+phase(p) : ''));
+          return {kind:'bound',
+                  text:(pts.length>1 ? 'Точки учёта: ' : 'Точка учёта: ')+names.join(', ')};
+        },
+
+      // Строки раздела: сначала приборы с проблемами (ошибка, нет связи…), затем остальные;
+      // внутри ранга — по имени.
+      ovDeviceRows(){
+          const rank=st=>(st in OV_DEV_RANK) ? OV_DEV_RANK[st] : OV_DEV_PROBLEM_MAX_RANK;
+          const name=m=>String(m.display_name||m.device_id||'');
+          return (this.meters||[]).slice()
+            .sort((a,b)=>rank(a.status)-rank(b.status) || name(a).localeCompare(name(b),'ru'))
+            .map(m=>({m, problem:rank(m.status)<=OV_DEV_PROBLEM_MAX_RANK,
+                      point:this.ovDevicePointState(m.device_id)}));
+        },
+
+      // Сводка в заголовке: «6 приборов: 4 в норме, 1 ошибка, 1 нет нагрузки».
+      ovDevicesSummaryText(){
+          const ms=this.meters||[];
+          if(!ms.length) return '';
+          const count={};
+          ms.forEach(m=>{ count[m.status]=(count[m.status]||0)+1; });
+          const known=OV_DEV_SUMMARY_ORDER.filter(st=>count[st]);
+          const other=Object.keys(count).filter(st=>OV_DEV_SUMMARY_ORDER.indexOf(st)===-1);
+          const parts=known.concat(other).map(st=>count[st]+' '+ovDevSummaryWord(st, count[st]));
+          return ms.length+' '+ovPlural(ms.length,'прибор','прибора','приборов')+': '+parts.join(', ');
+        },
+
+      // Мощность прибора в кВт для карточки. Классический «Дашборд» подписывает Total P как «кВт»;
+      // эмулятор (и часть приборов) публикуют её в ваттах и сообщают это в meta ("W"). Если meta
+      // прибора явно говорит «Вт» — переводим в кВт, иначе значение уже в кВт, как в классике.
+      ovDevicePowerKw(m){
+          const v=m&&m.main_values?m.main_values['Total P']:null;
+          if(typeof v!=='number'||isNaN(v)) return null;
+          const u=String(m.power_units||'').trim().toLowerCase();
+          return (u==='w'||u==='вт')?v/1000:v;
+        },
+
+      // Свободный прибор → «+ Счётчик»: ставится в «Структуре» («Не на схеме» → «Приборы без
+      // точки учёта» → «+ Счётчик → куда?»), там же выбирается элемент схемы.
+      ovDeviceAddMeter(){
+          this.tab='structurev2'; this.openStructureTab();
+        },
+
       overviewV2Problems(){
           if(!this.overviewV2Snapshot || !this.overviewV2Snapshot.points) return [];
           const probs=[];
@@ -233,7 +325,11 @@
           // дня целиком, т.к. `to` — конец полуоткрытого периода [from,to)).
           const today=new Date();
           const first=new Date(today.getFullYear(), today.getMonth(), 1);
-          const fmt=d=>d.toISOString().slice(0,10);
+          // Даты — в ЧАСОВОМ ПОЯСЕ БРАУЗЕРА (тот же `timezone` уходит в запрос и сервер читает
+          // по нему «ГГГГ-ММ-ДД»). toISOString() даёт дату в UTC: при поясе восточнее UTC
+          // местная полночь 1-го числа превращалась в последнее число прошлого месяца (A44).
+          const p2=n=>String(n).padStart(2,'0');
+          const fmt=d=>d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate());
           return {from: fmt(first), to: fmt(today)};
         },
 

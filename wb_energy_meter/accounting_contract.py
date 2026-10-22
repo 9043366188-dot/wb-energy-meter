@@ -19,6 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
 
+from .timebounds import local_iso
+
 MODE_MEASURED = "measured"
 MODE_SUM = "sum"
 MODE_BALANCE = "balance"
@@ -68,8 +70,12 @@ class ResultPeriod:
     timezone: str
 
     def to_dict(self):
+        # `from_local`/`to_local` — подписи со смещением пояса отчёта (A44): у суток перехода
+        # часов начало и конец с разным смещением. `from`/`to` остаются как были.
         return {"from": self.ts_from, "to": self.ts_to,
-                "timezone": self.timezone}
+                "timezone": self.timezone,
+                "from_local": local_iso(self.ts_from, self.timezone),
+                "to_local": local_iso(self.ts_to, self.timezone)}
 
 
 @dataclass

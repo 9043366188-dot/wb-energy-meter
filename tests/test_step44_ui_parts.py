@@ -14,8 +14,10 @@ tests/browser/test_b04_app_surface.py и tests/test_step6_webui.py):
 - порядок <script>: вендорные библиотеки -> части интерфейса ->
   alpine.min.js (именно в этом порядке Alpine должен увидеть уже
   заполненный window.WBEM.parts, см. §3.2 ТЗ);
-- ни у одного src нет "?v=" или любого другого query string — резолвер
-  selfcheck не отрезает query string и решит, что файла нет (§2 ТЗ).
+- в ИСХОДНИКЕ index.html ни у одного src нет "?v=" или другого query string:
+  версию (`?v=<версия службы>`, П14, партия 15) дописывает сервер при отдаче «/»
+  (api.render_index_html; проверяет test_step72_asset_versions) — два источника
+  версии дали бы «?v=…?v=…».
 
 Самостоятельный скрипт (не pytest):
     python tests/test_step44_ui_parts.py
@@ -162,14 +164,15 @@ def test_script_order_vendor_then_parts_then_alpine():
 
 
 def test_no_cache_busting_query_string():
-    """?v=... в src ломает резолвер /api/selfcheck (он не отрезает query
-    string) — см. docs/TZ-batch9-split-frontend.md §2."""
+    """В исходнике index.html адреса /static/ буквальные: `?v=<версия>` к ним дописывает сервер
+    при отдаче «/» (П14, партия 15). Править версию руками в файле не нужно и нельзя — иначе
+    сервер получит «?v=…?v=…». Самопроверка /api/selfcheck query отрезает (test_step72)."""
     html = _read_index()
     offenders = [m.group(1) for m in re.finditer(r'src="(/static/[^"]+)"', html)
                  if "?" in m.group(1)]
     assert not offenders, (
-        "src=... содержит query string — selfcheck не отрежет её и решит, "
-        "что файла нет: %r" % offenders)
+        "в исходнике src=... содержит query string, а версию дописывает сервер "
+        "(api.render_index_html): %r" % offenders)
     print('[OK] ни у одного src="/static/..." нет "?" (в т.ч. "?v=")')
 
 

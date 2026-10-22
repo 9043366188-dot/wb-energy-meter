@@ -20,6 +20,7 @@ from .wb_db_client import HistoryChannel, RpcError, WbDbClient
 from .aggregates_repo import AggregateRepo, align_hour_down
 from .aggregator import Aggregator, AggregatorConfig
 from .binding_service import open_phase_targets
+from . import domain_generation, legacy_guard
 
 
 log = logging.getLogger(__name__)
@@ -821,6 +822,12 @@ def main(argv=None):
     db.open()
     try:
         groups = GroupRepo(db); meters = MeterRepo(db, groups); kv = KvRepo(db)
+        # 15.2: после поколения домена 2 пишущие команды старого реестра закрыты (legacy_guard.py)
+        write_key = legacy_guard.cli_write_key(args)
+        if (write_key is not None
+                and domain_generation.get_domain_generation(kv) >= domain_generation.CURRENT_GENERATION):
+            print("Ошибка: " + legacy_guard.cli_message(write_key), file=sys.stderr)
+            return legacy_guard.EXIT_MOVED_TO_V2
         return args.func(args, db, meters, groups, kv)
     except ValueError as e:
         print(f"Ошибка: {e}", file=sys.stderr); return 2

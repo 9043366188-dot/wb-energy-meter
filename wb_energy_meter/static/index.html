@@ -6,6 +6,10 @@
 <!-- Партия 13, 13.1: адаптивный viewport (ТЗ §8.5). Классический набор на телефоне
      остаётся страницей шириной 1100 — JS (js/layout.js) возвращает ему прежний viewport. -->
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Партия 15, П14: версия службы, с которой отдана страница, — подставляет сервер при отдаче «/»
+     (api.render_index_html; в файле на диске пусто). core.js сравнивает её с версией из /api/status
+     и показывает плашку «Служба обновлена до X — перезагрузите страницу». -->
+<meta name="wbem-build" content="">
 <!-- Вендорено локально (ТЗ v0.11.0) — см. wb_energy_meter/static/vendor/VENDOR.md -->
 <link rel="stylesheet" href="/static/vendor/leaflet.css">
 <link rel="stylesheet" href="/static/vendor/leaflet-geoman.css">
@@ -182,6 +186,12 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 .upd-progress{display:flex;align-items:center;gap:10px}
 .upd-step{font-size:13px;font-weight:500}
 .upd-banner{border-radius:8px;padding:14px 18px;font-size:13px}
+/* П14: плашка «страница устарела». Липнет к нижнему краю экрана, но в потоке после <main>: на
+   прокрученной странице видна всегда, а в конце страницы не закрывает последние строки. */
+.stale-page{position:sticky;bottom:0;z-index:40;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:10px 24px;background:var(--bg2);border-top:2px solid var(--warn);font-size:13px}
+.stale-page .msg{flex:1 1 240px;min-width:0;overflow-wrap:anywhere}
+@media (max-width:767px){.stale-page{padding:10px 12px}}
 .upd-banner-ok{background:rgba(63,185,80,.12);border:1px solid var(--ok)}
 .upd-banner-warn{background:rgba(210,153,34,.12);border:1px solid var(--warn)}
 .upd-banner-err{background:rgba(248,81,73,.12);border:1px solid var(--err)}
@@ -797,6 +807,93 @@ path.sl-line-bad{stroke-dasharray:2,5}
           <div class="sub" x-text="overviewV2Snapshot?overviewV2Snapshot.as_of.split('T')[0]:'—'"></div>
         </div>
       </div>
+
+      <!-- Партия 15, П13: «Приборы» — карточки ВСЕХ приборов из MQTT, как карточки классического
+           «Дашборда», независимо от точек учёта, схемы, привязок и итога объекта. Свой запрос
+           /api/status (лента 'status') и свои состояния: сбой снимка или итога приборы не прячет,
+           сбой самого запроса оставляет прежние карточки с пометкой «устарело». Проблемные — первыми.
+           Клик — то же окно со всеми каналами, что в классике (openDetail, одна копия). -->
+      <section data-testid="ov-devices" aria-labelledby="ov-devices-title" style="margin-top:20px">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px">
+          <div class="section-title" id="ov-devices-title" role="heading" aria-level="2" style="margin:0">Приборы</div>
+          <span class="muted" style="font-size:12px" data-testid="ov-devices-summary" role="status"
+                x-text="ovDevicesSummaryText()"></span>
+          <span class="feed-stale" style="font-size:12px;color:var(--txt2)" data-testid="ov-devices-stale"
+                x-show="feedStale('status')" x-text="feedStaleText('status')"></span>
+        </div>
+        <template x-if="feedError('status')">
+          <div data-testid="ov-devices-error" :class="meters.length?'warn-item':'empty'"
+               :style="meters.length?'':'color:var(--err)'"
+               x-text="'Не удалось получить состояние приборов: '+feedError('status')"></div>
+        </template>
+        <template x-if="loading && meters.length===0 && !feedError('status')">
+          <div class="empty" data-testid="ov-devices-loading"><span class="spin"></span> загрузка…</div>
+        </template>
+        <template x-if="!loading && !feedError('status') && meters.length===0">
+          <div class="empty" data-testid="ov-devices-empty" style="text-align:left;line-height:1.5">
+            Ни один прибор пока не появился в MQTT. Приборы покажутся здесь, как только
+            <span class="mono">wb-mqtt-serial</span> опубликует их в брокер.
+          </div>
+        </template>
+        <div class="cards" data-kb-list data-testid="ov-device-list" :class="{'is-stale':feedStale('status')}"
+             x-show="meters.length>0">
+          <template x-for="row in ovDeviceRows()" :key="row.m.device_id">
+            <div class="card" data-testid="ov-device-card" data-kb-row tabindex="0" role="button"
+                 :data-device-id="row.m.device_id" :data-status="row.m.status" :data-problem="row.problem?'1':'0'"
+                 :aria-label="'Прибор '+row.m.display_name+', '+statusLabel(row.m.status)+'. Открыть все каналы'"
+                 :style="'border-left:3px solid '+statusColor(row.m.status)"
+                 @click="openDetail(row.m.device_id)">
+              <div class="card-head">
+                <span class="dot" :style="`background:${statusColor(row.m.status)};width:10px;height:10px`"></span>
+                <span class="nm" x-text="row.m.display_name"></span><span class="emu-badge" data-testid="emu-badge-device" x-show="row.m.is_emulator">эмулятор</span>
+                <span class="badge" data-testid="ov-device-status" :style="badgeStyle(row.m.status)" x-text="statusLabel(row.m.status)"></span>
+              </div>
+              <div class="card-grp mono" data-testid="ov-device-id" style="overflow-wrap:anywhere"
+                   x-text="'MQTT ID: '+row.m.device_id"></div>
+              <div class="card-grp" data-testid="ov-device-point" :data-point-kind="row.point.kind"
+                   style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <span x-text="row.point.text"></span>
+                <button type="button" class="btn btn-sm btn-secondary" data-testid="ov-device-add-meter"
+                        x-show="row.point.kind==='free'" @click.stop="ovDeviceAddMeter()">+ Счётчик</button>
+              </div>
+              <div class="card-body">
+                <div class="metric">
+                  <div class="k">Мощность</div>
+                  <div class="v mono"><span data-testid="ov-device-power" x-text="fmt(ovDevicePowerKw(row.m),3)"></span><small> кВт</small></div>
+                </div>
+                <div class="metric">
+                  <div class="k">Энергия</div>
+                  <div class="v mono"><span data-testid="ov-device-energy" x-text="fmt(row.m.main_values['Total AP energy'],2)"></span><small> кВт·ч</small></div>
+                </div>
+                <div class="phases">
+                  <template x-for="ph in ['L1','L2','L3']" :key="ph">
+                    <div class="phase">
+                      <div class="pk" x-text="'U'+ph"></div>
+                      <div class="pv mono" :data-testid="'ov-device-u-'+ph" x-text="fmt(row.m.main_values['Urms '+ph],0)"></div>
+                    </div>
+                  </template>
+                </div>
+                <div class="card-footer">
+                  <div class="cf-item">
+                    <template x-if="meterUptime(row.m)">
+                      <span>⏱ аптайм: <span class="cf-val" x-text="meterUptime(row.m)"></span></span>
+                    </template>
+                    <template x-if="!meterUptime(row.m)">
+                      <span class="muted">⏱ аптайм: —</span>
+                    </template>
+                  </div>
+                  <div :class="updateAgeClass(row.m.last_update_age_s)">
+                    <span data-testid="ov-device-age" x-text="fmtAge(row.m.last_update_age_s)"></span>
+                  </div>
+                </div>
+                <template x-if="row.m.status!='ok' && row.m.status_reason">
+                  <div class="reason" data-testid="ov-device-reason" x-text="row.m.status_reason"></div>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </section>
 
       <!-- Итог объекта за период (ТЗ §8.2, партия 2 задача 2) —
            /api/v2/overview/summary: ввод/ветви/небаланс через
@@ -5523,6 +5620,15 @@ path.sl-line-bad{stroke-dasharray:2,5}
     <div class="toast" :class="toast.ok?'toast-ok':'toast-err'" x-text="toast.msg"></div>
   </template>
 </main>
+
+<!-- Партия 15, П14: страница загружена с одной версией службы, а /api/status вернул другую (служба
+     обновлена, пока вкладка была открыта) — разметка и скрипты могут быть старыми. Без автоматической
+     перезагрузки: она стёрла бы введённое в форму. style="display:none" — чтобы плашка не мигала до старта Alpine. -->
+<div class="stale-page" data-testid="stale-page-banner" role="status" x-show="pageStale" style="display:none">
+  <span class="msg" x-text="'Служба обновлена до '+version+' — перезагрузите страницу'"></span>
+  <button type="button" class="btn btn-primary btn-sm" data-testid="stale-page-reload"
+          @click="reloadPage()">Перезагрузить</button>
+</div>
 
 <!-- Leaflet + Leaflet-Geoman + Alpine — вендорено локально
      (wb_energy_meter/static/vendor/, см. VENDOR.md), интерфейс работает

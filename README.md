@@ -6,7 +6,7 @@ WB-MAP3E (и совместимыми). Подключается к штатны
 дополнительного железа.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.9.0-blue)
+![Version](https://img.shields.io/badge/version-0.25.0-blue)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Wiren%20Board%20%7C%20Linux-lightgrey)
 
@@ -16,6 +16,7 @@ WB-MAP3E (и совместимыми). Подключается к штатны
 
 - [Зачем](#зачем)
 - [Возможности](#возможности)
+- [Документация](#документация)
 - [Требования](#требования)
 - [Установка](#установка)
 - [Использование](#использование)
@@ -76,7 +77,21 @@ Wiren Board даёт «сырые» данные счётчиков через M
 
 ### Веб-интерфейс
 
-Доступен по адресу `http://<IP>:8080/`. Пять разделов:
+Доступен по адресу `http://<IP>:8080/`. В шапке — переключатель двух наборов вкладок
+(«Новый интерфейс» / «Классический»); выбор запоминается в браузере. До выхода 1.0.0 при первом
+открытии показывается классический набор.
+
+**Новый набор (v2)** — «Обзор» (итог объекта, небаланс, ветви сети, карточки всех приборов из MQTT,
+что требует внимания), «Отчёты» (по точкам, ветвям, учётным группам и балансу, сравнение периодов,
+CSV), «Структура» (дерево схемы, поиск, карточки точек и элементов), «План v3» (схема на карте или
+однолинейная схема, подложка-план помещения) и «Настройки» (обновление, канал Uptime, тема,
+эмулятор счётчиков). Соответствие классическим экранам —
+[docs/parity-classic-vs-v2.md](docs/parity-classic-vs-v2.md).
+
+**Классический набор** — пять разделов. Его экраны записи (добавить или удалить счётчик, зону, роль)
+работают, пока в базе не сделана первая запись в новую модель учёта; после неё маршруты
+`/api/registry/*` на запись отвечают 409 `moved_to_v2`, а команды CLI завершаются кодом 3 — всё
+это делается в наборе v2. Чтение классических экранов не закрыто.
 
 **Дашборд** — сводные плитки (счётчики, мощность, энергия, MQTT),
 карточки счётчиков с цветовым статусом, мощностью, энергией,
@@ -120,6 +135,21 @@ Wiren Board даёт «сырые» данные счётчиков через M
 - REST API на Flask — все данные доступны программно.
 - CLI-утилита `wb-energy-meter-cli`.
 - systemd-сервис с автозапуском и автоперезапуском.
+
+---
+
+## Документация
+
+| Документ | О чём |
+|---|---|
+| [docs/api-v2.md](docs/api-v2.md) | Спецификация HTTP API `/api/v2/*`: каждый маршрут с примером запроса и ответа, ревизии и конфликты 409, коды ошибок, часовой пояс периодов, закрытые старые маршруты |
+| [docs/operations.md](docs/operations.md) | Эксплуатация: резервные копии `install.sh`, откат `self-update.sh`, проверка поколения базы, отчёт миграции, нагрузочная проверка на копии базы, типовые неисправности, известные ограничения |
+| [docs/pilot-checklist.md](docs/pilot-checklist.md) | Чек-лист пилота на настоящем контроллере |
+| [docs/acceptance-matrix.md](docs/acceptance-matrix.md) | Матрица приёмки A01–A45: чем проверен каждый пункт |
+| [docs/status.md](docs/status.md) | Что сделано и проверено, что осталось до 1.0.0 |
+| [docs/parity-classic-vs-v2.md](docs/parity-classic-vs-v2.md) | Что умели классические экраны и где это теперь в наборе v2 |
+| [docs/load-test-2026-09.md](docs/load-test-2026-09.md) | Нагрузочная проверка на ~100 точках учёта |
+| [CHANGELOG.md](CHANGELOG.md) | История версий |
 
 ---
 
@@ -220,7 +250,7 @@ wb-energy-meter-cli aggregates catchup --days 90   # пересчитать ис
 > контроллер стоит в изолированной сети объекта, интерфейс всё равно
 > открывается полностью.
 
-### Первый запуск
+### Первый запуск (классический набор)
 
 1. **Настройки → Сканировать** — находит счётчики в MQTT.
 2. Нажмите **+ Добавить** рядом с найденным счётчиком, введите имя.
@@ -228,6 +258,10 @@ wb-energy-meter-cli aggregates catchup --days 90   # пересчитать ис
 4. В настройках счётчика назначьте зону и роль (Ввод / Потребитель).
 5. Перейдите на Дашборд — карточки сгруппированы по зонам.
 6. Отчёты → Баланс покажет небаланс как только наберутся данные.
+
+В новом наборе приборы ставятся из «Структуры» или «План v3»: раздел «Приборы без точки учёта» →
+«+ Счётчик → куда?». Пошаговый порядок первого запуска с проверками — в
+[docs/pilot-checklist.md](docs/pilot-checklist.md).
 
 ### План объекта (с 0.11.0)
 
@@ -290,6 +324,12 @@ wb-energy-meter-cli aggregates catchup --days 90   # пересчитать ис
 - Прогресс виден прямо в браузере: во время перезапуска запросы к API
   ненадолго начнут падать — это нормально, страница продолжает
   опрашивать статус и не считает это ошибкой первые 120 секунд.
+- **После обновления перезагрузите открытые вкладки.** Страница, открытая до
+  обновления, остаётся старой: когда служба сообщает новую версию, внизу
+  появляется плашка «Служба обновлена до X — перезагрузите страницу» с кнопкой
+  «Перезагрузить» (сама страница не перезагружается, чтобы не стереть ввод в форме).
+- Где лежат резервные копии, что откатывается и что делать, если откат не помог, —
+  в [docs/operations.md](docs/operations.md).
 
 > **Внимание, у сервиса нет аутентификации.** Если `http.host: 0.0.0.0`
 > (по умолчанию) и контроллер в сети, доступной кому-то ещё —
@@ -297,7 +337,7 @@ wb-energy-meter-cli aggregates catchup --days 90   # пересчитать ис
 > инициировать перезапуск сервиса учёта электроэнергии.** Если
 > контроллер в недоверенной сети, сделайте одно из двух:
 > - поставьте `http.host: 127.0.0.1` в конфиге и ходите в веб-интерфейс
->   через SSH-туннень (`ssh -L 8080:127.0.0.1:8080 root@<IP>`);
+>   через SSH-туннель (`ssh -L 8080:127.0.0.1:8080 root@<IP>`);
 > - или `update.allow_from_ui: false` — кнопка скроется, обновление
 >   останется доступно только вручную:
 >   `sudo bash scripts/install-from-github.sh` по SSH.
@@ -343,6 +383,11 @@ curl -s http://127.0.0.1:8080/api/selfcheck
 curl -s http://127.0.0.1:8080/api/status
 ```
 
+> **Отдельно: при обновлении `install.sh` один раз сам выполняет «чистый старт» (решение R12)** —
+> переносит `state.db` и `plans/` в каталог `test-data-<дата-время>/` рядом с базой (ничего не
+> удаляется) и пишет метку `.clean-start-r12-done`; подробности и способ отключить — в
+> [docs/operations.md](docs/operations.md), раздел 2.1.
+
 > **Внимание: шаг 3 необратимо удаляет всю историю расхода энергии**,
 > накопленную до этого момента (почасовые агрегаты, зарегистрированные
 > приборы, точки учёта, структуру сети и планы). Резервная копия из шага
@@ -355,8 +400,13 @@ curl -s http://127.0.0.1:8080/api/status
 
 ## HTTP API
 
-Сервис слушает на `0.0.0.0:8080`. Все ответы в JSON (UTF-8). CORS открыт.
-Документация: `http://<IP>:8080/api/docs`.
+Сервис слушает на `0.0.0.0:8080`. Все ответы в JSON (UTF-8). CORS открыт, аутентификации нет
+(см. [«Известные ограничения»](docs/operations.md)). Краткая справка: `http://<IP>:8080/api/docs`.
+
+**Основной API — `/api/v2/*`** (модель «узлы → линии → точки учёта», отчёты, «Обзор», планы,
+история, эмулятор): полная спецификация с примерами — [docs/api-v2.md](docs/api-v2.md). В ней же
+правила ревизий (`expected_revision`, 409 при конфликте) и часовой пояс периода. Ниже — классические
+маршруты (чтение остаётся) и служебные.
 
 | Метод | URL | Описание |
 |---|---|---|
@@ -375,14 +425,14 @@ curl -s http://127.0.0.1:8080/api/status
 | GET | `/api/reports/balance?period=this_month` | Баланс (ввод − потребители) |
 | GET | `/api/aggregates/status` | Статистика агрегатов |
 | GET | `/api/channels/dictionary` | Словарь каналов: русские названия, единицы, подсказки, категории |
-| POST | `/api/registry/meters` | Добавить счётчик |
-| PATCH | `/api/registry/meters/<id>` | Переименовать / сменить зону (`group:""` или `null` — снять) / комментарий |
-| PATCH | `/api/registry/meters/<id>/role` | Изменить роль |
-| DELETE | `/api/registry/meters/<id>` | Удалить счётчик |
+| POST | `/api/registry/meters` | Добавить счётчик. **Закрыт** после первой записи в модель v2 (409 `moved_to_v2`) |
+| PATCH | `/api/registry/meters/<id>` | Переименовать / сменить зону (`group:""` или `null` — снять) / комментарий. **Закрыт** (409 `moved_to_v2`) |
+| PATCH | `/api/registry/meters/<id>/role` | Изменить роль. **Закрыт** (409 `moved_to_v2`) |
+| DELETE | `/api/registry/meters/<id>` | Удалить счётчик. **Закрыт** (409 `moved_to_v2`) |
 | GET | `/api/registry/groups` | Список зон (с цветом) |
-| POST | `/api/registry/groups` | Создать зону (`name`, необязательно `color`) |
-| PATCH | `/api/registry/groups/<id>` | Переименовать и/или сменить цвет зоны. Конфликт имени (без `merge:true`) → 409 |
-| DELETE | `/api/registry/groups/<id>` | Удалить зону |
+| POST | `/api/registry/groups` | Создать зону (`name`, необязательно `color`). **Закрыт** (409 `moved_to_v2`) |
+| PATCH | `/api/registry/groups/<id>` | Переименовать и/или сменить цвет зоны. Конфликт имени (без `merge:true`) → 409. **Закрыт** после первой записи v2 (409 `moved_to_v2`) |
+| DELETE | `/api/registry/groups/<id>` | Удалить зону. **Закрыт** (409 `moved_to_v2`) |
 | GET | `/api/update/check` | Сверить установленную версию с веткой `main` на GitHub. 503 при `update.enabled: false` |
 | GET | `/api/update/status` | Статус текущего/последнего обновления. Без файла статуса — `{"state":"idle"}`, никогда не 500 |
 | POST | `/api/update/start` | Запустить обновление. Body: `{"commit":"<sha из /api/update/check>"}`. 403 при `allow_from_ui: false`, 409 если уже идёт или sha устарел |
@@ -412,6 +462,11 @@ curl -s http://127.0.0.1:8080/api/status
 последний час (в списке пресетов API его нет, чтобы не расширять
 `periods.py`).
 
+**Часовой пояс.** В `/api/v2/*` даты `ГГГГ-ММ-ДД` читаются в поясе из поля `timezone` запроса (по
+умолчанию UTC; неизвестное имя — 400), а в ответе у периода есть подписи `from_local` и `to_local` со
+смещением. «Обзор» и «Отчёты» шлют пояс браузера. Классические маршруты из таблицы выше читают даты
+в поясе службы.
+
 ---
 
 ## CLI
@@ -436,6 +491,11 @@ aggregates show <device_id>            почасовые данные
 aggregates catchup [--days N]          догнать пропущенные часы
 db status                              состояние БД
 ```
+
+Пишущие команды (`meter add/rename/group/role/enable/disable/remove`, `group remove` и
+`scan --add-all`) после первой записи в модель v2 не выполняются: команда печатает, что делать в
+интерфейсе v2, и завершается **кодом 3** (1 — «не найдено / отменено», 2 — ошибка). Просмотр
+(`meter list/show`, `scan`, расход, история, агрегаты, `db status`) работает как раньше.
 
 ---
 
@@ -596,92 +656,50 @@ python -m wb_energy_meter.main \
 
 ### Тесты
 
+Тесты — самостоятельные скрипты, pytest не нужен. Правила и обязательный набор проверок перед
+коммитом — [CODING_STANDARDS.md](CODING_STANDARDS.md) и [AGENTS.md](AGENTS.md).
+
 ```bash
-python tests/test_step3_consumption.py   # юнит
-python tests/test_step3_e2e.py           # e2e (нужен mosquitto)
-python tests/test_step4_aggregator.py    # юнит агрегаторов
-python tests/test_step5_flask_api.py     # юнит Flask API
-python tests/test_step6_webui.py         # юнит веб-UI + баланс HTML-тегов
-python tests/test_step8_groups.py        # юнит групп/зон (A1-A5)
-python tests/test_step8_channels.py      # юнит словаря каналов
-python tests/test_step9_updater.py       # юнит самообновления
-python tests/test_step10_wbserial.py     # юнит канала Uptime / wb-mqtt-serial.conf
-python tests/test_step11_plan.py         # юнит плана объекта: зоны и связи
-python tests/test_step12_selfcheck.py    # юнит самопроверки интерфейса + заглушки
+python tests/run_all.py            # все tests/test_step*.py; без mosquitto часть тестов пропускается
+python tests/browser/run.py        # настоящий Chromium (Playwright): интерфейс целиком
+python tests/pilot/rehearsal.py    # репетиция пилота на поддельных счётчиках
+python tests/test_step74_api_spec_sync.py   # один тест отдельно
 ```
 
-CI запускается на GitHub Actions (Python 3.9–3.12).
+CI запускается на GitHub Actions: тесты на Python 3.9–3.12, прогон на версиях пакетов контроллера,
+проверки сборки и скриптов, браузерные тесты и репетиция пилота.
 
 ### Структура репозитория
 
 ```
 wb-energy-meter/
-├── wb_energy_meter/
-│   ├── __init__.py            # версия
-│   ├── alert_repo.py          # история инцидентов
-│   ├── aggregates_repo.py     # CRUD period_aggregates
+├── wb_energy_meter/           # пакет службы (версия — __init__.py)
+│   ├── api.py, api_v2.py      # HTTP API: классика и /api/v2/* (Flask)
+│   ├── legacy_guard.py        # закрытие старых записывающих маршрутов и команд CLI
+│   ├── timebounds.py          # границы периода в часовом поясе запроса
+│   ├── accounting_service.py, overview_service.py, reports_service.py   # расчёты v2
+│   ├── topology_service.py, point_repo.py, binding_service.py            # схема, точки, привязки
 │   ├── aggregator.py          # почасовые агрегаты
-│   ├── api.py                 # HTTP API (Flask)
-│   ├── background.py          # фоновые задачи
-│   ├── channels.py            # словарь каналов: label/units/hint/category
-│   ├── cli.py                 # CLI
-│   ├── config.py              # YAML-конфиг
-│   ├── consumption.py         # расчёт расхода
-│   ├── db.py                  # SQLite + миграции
-│   ├── image_meta.py          # размеры PNG/JPEG без Pillow (0.11.0)
-│   ├── logger.py              # логирование
-│   ├── main.py                # точка входа
+│   ├── emulator.py            # виртуальные счётчики
 │   ├── migrations/            # .sql миграции
-│   │   ├── 001_initial_schema.sql
-│   │   ├── 002_aggregator_indexes.sql
-│   │   ├── 003_group_name_normalized.sql
-│   │   └── 004_site_plan.sql
-│   ├── model.py               # доменные модели
-│   ├── mqtt_client.py         # MQTT + WB Conventions
-│   ├── periods.py             # стандартные периоды
-│   ├── plan_geo.py            # координаты плана, валидация геометрии (0.11.0)
-│   ├── plan_repo.py           # CRUD планов/зон/связей + файлы картинок (0.11.0)
-│   ├── repo.py                # CRUD БД
-│   ├── static/
-│   │   ├── index.html         # SPA (Alpine.js)
-│   │   └── vendor/            # Leaflet, Leaflet-Geoman, Alpine.js (0.11.0)
-│   ├── status.py              # классификатор статусов
-│   ├── wb_db_client.py        # MQTT-RPC к wb-mqtt-db
-│   └── wb_serial_config.py    # диагностика/правка wb-mqtt-serial.conf (0.10.0)
-├── scripts/
-│   ├── install.sh
-│   ├── install-from-github.sh
-│   ├── uninstall.sh
-│   └── wb-energy-meter.conf.example
-├── tests/
+│   └── static/                # index.html, js/*.js, vendor/ (Alpine, Leaflet, Geoman)
+├── scripts/                   # install.sh, self-update.sh, check-generation.sh, loadtest/ …
+├── tests/                     # test_step*.py, browser/ (Playwright), pilot/ (репетиция)
+├── docs/                      # документация и ТЗ партий (список — в разделе «Документация»)
 ├── .github/workflows/ci.yml
-├── Install-WbEnergyMeter.cmd     # Windows-установщик
-├── Install-WbEnergyMeter.ps1
-├── pyproject.toml
-├── README.md
-├── CHANGELOG.md
-└── LICENSE
+├── Install-WbEnergyMeter.cmd, Install-WbEnergyMeter.ps1   # Windows-установщик
+├── pyproject.toml, README.md, CHANGELOG.md, CODING_STANDARDS.md, AGENTS.md, LICENSE
 ```
+
+Полный список модулей — в самом пакете; назначение каждого — в докстринге первой строкой.
 
 ---
 
 ## Дорожная карта
 
-| Шаг | Версия | Что добавляется | Статус |
-|---:|:---:|---|:---:|
-| 1 | 0.1.0 | MQTT, статусы, HTTP API stub | ✅ |
-| 2 | 0.2.0 | SQLite, миграции, CLI, репозитории | ✅ |
-| 3 | 0.3.0 | MQTT-RPC к wb-mqtt-db, расчёт расхода | ✅ |
-| 4 | 0.4.0 | Воркер почасовых агрегатов + catch-up | ✅ |
-| 5 | 0.5.0 | Переход на Flask | ✅ |
-| 6 | 0.6.0 | Веб-интерфейс (Alpine.js SPA) | ✅ |
-| 7 | 0.7.0 | Настройки в UI, зоны, роли, отчёты, история доступности | ✅ |
-| 8 | 0.8.0 | Починка групп, график истории параметра, русификация карточки счётчика | ✅ |
-| 9 | 0.9.0 | Самообновление из GitHub по кнопке, автооткат | ✅ |
-| 10 | 0.10.0 | Двух-тарифный учёт (день/ночь) | ⏳ |
-| 11 | 0.11.0 | Алерты + SMTP уведомления | ⏳ |
-| 12 | 0.12.0 | Excel-отчёты + автоматическая рассылка | ⏳ |
-| 13 | 1.0.0 | .deb-пакет, финальная документация | ⏳ |
+Актуальное состояние — что сделано, что проверено на настоящем контроллере, что осталось до 1.0.0 —
+в [docs/status.md](docs/status.md); история версий — в [CHANGELOG.md](CHANGELOG.md). Ближайшее: пилот
+на объекте по [docs/pilot-checklist.md](docs/pilot-checklist.md), затем выпуск 1.0.0.
 
 ---
 
