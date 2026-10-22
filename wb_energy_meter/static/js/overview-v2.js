@@ -325,7 +325,11 @@ function ovDevSummaryWord(status, n){
           // дня целиком, т.к. `to` — конец полуоткрытого периода [from,to)).
           const today=new Date();
           const first=new Date(today.getFullYear(), today.getMonth(), 1);
-          const fmt=d=>d.toISOString().slice(0,10);
+          // Даты — в ЧАСОВОМ ПОЯСЕ БРАУЗЕРА (тот же `timezone` уходит в запрос и сервер читает
+          // по нему «ГГГГ-ММ-ДД»). toISOString() даёт дату в UTC: при поясе восточнее UTC
+          // местная полночь 1-го числа превращалась в последнее число прошлого месяца (A44).
+          const p2=n=>String(n).padStart(2,'0');
+          const fmt=d=>d.getFullYear()+'-'+p2(d.getMonth()+1)+'-'+p2(d.getDate());
           return {from: fmt(first), to: fmt(today)};
         },
 

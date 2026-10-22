@@ -95,6 +95,7 @@
 """
 from __future__ import annotations
 
+import calendar
 import json
 import os
 import re
@@ -1113,10 +1114,10 @@ def section7() -> None:
 # ================================================================== Раздел 8
 def seed_day(h, day_str: str, values: dict) -> None:
     """Засеять ЦЕЛЫЕ сутки (24 часовых агрегата, как test_b03): весь расход — в первом часу,
-    остальные 23 — нулевые, но существующие. Границу суток берём тем же разбором, что и сервер
-    (periods.parse_user_datetime — по поясу процесса, поле `timezone` запроса на неё не влияет)."""
-    from wb_energy_meter.periods import parse_user_datetime
-    day_start = int(parse_user_datetime(day_str))
+    остальные 23 — нулевые, но существующие. Сценарий открывает браузер в поясе UTC и шлёт
+    `timezone: "UTC"`, а сервер читает даты в поясе запроса (партия 15, A44) — границу суток
+    считаем по UTC, а не по поясу процесса."""
+    day_start = calendar.timegm(time.strptime(day_str, "%Y-%m-%d"))
     for device_id, kwh in values.items():
         for k in range(24):
             ps = day_start + k * HOUR

@@ -360,7 +360,7 @@ def main() -> int:
         api_balance = page.evaluate(
             f"fetch('/api/v2/topology/nodes/{panel['id']}/balance', "
             "{method:'POST', headers:{'Content-Type':'application/json'}, "
-            f"body: JSON.stringify({{from:'{ov_from}', to:'{ov_to}', timezone:'UTC'}})}}).then(r=>r.json())")
+            f"body: JSON.stringify({{from:'{ov_from}', to:'{ov_to}', timezone:Intl.DateTimeFormat().resolvedOptions().timeZone}})}}).then(r=>r.json())")
         page.wait_for_selector("[data-testid=node-card]:visible [data-testid=node-balance-value]", timeout=8000)
         shown = card(page).locator("[data-testid=node-balance-value]").first.inner_text()
         pct_api = (api_balance.get("explanation") or {}).get("percentage")

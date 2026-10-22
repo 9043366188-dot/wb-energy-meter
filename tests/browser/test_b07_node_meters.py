@@ -216,7 +216,7 @@ def main() -> int:
         page.wait_for_timeout(1200)
         api_summary = page.evaluate(
             "fetch('/api/v2/overview/summary', {method:'POST', headers:{'Content-Type':'application/json'}, "
-            f"body: JSON.stringify({{from:'{ov_from}', to:'{ov_to}', timezone:'UTC'}})}}).then(r=>r.json())")
+            f"body: JSON.stringify({{from:'{ov_from}', to:'{ov_to}', timezone:Intl.DateTimeFormat().resolvedOptions().timeZone}})}}).then(r=>r.json())")
         total = api_summary.get("object_total", {}).get("value")
         ov_text = page.locator("body").inner_text()
         check(total is not None and abs(total - 100.0) < 1e-6 and f"{total:.1f}" in ov_text,
@@ -233,7 +233,7 @@ def main() -> int:
         api_balance = page.evaluate(
             f"fetch('/api/v2/topology/nodes/{nodes2['Щит 1']['id']}/balance', "
             "{method:'POST', headers:{'Content-Type':'application/json'}, "
-            f"body: JSON.stringify({{from:'{ov_from}', to:'{ov_to}', timezone:'UTC'}})}}).then(r=>r.json())")
+            f"body: JSON.stringify({{from:'{ov_from}', to:'{ov_to}', timezone:Intl.DateTimeFormat().resolvedOptions().timeZone}})}}).then(r=>r.json())")
         shown = page.locator("[data-testid=node-card]:visible [data-testid=node-balance-value]").first.inner_text()
         check(api_balance.get("value") is not None and abs(api_balance["value"] - 70.0) < 1e-6,
               f"API: баланс щита = 100 − 30 = 70 ({api_balance.get('value')})")

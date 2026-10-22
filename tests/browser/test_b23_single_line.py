@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import calendar
 import os
 import sys
 from datetime import datetime
@@ -36,9 +37,10 @@ LOADS_1 = ["Станок", "Освещение", "Вентиляция"]
 LOADS_2 = ["Розетки", "Насос"]
 # Окно баланса — целые сутки: каждый час окна должен быть закрыт агрегатом (иначе «gap»,
 # см. комментарий в test_b03_planv3_flow.py). Сутки в прошлом; привязки открыты с valid_from=0.
-# Даты в строках сервер разбирает по своему местному времени — границу суток считаем так же.
+# Браузер сценария — в поясе UTC и шлёт `timezone: "UTC"`; сервер читает даты в поясе запроса
+# (партия 15, A44), поэтому границу суток считаем по UTC, а не по поясу процесса.
 FROM, TO = "2026-01-10", "2026-01-11"
-DAY_START = int(datetime.strptime(FROM, "%Y-%m-%d").timestamp())
+DAY_START = calendar.timegm(datetime.strptime(FROM, "%Y-%m-%d").timetuple())
 HOUR = 3600
 
 

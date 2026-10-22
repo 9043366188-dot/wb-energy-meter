@@ -106,7 +106,7 @@ from .topology_service import (
 )
 from . import plan_v3_service
 from .aggregates_repo import AggregateRepo
-from .periods import parse_user_datetime
+from .timebounds import parse_boundary, local_iso, UnknownTimezone
 from .plan_repo import read_plan_image
 from .plan_service_v2 import (
     SitePlanRepoV2, PlanItemRepo, PlanEdgeViewRepo,
@@ -420,14 +420,14 @@ def register_v2_routes(app, state, json_response):
                 return None
             if raw.lstrip("-").isdigit():           # unix-секунды в строке запроса
                 return int(raw)
-            return _parse_ts(raw, name)
+            return _parse_ts(raw, name, log_tz)
 
+        log_tz = args.get("timezone") or "UTC"      # пояс для строк-дат (A44), как у расчётов
         try:
             ts_from = _ts_arg("from")
             ts_to = _ts_arg("to")
         except ValueError as e:
-            body, status = _err("bad_request", str(e), 400, fields=["from", "to"])
-            return json_response(body, status)
+            return _bad_period(e, ["from", "to"])
         with db.read() as c:
             items, next_before = change_journal.query(
                 c, entity_type=entity_type, entity_id=entity_id,
@@ -1926,11 +1926,10 @@ def register_v2_routes(app, state, json_response):
         if err:
             return err
         try:
-            ts_from = _parse_ts(data.get("from"), "from")
-            ts_to = _parse_ts(data.get("to"), "to")
+            ts_from = _parse_ts(data.get("from"), "from", timezone_name)
+            ts_to = _parse_ts(data.get("to"), "to", timezone_name)
         except ValueError as e:
-            body, status = _err("bad_request", str(e), 400, fields=["from", "to"])
-            return json_response(body, status)
+            return _bad_period(e, ["from", "to"])
         if ts_to <= ts_from:
             body, status = _err("bad_request", "to должно быть позже from", 400,
                                  fields=["from", "to"])
@@ -2012,8 +2011,7 @@ def register_v2_routes(app, state, json_response):
                     "configuration_revision_id": pinned_revision,
                     "configuration_revision_ids": [pinned_revision],
                     "as_of": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                    "period": {"from": str(ts_from), "to": str(ts_to),
-                               "timezone": timezone_name},
+                    "period": _period_dict(ts_from, ts_to, timezone_name),
                 }
 
         response.update({
@@ -2157,15 +2155,32 @@ def register_v2_routes(app, state, json_response):
 
     # -------------------------------------------------------- metrics/query
 
-    def _parse_ts(value, field_name):
+    def _parse_ts(value, field_name, tz_name="UTC"):
+        """Граница периода: unix-секунды (число) или строка-дата. Строку читаем в поясе
+        `tz_name` — тот же `timezone`, что и в запросе (A44, `timebounds.py`), а не в поясе
+        процесса службы. Неизвестный пояс при строке-дате — `UnknownTimezone`."""
         if isinstance(value, (int, float)):
             return int(value)
         if isinstance(value, str):
             try:
-                return parse_user_datetime(value)
+                return parse_boundary(value, tz_name)
+            except UnknownTimezone:
+                raise
             except ValueError:
                 pass
         raise ValueError(f"поле {field_name} должно быть unix-временем или датой")
+
+    def _bad_period(e, fields):
+        """400 на нечитаемую границу периода; для неизвестного пояса указывает на `timezone`."""
+        if isinstance(e, UnknownTimezone):
+            fields = ["timezone"]
+        body, status = _err("bad_request", str(e), 400, fields=fields)
+        return json_response(body, status)
+
+    def _period_dict(t_from, t_to, tz_name):
+        """`period` в ответе: прежние `from`/`to`/`timezone` плюс подписи со смещением пояса."""
+        return {"from": str(t_from), "to": str(t_to), "timezone": tz_name,
+                "from_local": local_iso(t_from, tz_name), "to_local": local_iso(t_to, tz_name)}
 
     def _tag_result(result, revision_id):
         """Партия 2, задача 1 (A43): проставляет ревизию/as_of, зафиксированные
@@ -2194,11 +2209,10 @@ def register_v2_routes(app, state, json_response):
         timezone_name = data.get("timezone", "UTC")
 
         try:
-            ts_from = _parse_ts(data.get("from"), "from")
-            ts_to = _parse_ts(data.get("to"), "to")
+            ts_from = _parse_ts(data.get("from"), "from", timezone_name)
+            ts_to = _parse_ts(data.get("to"), "to", timezone_name)
         except ValueError as e:
-            body, status = _err("bad_request", str(e), 400, fields=["from", "to"])
-            return json_response(body, status)
+            return _bad_period(e, ["from", "to"])
 
         if ts_to <= ts_from:
             body, status = _err("bad_request", "to должно быть позже from", 400, fields=["from", "to"])
@@ -2925,11 +2939,10 @@ def register_v2_routes(app, state, json_response):
         if err:
             return err
         try:
-            ts_from = _parse_ts(data.get("from"), "from")
-            ts_to = _parse_ts(data.get("to"), "to")
+            ts_from = _parse_ts(data.get("from"), "from", timezone_name)
+            ts_to = _parse_ts(data.get("to"), "to", timezone_name)
         except ValueError as e:
-            body, status = _err("bad_request", str(e), 400, fields=["from", "to"])
-            return json_response(body, status)
+            return _bad_period(e, ["from", "to"])
         if ts_to <= ts_from:
             body, status = _err("bad_request", "to должно быть позже from", 400, fields=["from", "to"])
             return json_response(body, status)
@@ -3101,7 +3114,7 @@ def register_v2_routes(app, state, json_response):
         return json_response({
             "configuration_revision_id": pinned_revision,
             "as_of": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "period": {"from": str(ts_from), "to": str(ts_to), "timezone": timezone_name},
+            "period": _period_dict(ts_from, ts_to, timezone_name),
             **_structure_info(history, ts_from, ts_to),
             "object_input_point_ids": input_point_ids,
             "object_has_emulator": object_has_emulator,
@@ -3198,11 +3211,10 @@ def register_v2_routes(app, state, json_response):
 
         timezone_name = data.get("timezone", "UTC")
         try:
-            ts_from = _parse_ts(data.get("from"), "from")
-            ts_to = _parse_ts(data.get("to"), "to")
+            ts_from = _parse_ts(data.get("from"), "from", timezone_name)
+            ts_to = _parse_ts(data.get("to"), "to", timezone_name)
         except ValueError as e:
-            body, status = _err("bad_request", str(e), 400, fields=["from", "to"])
-            return json_response(body, status)
+            return _bad_period(e, ["from", "to"])
         if ts_to <= ts_from:
             body, status = _err("bad_request", "to должно быть позже from", 400, fields=["from", "to"])
             return json_response(body, status)
@@ -3215,11 +3227,10 @@ def register_v2_routes(app, state, json_response):
                                      fields=["compare"])
                 return json_response(body, status)
             try:
-                cmp_ts_from = _parse_ts(compare.get("from"), "compare.from")
-                cmp_ts_to = _parse_ts(compare.get("to"), "compare.to")
+                cmp_ts_from = _parse_ts(compare.get("from"), "compare.from", timezone_name)
+                cmp_ts_to = _parse_ts(compare.get("to"), "compare.to", timezone_name)
             except ValueError as e:
-                body, status = _err("bad_request", str(e), 400, fields=["compare"])
-                return json_response(body, status)
+                return _bad_period(e, ["compare"])
             if cmp_ts_to <= cmp_ts_from:
                 body, status = _err("bad_request", "compare.to должно быть позже compare.from",
                                      400, fields=["compare"])
@@ -3302,12 +3313,11 @@ def register_v2_routes(app, state, json_response):
             "composition_mode": composition_mode,
             "has_emulator": any(r["has_emulator"] for r in rows),
             **_structure_info(history, ts_from, ts_to),
-            "period": {"from": str(ts_from), "to": str(ts_to), "timezone": timezone_name},
+            "period": _period_dict(ts_from, ts_to, timezone_name),
             "rows": rows,
         }
         if compare is not None:
-            response["compare_period"] = {
-                "from": str(cmp_ts_from), "to": str(cmp_ts_to), "timezone": timezone_name}
+            response["compare_period"] = _period_dict(cmp_ts_from, cmp_ts_to, timezone_name)
         return json_response(response)
 
     # -------------------------------------------------------------- plans

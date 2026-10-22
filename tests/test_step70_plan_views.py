@@ -16,7 +16,7 @@ import io
 import os
 import struct
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "browser"))
@@ -25,7 +25,9 @@ from harness import Harness  # noqa: E402
 
 HOUR = 3600
 FROM, TO = "2026-01-10", "2026-01-11"
-DAY_START = int(datetime.strptime(FROM, "%Y-%m-%d").timestamp())
+# Запросы идут с timezone="UTC", а строки-даты сервер читает в поясе запроса (A44, timebounds.py):
+# начало суток считаем в UTC, а не в поясе процесса — иначе тест зависел бы от пояса машины.
+DAY_START = int(datetime.strptime(FROM, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
 
 
 def make_png(width, height):

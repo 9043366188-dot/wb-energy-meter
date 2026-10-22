@@ -207,7 +207,7 @@ def main() -> int:
         api_summary = page.evaluate(
             "fetch('/api/v2/overview/summary', {method:'POST', "
             "headers:{'Content-Type':'application/json'}, "
-            f"body: JSON.stringify({{from:'{ov_from}', to:'{ov_to}', timezone:'UTC'}})}})"
+            f"body: JSON.stringify({{from:'{ov_from}', to:'{ov_to}', timezone:Intl.DateTimeFormat().resolvedOptions().timeZone}})}})"
             ".then(r=>r.json())"
         )
         expected_total = api_summary.get("object_total", {}).get("value")
@@ -240,7 +240,7 @@ def main() -> int:
         api_balance = page.evaluate(
             f"fetch('/api/v2/topology/nodes/{shr1['id']}/balance', "
             "{method:'POST', headers:{'Content-Type':'application/json'}, "
-            f"body: JSON.stringify({{from:'{ov_from}', to:'{ov_to}', timezone:'UTC'}})}})"
+            f"body: JSON.stringify({{from:'{ov_from}', to:'{ov_to}', timezone:Intl.DateTimeFormat().resolvedOptions().timeZone}})}})"
             ".then(r=>r.json())"
         )
         node_card_text = page.locator(".plan-side:visible").inner_text()
