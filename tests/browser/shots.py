@@ -84,6 +84,12 @@ def main() -> int:
     too_big = []
     with Harness() as h:
         info = seed_demo(h)
+        # демо-приборы публикуют мощность в ваттах, как эмулятор и настоящие приборы с meta единицы:
+        # без этого карточка «Приборов» показывала бы «4800 кВт» (без meta значение считается уже в кВт)
+        for _m in h.registry.all():
+            _c = _m.controls.get("Total P")
+            if _c is not None and isinstance(_c.meta, dict):
+                _c.meta["units"] = "W"
         scheme_id = _make_scheme(h) if "scheme" in args.screens else None
         for width in args.widths:
             for theme in args.themes:
