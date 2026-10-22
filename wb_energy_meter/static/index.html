@@ -6,6 +6,10 @@
 <!-- Партия 13, 13.1: адаптивный viewport (ТЗ §8.5). Классический набор на телефоне
      остаётся страницей шириной 1100 — JS (js/layout.js) возвращает ему прежний viewport. -->
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Партия 15, П14: версия службы, с которой отдана страница, — подставляет сервер при отдаче «/»
+     (api.render_index_html; в файле на диске пусто). core.js сравнивает её с версией из /api/status
+     и показывает плашку «Служба обновлена до X — перезагрузите страницу». -->
+<meta name="wbem-build" content="">
 <!-- Вендорено локально (ТЗ v0.11.0) — см. wb_energy_meter/static/vendor/VENDOR.md -->
 <link rel="stylesheet" href="/static/vendor/leaflet.css">
 <link rel="stylesheet" href="/static/vendor/leaflet-geoman.css">
@@ -182,6 +186,12 @@ tfoot td{font-weight:700;background:var(--bg3);border-top:2px solid var(--line)}
 .upd-progress{display:flex;align-items:center;gap:10px}
 .upd-step{font-size:13px;font-weight:500}
 .upd-banner{border-radius:8px;padding:14px 18px;font-size:13px}
+/* П14: плашка «страница устарела». Липнет к нижнему краю экрана, но в потоке после <main>: на
+   прокрученной странице видна всегда, а в конце страницы не закрывает последние строки. */
+.stale-page{position:sticky;bottom:0;z-index:40;display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  padding:10px 24px;background:var(--bg2);border-top:2px solid var(--warn);font-size:13px}
+.stale-page .msg{flex:1 1 240px;min-width:0;overflow-wrap:anywhere}
+@media (max-width:767px){.stale-page{padding:10px 12px}}
 .upd-banner-ok{background:rgba(63,185,80,.12);border:1px solid var(--ok)}
 .upd-banner-warn{background:rgba(210,153,34,.12);border:1px solid var(--warn)}
 .upd-banner-err{background:rgba(248,81,73,.12);border:1px solid var(--err)}
@@ -5610,6 +5620,15 @@ path.sl-line-bad{stroke-dasharray:2,5}
     <div class="toast" :class="toast.ok?'toast-ok':'toast-err'" x-text="toast.msg"></div>
   </template>
 </main>
+
+<!-- Партия 15, П14: страница загружена с одной версией службы, а /api/status вернул другую (служба
+     обновлена, пока вкладка была открыта) — разметка и скрипты могут быть старыми. Без автоматической
+     перезагрузки: она стёрла бы введённое в форму. style="display:none" — чтобы плашка не мигала до старта Alpine. -->
+<div class="stale-page" data-testid="stale-page-banner" role="status" x-show="pageStale" style="display:none">
+  <span class="msg" x-text="'Служба обновлена до '+version+' — перезагрузите страницу'"></span>
+  <button type="button" class="btn btn-primary btn-sm" data-testid="stale-page-reload"
+          @click="reloadPage()">Перезагрузить</button>
+</div>
 
 <!-- Leaflet + Leaflet-Geoman + Alpine — вендорено локально
      (wb_energy_meter/static/vendor/, см. VENDOR.md), интерфейс работает
