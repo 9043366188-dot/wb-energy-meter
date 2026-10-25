@@ -259,24 +259,35 @@ def test_snapshot_device_id_field():
 
 
 def test_status_power_units():
-    """П13 (партия 15): /api/status отдаёт `power_units` — единицу `Total P` из meta прибора.
-    Карточки «Приборов» в «Обзоре» переводят мощность в кВт только когда meta явно говорит «W»;
-    нет meta — значение остаётся как есть (поведение классического «Дашборда»)."""
+    """П13 (партия 15), П15 (0.25.1): /api/status отдаёт `power_units` — единицу `Total P`.
+    Из meta прибора, если она есть; meta без units, но с type "power" — "W" (соглашения Wiren
+    Board: так публикует WB-MAP3E на старом wb-mqtt-serial — ватты, не киловатты); иначе None.
+    Карточки «Приборов» и «Дашборда» делят на 1000 всё, кроме явного «kW»."""
     client, db, path, registry = make_client()
     try:
         w = populate_live_meter(registry, "emu-units-w", power_w=1500.0)
         w.controls["Total P"].meta = {"type": "power", "units": "W"}
-        populate_live_meter(registry, "dev-units-none", power_w=1.5)            # meta без units
+        populate_live_meter(registry, "dev-units-none", power_w=1500.0)         # type power, без units
         k = populate_live_meter(registry, "dev-units-kw", power_w=1.5)
         k.controls["Total P"].meta = {"type": "power", "units": " kW "}
+        v = populate_live_meter(registry, "dev-units-value", power_w=1500.0)
+        v.controls["Total P"].meta = {"type": "value"}                            # ни units, ни type power
         bare = registry.get_or_create("dev-units-empty")                          # нет канала вообще
         bare.last_any_ts = time.time()
 
         by_id = {m["device_id"]: m for m in client.get("/api/status").get_json()["meters"]}
         assert by_id["emu-units-w"]["power_units"] == "W"
-        assert by_id["dev-units-none"]["power_units"] is None
+        assert by_id["dev-units-none"]["power_units"] == "W", by_id["dev-units-none"]["power_units"]
         assert by_id["dev-units-kw"]["power_units"] == "kW"
+        assert by_id["dev-units-value"]["power_units"] is None
         assert by_id["dev-units-empty"]["power_units"] is None
+        # П15: словарь каналов подписывает мощность ваттами (полная карточка прибора)
+        from wb_energy_meter.channels import get_channel_info
+        for name, unit in (("Total P", "Вт"), ("P L1", "Вт"), ("Total Q", "вар"), ("Q L2", "вар"),
+                           ("Total S", "ВА"), ("S L3", "ВА"), ("Total AP energy", "кВт·ч")):
+            assert get_channel_info(name)["units"] == unit, (name, get_channel_info(name)["units"])
+        dev = client.get("/api/meters/dev-units-none").get_json()
+        assert dev["controls"]["Total P"]["units"] == "Вт", dev["controls"]["Total P"]["units"]
         # значения и прежние поля карточки не тронуты
         assert by_id["emu-units-w"]["main_values"]["Total P"] == 1500.0
         for key in ("device_id", "display_name", "status", "main_values", "controls_count"):

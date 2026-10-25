@@ -718,7 +718,7 @@ path.sl-line-bad{stroke-dasharray:2,5}
             <div class="card-body">
               <div class="metric">
                 <div class="k">Мощность</div>
-                <div class="v mono"><span x-text="fmt(m.main_values['Total P'],3)"></span><small> кВт</small></div>
+                <div class="v mono"><span data-testid="dash-card-power" x-text="fmt(ovDevicePowerKw(m),3)"></span><small> кВт</small></div>
               </div>
               <div class="metric">
                 <div class="k">Энергия</div>

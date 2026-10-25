@@ -171,17 +171,23 @@ class MeterState:
                 if self.last_measurement_ts > 0 else None
             ),
             "main_values": main,
-            # П13 (партия 15): единица `Total P` из meta прибора ("W" у эмулятора и части
-            # приборов, "kW" в словаре каналов). Карточки «Обзора» переводят мощность в кВт по
-            # ней; без неё (нет meta) значение считается уже в кВт, как в классическом «Дашборде».
-            "power_units": self._main_units("Total P"),
+            # П13 (партия 15), П15 (0.25.1): единица `Total P`. Из meta прибора, если есть
+            # ("W" у эмулятора и у WB-MAP3E с новым wb-mqtt-serial); нет units, но type
+            # "power" — "W" по соглашениям Wiren Board (старый драйвер на контроллере). Карточки
+            # переводят в кВт по ней (`ovDevicePowerKw`); снимок «Обзора» (`power_w`) тоже ватты.
+            "power_units": self._power_units("Total P"),
             "controls_count": len(self.controls),
         }
 
-    def _main_units(self, control: str) -> Optional[str]:
+    def _power_units(self, control: str) -> Optional[str]:
         c = self.controls.get(control)
-        units = c.meta.get("units") if c is not None else None
-        return str(units).strip() or None if units else None
+        if c is None:
+            return None
+        units = str(c.meta.get("units") or "").strip()
+        if units:
+            return units
+        # Соглашения Wiren Board: type "power" — ватты (units в meta тогда не публикуется).
+        return "W" if str(c.meta.get("type") or "").strip() == "power" else None
 
 
 class MeterRegistry:

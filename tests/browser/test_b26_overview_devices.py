@@ -185,9 +185,13 @@ def main() -> int:
         check(c_in.locator("[data-testid=ov-device-status]").inner_text().strip()
               == js(page, APP + ".statusLabel('ok')"),
               "карточка: подпись статуса — та же, что у классической карточки")
+        # П15 (0.25.1): у demo-прибора meta {"type": "power"} без units — по соглашениям WB это
+        # ватты (так публикует WB-MAP3E на старом wb-mqtt-serial); карточка показывает кВт.
+        check(m_in["power_units"] == "W", f"сервер: type power без units → power_units W ({m_in['power_units']!r})")
         check(c_in.locator("[data-testid=ov-device-power]").inner_text().strip()
-              == "%.3f" % m_in["main_values"]["Total P"],
-              "карточка: мощность — как у классической карточки (без meta единицы значение уже в кВт)")
+              == "%.3f" % (m_in["main_values"]["Total P"] / 1000),
+              "карточка: мощность в кВт — ватты прибора без meta-единицы делятся на 1000 "
+              f"({c_in.locator('[data-testid=ov-device-power]').inner_text()!r}, Total P = {m_in['main_values']['Total P']})")
         check(c_in.locator("[data-testid=ov-device-energy]").inner_text().strip()
               == "%.2f" % m_in["main_values"]["Total AP energy"], "карточка: энергия")
         check(c_in.locator("[data-testid=ov-device-age]").inner_text().strip() not in ("", "—"),
@@ -314,6 +318,27 @@ def main() -> int:
                       f"1280×800: первая проблемная карточка целиком видна без прокрутки ({first})")
                 bp.screenshot("b26_overview_devices_1280")
         page.set_viewport_size({"width": 1400, "height": 1000})
+
+        # ===== 8. П15 (0.25.1): единица мощности — одна функция для «Приборов» и «Дашборда» =====
+        conv = js(page, "[" + ",".join(
+            APP + ".ovDevicePowerKw({main_values:{'Total P':1500}, power_units:%s})" % u
+            for u in ("'W'", "'Вт'", "null", "''", "'kW'", "' кВт '")) + "]")
+        check(conv == [1.5, 1.5, 1.5, 1.5, 1500, 1500],
+              f"перевод в кВт: W/Вт/без единицы — делить на 1000, kW/кВт — как есть ({conv})")
+        exp_total = sum(m["main_values"]["Total P"] / (1 if (m.get("power_units") or "").strip().lower() in ("kw", "квт") else 1000)
+                        for m in status["meters"] if isinstance(m["main_values"].get("Total P"), (int, float)))
+        ov_power_in = card(page, "dev-in").locator("[data-testid=ov-device-power]").inner_text().strip()
+        js(page, APP + ".uiSet='classic'; " + APP + ".tab='dash';")
+        check(wait_for(page, "() => document.querySelectorAll('[data-testid=dash-card-power]').length > 0"),
+              "классический «Дашборд»: карточки показаны")
+        dash_in = page.locator(".card", has=page.locator(".nm", has_text=m_in["display_name"])).first
+        check(dash_in.locator("[data-testid=dash-card-power]").inner_text().strip()
+              == ov_power_in,
+              f"классическая карточка показывает ту же мощность в кВт, что и карточка «Приборов» ({ov_power_in!r})")
+        tot = js(page, APP + ".totalPowerKw")
+        check(abs(float(tot) - exp_total) < 0.0006,
+              f"«Суммарная мощность» классики — сумма в кВт ({tot} против {exp_total:.3f})")
+        js(page, APP + ".uiSet='v2'; " + APP + ".tab='overviewv2';")
 
         check(not pw_errors(bp), f"консоль без ошибок приложения ({pw_errors(bp)[:3]})")
         bp.close()
