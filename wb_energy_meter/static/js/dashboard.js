@@ -83,15 +83,17 @@ function fmtSeconds(s){
           return order.map(k=>groups[k]);
         },
 
+      // П15 (0.25.1): Total P приходит в ваттах — перевод в кВт одной функцией с карточками
+      // «Приборов» (overview-v2.js::ovDevicePowerKw); раньше ватты суммировались как кВт.
       zonePower(meters){
           let s=0;
-          meters.forEach(m=>{const v=m.main_values&&m.main_values['Total P'];if(typeof v=='number')s+=v;});
+          meters.forEach(m=>{const v=this.ovDevicePowerKw(m);if(typeof v=='number')s+=v;});
           return s.toFixed(3);
         },
 
       get totalPowerKw(){
           let s=0; this.meters.forEach(m=>{
-            const v=m.main_values&&m.main_values['Total P']; if(typeof v=='number') s+=v;
+            const v=this.ovDevicePowerKw(m); if(typeof v=='number') s+=v;
           }); return s.toFixed(3);
         },
 

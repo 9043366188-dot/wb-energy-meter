@@ -139,6 +139,11 @@ def main() -> int:
         page.set_viewport_size({"width": 1400, "height": 1000})
 
         # ===== 5. Кнопка перезагружает страницу =====
+        # Сначала остановить общий 5-секундный опрос: иначе его тик между снятием подмены
+        # и кликом получает настоящую версию, плашка (правильно) пропадает, и клик ждёт
+        # невидимую кнопку — тест падал примерно в 1 прогоне из 3. Перезагрузка заведёт
+        # таймер заново.
+        js(page, "clearInterval(%s._timer)" % APP)
         page.unroute("**/api/status")
         with page.expect_navigation():
             page.locator("[data-testid=stale-page-reload]").first.click()
